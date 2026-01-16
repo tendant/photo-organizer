@@ -15,8 +15,6 @@ A fast, single-binary tool to organize photos by date.
 
 Requires Go 1.21+
 
-### Using Make (Recommended)
-
 ```bash
 # Build for current platform
 make
@@ -29,16 +27,6 @@ make clean build
 
 # View all available targets
 make help
-```
-
-### Using Build Script
-
-```bash
-# Build for current platform
-./build.sh
-
-# Build for all platforms
-./build.sh all
 ```
 
 ## Quick Start
