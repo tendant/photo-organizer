@@ -715,15 +715,15 @@ When this skill is invoked:
 // installSkill creates the .claude/skills directory and installs the skill file.
 // Returns nil on success, error on failure.
 func installSkill(targetDir string) error {
-	skillDir := filepath.Join(targetDir, ".claude", "skills")
-	skillFile := filepath.Join(skillDir, "organize-photos.md")
+	skillDir := filepath.Join(targetDir, ".claude", "skills", "photo-organizer")
+	skillFile := filepath.Join(skillDir, "SKILL.md")
 
 	// Check if skill already exists
 	if _, err := os.Stat(skillFile); err == nil {
 		return fmt.Errorf("skill already exists at %s", skillFile)
 	}
 
-	// Create .claude/skills directory
+	// Create .claude/skills/photo-organizer directory
 	if err := os.MkdirAll(skillDir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %v", skillDir, err)
 	}

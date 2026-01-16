@@ -133,7 +133,7 @@ You can install the skill to any photo library directory:
 ./photo-organizer --root /path/to/photos --install-skill
 ```
 
-This creates `.claude/skills/organize-photos.md` in your photo library.
+This creates `.claude/skills/photo-organizer/SKILL.md` in your photo library.
 
 ### Using the Skill
 
