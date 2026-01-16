@@ -1,3 +1,32 @@
+// Photo Organizer - A tool to organize photos by capture date
+//
+// This tool scans an Incoming directory for photos and videos, extracts their
+// capture dates from EXIF metadata or filenames, and organizes them into a
+// structured directory hierarchy (Originals/YYYY/YYYY-MM-DD/).
+//
+// Features:
+//   - EXIF date extraction from photos
+//   - Filename pattern recognition (DJI, Sony, etc.)
+//   - Duplicate detection via file size comparison
+//   - Manifest CSV tracking for all organized files
+//   - Cross-device file moving support
+//   - Empty folder cleanup
+//
+// Usage:
+//
+//	photo-organizer              # Preview changes (dry-run, default)
+//	photo-organizer -x           # Execute file moves
+//	photo-organizer -x -m        # Execute and update manifest
+//	photo-organizer --root /path # Use custom root directory
+//
+// Expected directory structure:
+//
+//	Photos/
+//	├── Incoming/      <- Drop new photos here
+//	├── Originals/     <- Organized photos (YYYY/YYYY-MM-DD/)
+//	├── Exports/       <- Curated/edited photos
+//	├── _Manifest/     <- Tracking CSV
+//	└── photo-organizer
 package main
 
 import (
@@ -16,68 +45,141 @@ import (
 	"github.com/rwcarlsen/goexif/exif"
 )
 
+// =============================================================================
 // Configuration
+// =============================================================================
+
+// Global path variables, set at runtime based on --root flag or current directory.
 var (
-	photoRoot   string
-	incomingDir string
-	originalsDir string
-	manifestDir string
-	manifestFile string
+	photoRoot    string // Root directory of the photo library
+	incomingDir  string // Directory for new/unorganized photos
+	originalsDir string // Directory for organized original photos
+	manifestDir  string // Directory for manifest CSV
+	manifestFile string // Path to the manifest CSV file
 )
 
-// Supported extensions
-var (
-	photoExts = map[string]bool{
-		".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
-		".heic": true, ".dng": true, ".arw": true, ".cr2": true,
-		".nef": true, ".raf": true,
-	}
-	videoExts = map[string]bool{
-		".mp4": true, ".mov": true, ".avi": true, ".mkv": true,
-	}
-	audioExts = map[string]bool{
-		".wav": true, ".mp3": true,
-	}
-	sidecarExts = map[string]bool{
-		".lrf": true, ".xmp": true, ".json": true,
-	}
-	skipFolders = map[string]bool{
-		".stfolder": true, ".fseventsd": true, ".Trashes": true,
-		".Spotlight-V100": true, "PRIVATE": true, "AVF_INFO": true,
-		"THMBNL": true,
-	}
-)
+// =============================================================================
+// Supported File Types
+// =============================================================================
 
-// Date extraction patterns
+// photoExts contains supported photo file extensions.
+// These files will have EXIF data extracted for date detection.
+var photoExts = map[string]bool{
+	".jpg":  true,
+	".jpeg": true,
+	".png":  true,
+	".gif":  true,
+	".heic": true,
+	".dng":  true, // Adobe Digital Negative
+	".arw":  true, // Sony RAW
+	".cr2":  true, // Canon RAW
+	".nef":  true, // Nikon RAW
+	".raf":  true, // Fujifilm RAW
+}
+
+// videoExts contains supported video file extensions.
+var videoExts = map[string]bool{
+	".mp4": true,
+	".mov": true,
+	".avi": true,
+	".mkv": true,
+}
+
+// audioExts contains supported audio file extensions.
+// Primarily for DJI drone audio files that accompany videos.
+var audioExts = map[string]bool{
+	".wav": true,
+	".mp3": true,
+}
+
+// sidecarExts contains sidecar/metadata file extensions.
+// These files typically accompany photos with additional metadata.
+var sidecarExts = map[string]bool{
+	".lrf":  true, // Low Resolution File (DJI)
+	".xmp":  true, // Adobe XMP sidecar
+	".json": true, // JSON metadata
+}
+
+// skipFolders contains directory names to skip during scanning.
+// These are typically system folders or camera-specific directories
+// that don't contain user photos.
+var skipFolders = map[string]bool{
+	".stfolder":      true, // Syncthing
+	".fseventsd":     true, // macOS filesystem events
+	".Trashes":       true, // macOS trash
+	".Spotlight-V100": true, // macOS Spotlight index
+	"PRIVATE":        true, // Camera system folder
+	"AVF_INFO":       true, // Sony AVCHD info
+	"THMBNL":         true, // Sony thumbnails
+}
+
+// =============================================================================
+// Date Extraction Patterns
+// =============================================================================
+
+// datePatterns contains regex patterns for extracting dates from filenames.
+// Patterns are tried in order; first match wins.
+// The layout string uses Go's reference time: Mon Jan 2 15:04:05 MST 2006
 var datePatterns = []struct {
 	regex  *regexp.Regexp
 	layout string
+	desc   string // Description for documentation
 }{
-	{regexp.MustCompile(`DJI_(\d{8})`), "20060102"},
-	{regexp.MustCompile(`^(\d{8})_C\d+`), "20060102"},
-	{regexp.MustCompile(`(\d{8})_\d{6}`), "20060102"},
-	{regexp.MustCompile(`(\d{4}-\d{2}-\d{2})`), "2006-01-02"},
-	{regexp.MustCompile(`(\d{8})`), "20060102"},
+	// DJI drone: DJI_20250619224111_0001_D.MP4
+	{regexp.MustCompile(`DJI_(\d{8})`), "20060102", "DJI drone files"},
+
+	// Sony video: 20250616_C0416.MP4
+	{regexp.MustCompile(`^(\d{8})_C\d+`), "20060102", "Sony video clips"},
+
+	// Generic timestamp: IMG_20250619_123456.jpg
+	{regexp.MustCompile(`(\d{8})_\d{6}`), "20060102", "Generic timestamp format"},
+
+	// ISO date: 2025-06-19_photo.jpg
+	{regexp.MustCompile(`(\d{4}-\d{2}-\d{2})`), "2006-01-02", "ISO date format"},
+
+	// Compact date: 20250619_photo.jpg (last resort, less specific)
+	{regexp.MustCompile(`(\d{8})`), "20060102", "Compact date format"},
 }
 
+// =============================================================================
+// Data Types
+// =============================================================================
+
+// FileInfo holds metadata about an organized file.
+// Used for manifest tracking and reporting.
 type FileInfo struct {
-	SrcPath     string
-	DestPath    string
-	Size        int64
-	ModTime     time.Time
-	CaptureDate time.Time
-	Hash        string
+	SrcPath     string    // Original path in Incoming/
+	DestPath    string    // New path in Originals/
+	Size        int64     // File size in bytes
+	ModTime     time.Time // File modification time
+	CaptureDate time.Time // Extracted capture date
+	Hash        string    // MD5 hash of first 64KB (for duplicate detection)
 }
 
+// =============================================================================
+// File Type Detection
+// =============================================================================
+
+// isMediaFile returns true if the file extension indicates a supported media file.
+// Checks against all supported types: photos, videos, audio, and sidecars.
 func isMediaFile(ext string) bool {
 	ext = strings.ToLower(ext)
 	return photoExts[ext] || videoExts[ext] || audioExts[ext] || sidecarExts[ext]
 }
 
+// isPhotoFile returns true if the file extension indicates a photo file.
+// Photo files are candidates for EXIF date extraction.
 func isPhotoFile(ext string) bool {
 	return photoExts[strings.ToLower(ext)]
 }
 
+// =============================================================================
+// Date Extraction
+// =============================================================================
+
+// getExifDate extracts the capture date from a photo's EXIF metadata.
+// Returns the DateTimeOriginal field if available.
+// Returns an error if the file cannot be read or has no EXIF data.
 func getExifDate(path string) (time.Time, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -93,6 +195,9 @@ func getExifDate(path string) (time.Time, error) {
 	return x.DateTime()
 }
 
+// getDateFromFilename attempts to extract a date from the filename.
+// Tries each pattern in datePatterns in order.
+// Returns the parsed date and true if successful, or zero time and false if no match.
 func getDateFromFilename(filename string) (time.Time, bool) {
 	for _, p := range datePatterns {
 		matches := p.regex.FindStringSubmatch(filename)
@@ -106,6 +211,12 @@ func getDateFromFilename(filename string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// getFileDate determines the best available date for a file.
+// Priority:
+//  1. EXIF DateTimeOriginal (for photos)
+//  2. Date parsed from filename
+//  3. File modification time
+//  4. Current time (fallback)
 func getFileDate(path string) time.Time {
 	ext := filepath.Ext(path)
 	filename := filepath.Base(path)
@@ -131,6 +242,13 @@ func getFileDate(path string) time.Time {
 	return time.Now()
 }
 
+// =============================================================================
+// File Hashing
+// =============================================================================
+
+// getFileHash computes an MD5 hash of the first 64KB of a file.
+// This provides fast duplicate detection without reading entire files.
+// Returns an empty string if the file cannot be read.
 func getFileHash(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -146,15 +264,22 @@ func getFileHash(path string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+// =============================================================================
+// File Discovery
+// =============================================================================
+
+// findFilesToOrganize walks the Incoming directory and returns paths to all
+// media files that should be organized.
+// Skips hidden files/folders and system directories defined in skipFolders.
 func findFilesToOrganize() ([]string, error) {
 	var files []string
 
 	err := filepath.Walk(incomingDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // Skip errors
+			return nil // Skip errors, continue walking
 		}
 
-		// Skip directories we don't want
+		// Skip directories we don't want to process
 		if info.IsDir() {
 			name := info.Name()
 			if strings.HasPrefix(name, ".") || skipFolders[name] {
@@ -168,7 +293,7 @@ func findFilesToOrganize() ([]string, error) {
 			return nil
 		}
 
-		// Check extension
+		// Include only media files
 		ext := filepath.Ext(path)
 		if isMediaFile(ext) {
 			files = append(files, path)
@@ -180,6 +305,12 @@ func findFilesToOrganize() ([]string, error) {
 	return files, err
 }
 
+// =============================================================================
+// Path Generation
+// =============================================================================
+
+// getDestination calculates the destination path for a source file.
+// Organizes into: Originals/YYYY/YYYY-MM-DD/filename
 func getDestination(srcPath string) string {
 	fileDate := getFileDate(srcPath)
 	year := fileDate.Format("2006")
@@ -189,6 +320,13 @@ func getDestination(srcPath string) string {
 	return filepath.Join(originalsDir, year, dateFolder, filename)
 }
 
+// =============================================================================
+// Core Organization Logic
+// =============================================================================
+
+// organizeFiles processes all files in Incoming and moves them to Originals.
+// If dryRun is true, only prints what would happen without moving files.
+// Returns a slice of FileInfo for successfully organized files.
 func organizeFiles(dryRun bool) ([]FileInfo, error) {
 	files, err := findFilesToOrganize()
 	if err != nil {
@@ -208,14 +346,15 @@ func organizeFiles(dryRun bool) ([]FileInfo, error) {
 	for _, srcPath := range files {
 		destPath := getDestination(srcPath)
 
-		// Check for existing file
+		// Check for existing file at destination
 		if destInfo, err := os.Stat(destPath); err == nil {
 			srcInfo, _ := os.Stat(srcPath)
+			// Skip if same size (likely duplicate)
 			if srcInfo.Size() == destInfo.Size() {
 				skipped++
 				continue
 			}
-			// Different file, add suffix
+			// Different file with same name - add numeric suffix
 			ext := filepath.Ext(destPath)
 			base := strings.TrimSuffix(destPath, ext)
 			counter := 1
@@ -228,6 +367,7 @@ func organizeFiles(dryRun bool) ([]FileInfo, error) {
 			}
 		}
 
+		// Display relative paths for cleaner output
 		relSrc, _ := filepath.Rel(photoRoot, srcPath)
 		relDest, _ := filepath.Rel(photoRoot, destPath)
 
@@ -242,9 +382,8 @@ func organizeFiles(dryRun bool) ([]FileInfo, error) {
 				continue
 			}
 
-			// Move file
+			// Move file (try rename first, fall back to copy+delete for cross-device)
 			if err := os.Rename(srcPath, destPath); err != nil {
-				// Try copy + delete if rename fails (cross-device)
 				if err := copyFile(srcPath, destPath); err != nil {
 					fmt.Printf("Error moving %s: %v\n", srcPath, err)
 					continue
@@ -252,6 +391,7 @@ func organizeFiles(dryRun bool) ([]FileInfo, error) {
 				os.Remove(srcPath)
 			}
 
+			// Record organized file info
 			srcInfo, _ := os.Stat(destPath)
 			organized = append(organized, FileInfo{
 				SrcPath:     srcPath,
@@ -264,6 +404,7 @@ func organizeFiles(dryRun bool) ([]FileInfo, error) {
 		}
 	}
 
+	// Print summary
 	if dryRun {
 		fmt.Printf("\n[DRY RUN] Would organize %d files\n", len(files)-skipped)
 		if skipped > 0 {
@@ -279,6 +420,12 @@ func organizeFiles(dryRun bool) ([]FileInfo, error) {
 	return organized, nil
 }
 
+// =============================================================================
+// File Operations
+// =============================================================================
+
+// copyFile copies a file from src to dst.
+// Used as fallback when os.Rename fails (cross-device moves).
 func copyFile(src, dst string) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
@@ -296,12 +443,20 @@ func copyFile(src, dst string) error {
 	return err
 }
 
+// =============================================================================
+// Manifest Management
+// =============================================================================
+
+// updateManifest adds newly organized files to the manifest CSV.
+// Creates the manifest file if it doesn't exist.
+// Preserves existing entries and appends new ones.
 func updateManifest(organized []FileInfo) error {
+	// Ensure manifest directory exists
 	if err := os.MkdirAll(manifestDir, 0755); err != nil {
 		return err
 	}
 
-	// Read existing entries
+	// Read existing entries from manifest
 	existing := make(map[string][]string)
 	var headers []string
 
@@ -320,10 +475,22 @@ func updateManifest(organized []FileInfo) error {
 		}
 	}
 
+	// Define headers if manifest is new
 	if len(headers) == 0 {
-		headers = []string{"filename", "relative_path", "source_folder", "file_size_bytes",
-			"file_size_mb", "file_modified", "capture_date", "camera_make",
-			"camera_model", "file_hash", "extension", "organized_date"}
+		headers = []string{
+			"filename",        // Base filename
+			"relative_path",   // Path relative to photo root
+			"source_folder",   // Original folder in Incoming/
+			"file_size_bytes", // Size in bytes
+			"file_size_mb",    // Size in megabytes
+			"file_modified",   // File modification timestamp
+			"capture_date",    // EXIF/parsed capture date
+			"camera_make",     // Camera manufacturer (if available)
+			"camera_model",    // Camera model (if available)
+			"file_hash",       // MD5 hash of first 64KB
+			"extension",       // File extension
+			"organized_date",  // When file was organized
+		}
 	}
 
 	// Add new entries
@@ -331,9 +498,10 @@ func updateManifest(organized []FileInfo) error {
 	for _, fi := range organized {
 		relPath, _ := filepath.Rel(photoRoot, fi.DestPath)
 		if _, exists := existing[relPath]; exists {
-			continue
+			continue // Skip if already in manifest
 		}
 
+		// Determine source folder
 		srcRel, _ := filepath.Rel(incomingDir, fi.SrcPath)
 		sourceFolder := strings.Split(srcRel, string(os.PathSeparator))[0]
 
@@ -345,7 +513,7 @@ func updateManifest(organized []FileInfo) error {
 			fmt.Sprintf("%.2f", float64(fi.Size)/(1024*1024)),
 			fi.ModTime.Format("2006-01-02 15:04:05"),
 			fi.CaptureDate.Format("2006:01:02 15:04:05"),
-			"", "", // camera make/model
+			"", "", // camera make/model (not extracted in Go version)
 			fi.Hash,
 			strings.ToLower(filepath.Ext(fi.DestPath)),
 			time.Now().Format("2006-01-02 15:04:05"),
@@ -364,7 +532,7 @@ func updateManifest(organized []FileInfo) error {
 	writer := csv.NewWriter(f)
 	writer.Write(headers)
 
-	// Sort by relative path
+	// Sort entries by relative path for consistent output
 	var paths []string
 	for p := range existing {
 		paths = append(paths, p)
@@ -383,6 +551,12 @@ func updateManifest(organized []FileInfo) error {
 	return nil
 }
 
+// =============================================================================
+// Cleanup
+// =============================================================================
+
+// cleanupEmptyFolders removes empty directories from Incoming.
+// Only removes directories that contain no visible (non-hidden) files.
 func cleanupEmptyFolders() {
 	removed := 0
 
@@ -392,7 +566,8 @@ func cleanupEmptyFolders() {
 		}
 
 		entries, _ := os.ReadDir(path)
-		// Filter hidden files
+
+		// Count visible (non-hidden) files
 		visible := 0
 		for _, e := range entries {
 			if !strings.HasPrefix(e.Name(), ".") {
@@ -400,6 +575,7 @@ func cleanupEmptyFolders() {
 			}
 		}
 
+		// Remove if empty
 		if visible == 0 {
 			os.RemoveAll(path)
 			removed++
@@ -412,13 +588,32 @@ func cleanupEmptyFolders() {
 	}
 }
 
+// =============================================================================
+// Main Entry Point
+// =============================================================================
+
 func main() {
-	// Flags
+	// Define command-line flags
 	execute := flag.Bool("execute", false, "Actually move files (default is dry-run)")
 	executeShort := flag.Bool("x", false, "Actually move files (short for --execute)")
 	updateManifestFlag := flag.Bool("update-manifest", false, "Update the manifest CSV after organizing")
 	updateManifestShort := flag.Bool("m", false, "Update manifest (short for --update-manifest)")
 	rootDir := flag.String("root", "", "Photo library root directory (default: current directory)")
+
+	// Custom usage message
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Photo Organizer - Organize photos by capture date\n\n")
+		fmt.Fprintf(os.Stderr, "Usage:\n")
+		fmt.Fprintf(os.Stderr, "  %s [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  %s              # Preview (dry-run, default)\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -x           # Execute file moves\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -x -m        # Execute and update manifest\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --root /path # Use custom root directory\n", os.Args[0])
+	}
+
 	flag.Parse()
 
 	// Combine short and long flags
@@ -426,7 +621,7 @@ func main() {
 	doUpdateManifest := *updateManifestFlag || *updateManifestShort
 	dryRun := !doExecute
 
-	// Set paths
+	// Set paths based on root directory
 	if *rootDir != "" {
 		photoRoot = *rootDir
 	} else {
@@ -443,12 +638,13 @@ func main() {
 	manifestDir = filepath.Join(photoRoot, "_Manifest")
 	manifestFile = filepath.Join(manifestDir, "photo_manifest.csv")
 
-	// Check that Incoming exists
+	// Validate that Incoming directory exists
 	if _, err := os.Stat(incomingDir); os.IsNotExist(err) {
 		fmt.Printf("Error: Incoming directory not found at %s\n", incomingDir)
 		os.Exit(1)
 	}
 
+	// Print banner
 	fmt.Println(strings.Repeat("=", 50))
 	fmt.Println("Photo Organizer")
 	fmt.Println(strings.Repeat("=", 50))
@@ -460,12 +656,14 @@ func main() {
 		fmt.Println("[DRY RUN MODE - use --execute or -x to actually move files]\n")
 	}
 
+	// Run organization
 	organized, err := organizeFiles(dryRun)
 	if err != nil {
 		fmt.Println("Error organizing files:", err)
 		os.Exit(1)
 	}
 
+	// Post-processing (only when actually executing)
 	if !dryRun {
 		if len(organized) > 0 && doUpdateManifest {
 			if err := updateManifest(organized); err != nil {
