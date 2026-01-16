@@ -741,6 +741,63 @@ func installSkill(targetDir string) error {
 }
 
 // =============================================================================
+// Photo Library Initialization
+// =============================================================================
+
+// initPhotoLibrary creates the expected directory structure for a photo library.
+// Returns nil on success, error on failure.
+func initPhotoLibrary(targetDir string) error {
+	// Define required directories
+	dirs := []struct {
+		path string
+		desc string
+	}{
+		{filepath.Join(targetDir, "Incoming"), "Drop new photos here"},
+		{filepath.Join(targetDir, "Originals"), "Organized photos (YYYY/YYYY-MM-DD/)"},
+		{filepath.Join(targetDir, "Exports"), "Curated/edited photos"},
+		{filepath.Join(targetDir, "_Manifest"), "Tracking CSV"},
+	}
+
+	fmt.Printf("Initializing photo library at: %s\n\n", targetDir)
+
+	created := 0
+	skipped := 0
+
+	for _, dir := range dirs {
+		// Check if directory already exists
+		if _, err := os.Stat(dir.path); err == nil {
+			fmt.Printf("⊘ %s (already exists)\n", filepath.Base(dir.path))
+			skipped++
+			continue
+		}
+
+		// Create directory
+		if err := os.MkdirAll(dir.path, 0755); err != nil {
+			return fmt.Errorf("failed to create %s: %v", dir.path, err)
+		}
+
+		fmt.Printf("✓ %s/ - %s\n", filepath.Base(dir.path), dir.desc)
+		created++
+	}
+
+	fmt.Printf("\n")
+	if created > 0 {
+		fmt.Printf("Created %d directories\n", created)
+	}
+	if skipped > 0 {
+		fmt.Printf("Skipped %d existing directories\n", skipped)
+	}
+
+	fmt.Println("\nPhoto library is ready!")
+	fmt.Println("Next steps:")
+	fmt.Println("  1. Copy photos to Incoming/")
+	fmt.Println("  2. Run: photo-organizer (preview)")
+	fmt.Println("  3. Run: photo-organizer -x (organize)")
+
+	return nil
+}
+
+// =============================================================================
 // Main Entry Point
 // =============================================================================
 
@@ -752,6 +809,7 @@ func main() {
 	updateManifestShort := flag.Bool("m", false, "Update manifest (short for --update-manifest)")
 	rootDir := flag.String("root", "", "Photo library root directory (default: current directory)")
 	installSkillFlag := flag.Bool("install-skill", false, "Install Claude Code skill to .claude/skills/")
+	initFlag := flag.Bool("init", false, "Initialize photo library directory structure")
 
 	// Custom usage message
 	flag.Usage = func() {
@@ -765,10 +823,29 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  %s -x               # Execute file moves\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s -x -m            # Execute and update manifest\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s --root /path     # Use custom root directory\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --init           # Initialize photo library structure\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s --install-skill  # Install Claude Code skill\n", os.Args[0])
 	}
 
 	flag.Parse()
+
+	// Handle library initialization
+	if *initFlag {
+		targetDir := *rootDir
+		if targetDir == "" {
+			var err error
+			targetDir, err = os.Getwd()
+			if err != nil {
+				fmt.Println("Error getting current directory:", err)
+				os.Exit(1)
+			}
+		}
+		if err := initPhotoLibrary(targetDir); err != nil {
+			fmt.Printf("Error initializing library: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	// Handle skill installation
 	if *installSkillFlag {

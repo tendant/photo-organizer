@@ -21,7 +21,7 @@ LDFLAGS=-ldflags "-s -w"
 # Version info (can be overridden: make VERSION=1.0.0)
 VERSION?=dev
 
-.PHONY: all build build-all clean test install install-skill help deps
+.PHONY: all build build-all clean test install install-skill install-user help deps init
 .PHONY: linux linux-amd64 linux-arm64 darwin darwin-amd64 darwin-arm64 windows
 
 # Default target
@@ -38,6 +38,7 @@ help:
 	@echo "  make test         - Run tests"
 	@echo "  make install      - Install to /usr/local/bin (requires sudo)"
 	@echo "  make install-user - Install to ~/bin"
+	@echo "  make init         - Initialize photo library directory structure"
 	@echo "  make install-skill- Install Claude Code skill to current directory"
 	@echo "  make deps         - Download dependencies"
 	@echo ""
@@ -139,6 +140,11 @@ install-user: build
 	@echo ""
 	@echo "Make sure ~/bin is in your PATH:"
 	@echo '  export PATH="$$HOME/bin:$$PATH"'
+
+# Initialize photo library directory structure
+init: build
+	@echo "Initializing photo library structure..."
+	@./$(BINARY_NAME) --init
 
 # Install Claude Code skill to current directory
 install-skill: build

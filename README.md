@@ -41,6 +41,20 @@ make help
 ./build.sh all
 ```
 
+## Quick Start
+
+### Initialize a New Photo Library
+
+```bash
+# Create directory structure (Incoming, Originals, Exports, _Manifest)
+make init
+# or
+./photo-organizer --init
+
+# For a custom location
+./photo-organizer --root /path/to/photos --init
+```
+
 ## Installation
 
 ### Using Make
