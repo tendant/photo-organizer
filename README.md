@@ -15,17 +15,48 @@ A fast, single-binary tool to organize photos by date.
 
 Requires Go 1.21+
 
+### Using Make (Recommended)
+
+```bash
+# Build for current platform
+make
+
+# Build for all platforms (Linux, macOS, Windows)
+make build-all
+
+# Clean and rebuild
+make clean build
+
+# View all available targets
+make help
+```
+
+### Using Build Script
+
 ```bash
 # Build for current platform
 ./build.sh
 
-# Build for all platforms (Linux, Mac, Windows)
+# Build for all platforms
 ./build.sh all
 ```
 
 ## Installation
 
-Copy the binary to your Photos folder or add to PATH:
+### Using Make
+
+```bash
+# Install system-wide (requires sudo)
+make install
+
+# Install to ~/bin (no sudo required)
+make install-user
+
+# Install Claude Code skill
+make install-skill
+```
+
+### Manual Installation
 
 ```bash
 # Copy to Photos folder
