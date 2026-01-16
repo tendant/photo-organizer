@@ -70,6 +70,7 @@ var photoExts = map[string]bool{
 	".png":  true,
 	".gif":  true,
 	".heic": true,
+	".hif":  true, // Apple HEIF (alternate extension)
 	".dng":  true, // Adobe Digital Negative
 	".arw":  true, // Sony RAW
 	".cr2":  true, // Canon RAW
