@@ -88,7 +88,25 @@ Photos/
 
 ## Claude Code Integration
 
-This project includes a Claude Code skill for interactive photo organization. If you have [Claude Code](https://docs.anthropic.com/claude-code) installed, you can use:
+This project includes a Claude Code skill for interactive photo organization.
+
+### Installing the Skill
+
+You can install the skill to any photo library directory:
+
+```bash
+# Install to current directory
+./photo-organizer --install-skill
+
+# Install to a specific directory
+./photo-organizer --root /path/to/photos --install-skill
+```
+
+This creates `.claude/skills/organize-photos.md` in your photo library.
+
+### Using the Skill
+
+If you have [Claude Code](https://docs.anthropic.com/claude-code) installed, you can use:
 
 ```bash
 # In Claude Code CLI
@@ -101,4 +119,4 @@ The skill will guide you through:
 - Updating the manifest
 - Troubleshooting any issues
 
-The skill is defined in `.claude/skills/organize-photos.md` and provides intelligent assistance for managing your photo library.
+The skill provides intelligent assistance for managing your photo library.

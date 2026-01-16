@@ -589,6 +589,157 @@ func cleanupEmptyFolders() {
 }
 
 // =============================================================================
+// Skill Installation
+// =============================================================================
+
+// skillContent contains the Claude Code skill definition.
+const skillContent = `---
+skill: organize-photos
+description: Organize photos by capture date using the photo-organizer tool
+---
+
+# Photo Organization Skill
+
+This skill helps you organize photos using the photo-organizer tool in this repository. The tool scans the Incoming directory, extracts dates from EXIF metadata or filenames, and organizes photos into a structured date-based hierarchy.
+
+## How to Use This Skill
+
+When the user invokes this skill (e.g., ` + "`/organize-photos`" + `), help them organize their photos by:
+
+1. **Understanding their intent**: Ask what they want to do:
+   - Preview what will be organized (dry-run)
+   - Actually organize photos
+   - Update the manifest after organizing
+   - Check the status of their photo library
+
+2. **Running the appropriate command**:
+   - Preview: ` + "`./photo-organizer`" + `
+   - Execute: ` + "`./photo-organizer -x`" + `
+   - Execute + manifest: ` + "`./photo-organizer -x -m`" + `
+   - Custom root: ` + "`./photo-organizer --root /path/to/photos -x`" + `
+
+3. **Explain the output**: Help them understand what happened, including:
+   - How many files were found
+   - How many duplicates were skipped
+   - Where files were organized to
+   - Any errors or issues
+
+## Directory Structure
+
+The tool expects this structure:
+` + "```" + `
+Photos/
+├── Incoming/          ← New photos go here
+├── Originals/         ← Organized photos (YYYY/YYYY-MM-DD/)
+├── Exports/           ← Curated/edited photos
+├── _Manifest/         ← Tracking CSV
+└── photo-organizer    ← The binary
+` + "```" + `
+
+## Supported Formats
+
+- **Photos**: JPG, JPEG, PNG, GIF, HEIC, DNG, ARW, CR2, NEF, RAF
+- **Videos**: MP4, MOV, AVI, MKV
+- **Audio**: WAV, MP3 (DJI audio files)
+- **Sidecars**: LRF, XMP, JSON
+
+## Date Detection
+
+The tool tries multiple methods to determine capture dates:
+1. EXIF DateTimeOriginal (for photos)
+2. Filename patterns (DJI, Sony, generic timestamps)
+3. File modification time
+4. Current time (fallback)
+
+## Common Workflows
+
+### Quick Check
+Ask: "What would you like to do?"
+- Preview mode (default, safe)
+- Execute mode (actually move files)
+- Execute with manifest update
+
+### Preview Mode (Safe)
+` + "```bash" + `
+cd ~/Photos
+./photo-organizer
+` + "```" + `
+Shows what would happen without moving any files.
+
+### Organize Photos
+` + "```bash" + `
+cd ~/Photos
+./photo-organizer -x
+` + "```" + `
+Actually moves files from Incoming/ to Originals/YYYY/YYYY-MM-DD/
+
+### Organize + Update Manifest
+` + "```bash" + `
+cd ~/Photos
+./photo-organizer -x -m
+` + "```" + `
+Moves files AND updates the tracking CSV.
+
+### Custom Location
+` + "```bash" + `
+./photo-organizer --root /path/to/photos -x -m
+` + "```" + `
+Use a different root directory.
+
+## Tips for Users
+
+- **Always preview first**: Run without ` + "`-x`" + ` to see what will happen
+- **Duplicates are safe**: Files with the same size are automatically skipped
+- **Name conflicts**: Files with same name but different size get a numeric suffix
+- **Empty folders**: Automatically cleaned up after organizing
+- **Build first**: If the binary doesn't exist, run ` + "`./build.sh`" + ` to compile it
+
+## Error Handling
+
+If the tool fails:
+- Check that ` + "`Incoming/`" + ` directory exists
+- Verify the binary is executable: ` + "`chmod +x photo-organizer`" + `
+- If binary is missing, build it: ` + "`./build.sh`" + `
+- For permission errors, check file system permissions
+
+## Proactive Assistance
+
+When this skill is invoked:
+1. First check if the binary exists, if not suggest building it
+2. Check if Incoming directory exists and has files
+3. Offer to run in preview mode first (safest option)
+4. After organizing, offer to check the results or update manifest
+5. Suggest cleanup actions if needed
+`
+
+// installSkill creates the .claude/skills directory and installs the skill file.
+// Returns nil on success, error on failure.
+func installSkill(targetDir string) error {
+	skillDir := filepath.Join(targetDir, ".claude", "skills")
+	skillFile := filepath.Join(skillDir, "organize-photos.md")
+
+	// Check if skill already exists
+	if _, err := os.Stat(skillFile); err == nil {
+		return fmt.Errorf("skill already exists at %s", skillFile)
+	}
+
+	// Create .claude/skills directory
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %v", skillDir, err)
+	}
+
+	// Write skill file
+	if err := os.WriteFile(skillFile, []byte(skillContent), 0644); err != nil {
+		return fmt.Errorf("failed to write skill file: %v", err)
+	}
+
+	fmt.Printf("✓ Installed Claude Code skill to %s\n", skillFile)
+	fmt.Println("\nYou can now use the skill in Claude Code by running:")
+	fmt.Println("  /organize-photos")
+	return nil
+}
+
+// =============================================================================
 // Main Entry Point
 // =============================================================================
 
@@ -599,6 +750,7 @@ func main() {
 	updateManifestFlag := flag.Bool("update-manifest", false, "Update the manifest CSV after organizing")
 	updateManifestShort := flag.Bool("m", false, "Update manifest (short for --update-manifest)")
 	rootDir := flag.String("root", "", "Photo library root directory (default: current directory)")
+	installSkillFlag := flag.Bool("install-skill", false, "Install Claude Code skill to .claude/skills/")
 
 	// Custom usage message
 	flag.Usage = func() {
@@ -608,13 +760,32 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  %s              # Preview (dry-run, default)\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -x           # Execute file moves\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -x -m        # Execute and update manifest\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s --root /path # Use custom root directory\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s                  # Preview (dry-run, default)\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -x               # Execute file moves\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -x -m            # Execute and update manifest\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --root /path     # Use custom root directory\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --install-skill  # Install Claude Code skill\n", os.Args[0])
 	}
 
 	flag.Parse()
+
+	// Handle skill installation
+	if *installSkillFlag {
+		targetDir := *rootDir
+		if targetDir == "" {
+			var err error
+			targetDir, err = os.Getwd()
+			if err != nil {
+				fmt.Println("Error getting current directory:", err)
+				os.Exit(1)
+			}
+		}
+		if err := installSkill(targetDir); err != nil {
+			fmt.Printf("Error installing skill: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	// Combine short and long flags
 	doExecute := *execute || *executeShort
