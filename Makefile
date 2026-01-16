@@ -146,6 +146,7 @@ install-skill: build
 	@./$(BINARY_NAME) --install-skill
 	@mkdir -p bin
 	@cp $(BINARY_NAME) bin/$(BINARY_NAME)
+	@chmod +x bin/$(BINARY_NAME)
 	@echo "✓ Copied binary to bin/$(BINARY_NAME)"
 	@echo ""
 	@echo "Skill installed! Use it in Claude Code with:"
