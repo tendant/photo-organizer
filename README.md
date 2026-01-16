@@ -85,3 +85,20 @@ Photos/
 **Audio:** WAV, MP3 (DJI audio files)
 
 **Sidecars:** LRF, XMP, JSON
+
+## Claude Code Integration
+
+This project includes a Claude Code skill for interactive photo organization. If you have [Claude Code](https://docs.anthropic.com/claude-code) installed, you can use:
+
+```bash
+# In Claude Code CLI
+/organize-photos
+```
+
+The skill will guide you through:
+- Previewing photos to be organized
+- Running the organizer in safe or execute mode
+- Updating the manifest
+- Troubleshooting any issues
+
+The skill is defined in `.claude/skills/organize-photos.md` and provides intelligent assistance for managing your photo library.
