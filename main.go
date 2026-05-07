@@ -198,37 +198,37 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string) error
 		return err
 	}
 
-	// Load existing entries keyed by relative path
-	existing := make(map[string][]string)
-	var headers []string
+	// Always use the current header definition — never preserve old headers.
+	headers := []string{
+		"filename",
+		"relative_path",
+		"file_size_bytes",
+		"file_size_mb",
+		"file_modified",
+		"capture_date",
+		"camera_make",
+		"camera_model",
+		"file_hash",
+		"extension",
+		"scan_date",
+		"scan_path",
+	}
 
+	// Load existing entries keyed by relative path, padding rows to current width.
+	existing := make(map[string][]string)
 	if f, err := os.Open(manifestFile); err == nil {
 		r := csv.NewReader(f)
 		records, _ := r.ReadAll()
 		f.Close()
-		if len(records) > 0 {
-			headers = records[0]
-			for _, row := range records[1:] {
-				if len(row) > 1 {
-					existing[row[1]] = row
-				}
+		for _, row := range records[1:] { // skip header row
+			if len(row) < 2 {
+				continue
 			}
-		}
-	}
-
-	if len(headers) == 0 {
-		headers = []string{
-			"filename",
-			"relative_path",
-			"file_size_bytes",
-			"file_size_mb",
-			"file_modified",
-			"capture_date",
-			"camera_make",
-			"camera_model",
-			"file_hash",
-			"extension",
-			"scan_date",
+			// Pad short rows (from older manifest versions) to current column count
+			for len(row) < len(headers) {
+				row = append(row, "")
+			}
+			existing[row[1]] = row
 		}
 	}
 
@@ -249,6 +249,7 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string) error
 			fi.Hash,
 			strings.ToLower(filepath.Ext(fi.Path)),
 			time.Now().Format("2006-01-02 15:04:05"),
+			scanDir,
 		}
 		newCount++
 	}
