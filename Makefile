@@ -28,8 +28,15 @@ VERSION?=dev
 all: help
 
 # Help target
-help: build
-	@./$(BINARY_NAME)
+help:
+	@echo "photo-organizer — scan folders and analyze photo manifests across machines"
+	@echo ""
+	@echo "Commands:"
+	@echo "  scan [directory]              Scan a directory and write a manifest CSV"
+	@echo "  analyze manifest1 manifest2   Compare manifests, find cross-machine duplicates"
+	@echo ""
+	@echo "scan flags:  --root dir   --machine name"
+	@echo "analyze flags:  --csv prefix   --threshold 0.9"
 	@echo ""
 	@echo "Makefile targets:"
 	@echo "  make              - Build for current platform (default)"
