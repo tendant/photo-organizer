@@ -530,6 +530,7 @@ func manifestFilename(machine, absPath string) string {
 type ManifestStats struct {
 	New     int
 	Updated int
+	Pruned  int
 }
 
 // backupManifest copies manifestFile to _backups/<name>_YYYYMMDD_HHMMSS.csv
@@ -577,7 +578,7 @@ func backupManifest(manifestFile string) error {
 	return nil
 }
 
-func updateManifest(scanDir string, files []FileInfo, manifestFile string, machineName string) (ManifestStats, error) {
+func updateManifest(scanDir string, files []FileInfo, manifestFile string, machineName string, prune bool) (ManifestStats, error) {
 	var mstats ManifestStats
 	manifestDir := filepath.Dir(manifestFile)
 	if err := os.MkdirAll(manifestDir, 0755); err != nil {
@@ -737,6 +738,21 @@ doneLoading:
 	mstats.New = newCount
 	mstats.Updated = updatedCount
 
+	// Remove entries for files that no longer exist on disk.
+	if prune {
+		scanned := make(map[string]bool, len(files))
+		for _, fi := range files {
+			relPath, _ := filepath.Rel(scanDir, fi.Path)
+			scanned[relPath] = true
+		}
+		for relPath := range existing {
+			if !scanned[relPath] {
+				delete(existing, relPath)
+				mstats.Pruned++
+			}
+		}
+	}
+
 	if len(existing) > 100000 {
 		fmt.Fprintf(os.Stderr, "⚠  Manifest has %s entries — consider scanning subfolders separately with --root to split it up.\n",
 			formatCount(len(existing)))
@@ -789,7 +805,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ (default: ~/manifests)\n")
 	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n")
 	fmt.Fprintf(os.Stderr, "  --full-hash      hash all files fully, not just colliding ones (rarely needed)\n")
-	fmt.Fprintf(os.Stderr, "  --no-cache       recompute all hashes, ignoring cached values\n\n")
+	fmt.Fprintf(os.Stderr, "  --no-cache       recompute all hashes, ignoring cached values\n")
+	fmt.Fprintf(os.Stderr, "  --prune          remove manifest entries for files no longer on disk\n\n")
 	fmt.Fprintf(os.Stderr, "analyze flags:\n")
 	fmt.Fprintf(os.Stderr, "  --csv prefix     also write CSV output files with this filename prefix\n")
 	fmt.Fprintf(os.Stderr, "  --threshold n    folder coverage %% to flag as nearly-redundant (default: 0.9)\n\n")
@@ -828,6 +845,7 @@ func runScan(args []string) {
 	machineFlag := fs.String("machine", "", "machine label embedded in manifest (default: stable machine ID)")
 	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones (rarely needed)")
 	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values (use after hash algorithm change)")
+	pruneFlag := fs.Bool("prune", false, "remove manifest entries for files no longer on disk")
 	fs.Usage = printUsage
 	fs.Parse(flagArgs)
 
@@ -885,7 +903,7 @@ func runScan(args []string) {
 		os.Exit(1)
 	}
 
-	manifestStats, err := updateManifest(absScanDir, files, manifestFile, machineName)
+	manifestStats, err := updateManifest(absScanDir, files, manifestFile, machineName, *pruneFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
 		os.Exit(1)
@@ -908,6 +926,9 @@ func printScanSummary(s ScanStats, m ManifestStats) {
 	}
 	if s.Symlinks > 0 {
 		fmt.Printf("  Symlinks skipped:  %s\n", formatCount(s.Symlinks))
+	}
+	if m.Pruned > 0 {
+		fmt.Printf("  Pruned (deleted):  %s  (no longer on disk)\n", formatCount(m.Pruned))
 	}
 	fmt.Printf("  Total size:        %s\n", formatSize(s.TotalBytes))
 	fmt.Println("─────────────────────────────────────────────────────")
@@ -937,8 +958,9 @@ func runRescan(args []string) {
 	rootFlag := fs.String("root", "", "manifest directory (default: ~/manifests)")
 	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones")
 	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values")
+	pruneFlag := fs.Bool("prune", false, "remove manifest entries for files no longer on disk")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer rescan [--machine id] [--root dir] [--full-hash] [--no-cache]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer rescan [--machine id] [--root dir] [--full-hash] [--no-cache] [--prune]\n\n")
 		fmt.Fprintf(os.Stderr, "Re-scans all folders previously scanned on this machine.\n\n")
 		fs.PrintDefaults()
 	}
@@ -1015,7 +1037,7 @@ func runRescan(args []string) {
 			continue
 		}
 
-		manifestStats, err := updateManifest(scanDir, files, manifestFile, machine)
+		manifestStats, err := updateManifest(scanDir, files, manifestFile, machine, *pruneFlag)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing manifest: %v\n", err)
 			continue
