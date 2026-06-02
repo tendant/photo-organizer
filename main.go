@@ -16,8 +16,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rwcarlsen/goexif/exif"
@@ -158,12 +161,19 @@ func isMediaFile(ext string) bool {
 	return photoExts[ext] || videoExts[ext] || audioExts[ext] || sidecarExts[ext]
 }
 
+type rawFile struct {
+	path    string
+	size    int64
+	modTime time.Time
+}
+
 func scanDirectory(dir string) ([]FileInfo, error) {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, fmt.Errorf("directory not found: %s", dir)
 	}
 
-	var files []FileInfo
+	// Phase 1: walk the directory tree and collect file paths (fast).
+	var raw []rawFile
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -177,20 +187,46 @@ func scanDirectory(dir string) ([]FileInfo, error) {
 		if strings.HasPrefix(info.Name(), ".") || !isMediaFile(filepath.Ext(path)) {
 			return nil
 		}
-		files = append(files, FileInfo{
-			Path:        path,
-			Size:        info.Size(),
-			ModTime:     info.ModTime(),
-			CaptureDate: getFileDate(path),
-			Hash:        getFileHash(path),
-		})
-		if len(files)%100 == 0 {
-			fmt.Fprintf(os.Stderr, "\r  %s files found...", formatCount(len(files)))
-		}
+		raw = append(raw, rawFile{path, info.Size(), info.ModTime()})
 		return nil
 	})
-	fmt.Fprintf(os.Stderr, "\r  %s files found       \n", formatCount(len(files)))
-	return files, err
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(os.Stderr, "  %s files found, processing...\n", formatCount(len(raw)))
+
+	// Phase 2: extract EXIF dates and compute hashes in parallel.
+	files := make([]FileInfo, len(raw))
+	var processed atomic.Int64
+	workers := runtime.NumCPU()
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+
+	for i, rf := range raw {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, rf rawFile) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			files[i] = FileInfo{
+				Path:        rf.path,
+				Size:        rf.size,
+				ModTime:     rf.modTime,
+				CaptureDate: getFileDate(rf.path),
+				Hash:        getFileHash(rf.path),
+			}
+			n := processed.Add(1)
+			if n%100 == 0 {
+				fmt.Fprintf(os.Stderr, "\r  %s / %s processed...",
+					formatCount(int(n)), formatCount(len(raw)))
+			}
+		}(i, rf)
+	}
+	wg.Wait()
+	fmt.Fprintf(os.Stderr, "\r  %s / %s processed       \n",
+		formatCount(len(raw)), formatCount(len(raw)))
+
+	return files, nil
 }
 
 // =============================================================================
