@@ -532,6 +532,51 @@ type ManifestStats struct {
 	Updated int
 }
 
+// backupManifest copies manifestFile to _backups/<name>_YYYYMMDD_HHMMSS.csv
+// and keeps only the 5 most recent backups for that manifest.
+func backupManifest(manifestFile string) error {
+	if _, err := os.Stat(manifestFile); os.IsNotExist(err) {
+		return nil // nothing to back up yet
+	}
+
+	backupDir := filepath.Join(filepath.Dir(manifestFile), "_backups")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return err
+	}
+
+	stem := strings.TrimSuffix(filepath.Base(manifestFile), ".csv")
+	timestamp := time.Now().Format("20060102_150405")
+	dst := filepath.Join(backupDir, stem+"_"+timestamp+".csv")
+
+	src, err := os.Open(manifestFile)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, src); err != nil {
+		return err
+	}
+
+	// Prune old backups — keep only the 5 most recent for this manifest.
+	pattern := filepath.Join(backupDir, stem+"_*.csv")
+	backups, _ := filepath.Glob(pattern)
+	sort.Strings(backups)
+	const keepN = 5
+	if len(backups) > keepN {
+		for _, old := range backups[:len(backups)-keepN] {
+			os.Remove(old)
+		}
+	}
+	return nil
+}
+
 func updateManifest(scanDir string, files []FileInfo, manifestFile string, machineName string) (ManifestStats, error) {
 	var mstats ManifestStats
 	manifestDir := filepath.Dir(manifestFile)
@@ -663,6 +708,11 @@ doneLoading:
 			machineName,
 		}
 		newCount++
+	}
+
+	// Back up the existing manifest before overwriting.
+	if err := backupManifest(manifestFile); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not back up manifest: %v\n", err)
 	}
 
 	f, err := os.Create(manifestFile)
