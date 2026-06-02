@@ -21,7 +21,7 @@ LDFLAGS=-ldflags "-s -w"
 # Version info (can be overridden: make VERSION=1.0.0)
 VERSION?=dev
 
-.PHONY: all build build-all clean test install install-skill install-user help deps init
+.PHONY: all build build-all clean test install install-user help deps
 .PHONY: linux linux-amd64 linux-arm64 darwin darwin-amd64 darwin-arm64 windows
 
 # Default target
@@ -29,8 +29,15 @@ all: build
 
 # Help target
 help:
-	@echo "Photo Organizer - Makefile targets:"
+	@echo "photo-organizer — scan folders and analyze photo manifests across machines"
 	@echo ""
+	@echo "Usage:"
+	@echo "  photo-organizer [directory]               scan dir, write manifest inside it"
+	@echo "  photo-organizer scan /path --machine name scan with explicit machine label"
+	@echo "  photo-organizer analyze a.csv b.csv ...   compare manifests, find duplicates"
+	@echo "  photo-organizer analyze *.csv --csv report  also write CSV output files"
+	@echo ""
+	@echo "Makefile targets:"
 	@echo "  make              - Build for current platform (default)"
 	@echo "  make build        - Build for current platform"
 	@echo "  make build-all    - Build for all platforms (Linux, macOS, Windows)"
@@ -38,19 +45,12 @@ help:
 	@echo "  make test         - Run tests"
 	@echo "  make install      - Install to /usr/local/bin (requires sudo)"
 	@echo "  make install-user - Install to ~/bin"
-	@echo "  make init         - Initialize photo library directory structure"
-	@echo "  make install-skill- Install Claude Code skill to current directory"
 	@echo "  make deps         - Download dependencies"
 	@echo ""
 	@echo "Platform-specific builds:"
 	@echo "  make linux        - Build for Linux (amd64 + arm64)"
 	@echo "  make darwin       - Build for macOS (amd64 + arm64)"
 	@echo "  make windows      - Build for Windows (amd64)"
-	@echo ""
-	@echo "Examples:"
-	@echo "  make clean build          # Clean and rebuild"
-	@echo "  make build-all            # Build for all platforms"
-	@echo "  make install-user         # Install to ~/bin"
 
 # Download dependencies
 deps:
@@ -140,23 +140,6 @@ install-user: build
 	@echo ""
 	@echo "Make sure ~/bin is in your PATH:"
 	@echo '  export PATH="$$HOME/bin:$$PATH"'
-
-# Initialize photo library directory structure
-init: build
-	@echo "Initializing photo library structure..."
-	@./$(BINARY_NAME) --init
-
-# Install Claude Code skill to current directory
-install-skill: build
-	@echo "Installing Claude Code skill..."
-	@./$(BINARY_NAME) --install-skill
-	@mkdir -p bin
-	@cp $(BINARY_NAME) bin/$(BINARY_NAME)
-	@chmod +x bin/$(BINARY_NAME)
-	@echo "✓ Copied binary to bin/$(BINARY_NAME)"
-	@echo ""
-	@echo "Skill installed! Use it in Claude Code with:"
-	@echo "  /organize-photos"
 
 # Uninstall from system
 uninstall:
