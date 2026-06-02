@@ -25,7 +25,7 @@ VERSION?=dev
 .PHONY: linux linux-amd64 linux-arm64 darwin darwin-amd64 darwin-arm64 windows
 
 # Default target
-all: build
+all: help
 
 # Help target
 help: build
