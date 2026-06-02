@@ -296,8 +296,10 @@ func main() {
 			printUsage()
 			return
 		}
+		runScan(os.Args[1:])
+		return
 	}
-	runScan(os.Args[1:])
+	printUsage()
 }
 
 func printUsage() {
