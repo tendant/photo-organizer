@@ -183,8 +183,10 @@ func scanDirectory(dir string) ([]FileInfo, error) {
 			CaptureDate: getFileDate(path),
 			Hash:        getFileHash(path),
 		})
+		fmt.Fprintf(os.Stderr, "\r  %s files found...", formatCount(len(files)))
 		return nil
 	})
+	fmt.Fprintf(os.Stderr, "\r  %s files found       \n", formatCount(len(files)))
 	return files, err
 }
 
