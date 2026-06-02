@@ -21,7 +21,7 @@ LDFLAGS=-ldflags "-s -w"
 # Version info (can be overridden: make VERSION=1.0.0)
 VERSION?=dev
 
-.PHONY: all build build-all clean test install install-user help deps
+.PHONY: all build build-all clean test install install-user install-system help deps
 .PHONY: linux linux-amd64 linux-arm64 darwin darwin-amd64 darwin-arm64 windows
 
 # Default target
@@ -35,8 +35,8 @@ help:
 	@echo "  make build-all    - Build for all platforms (Linux, macOS, Windows)"
 	@echo "  make clean        - Remove built binaries"
 	@echo "  make test         - Run tests"
-	@echo "  make install      - Install to /usr/local/bin (requires sudo)"
-	@echo "  make install-user - Install to ~/bin"
+	@echo "  make install        - Install to ~/bin"
+	@echo "  make install-system - Install to /usr/local/bin (requires sudo)"
 	@echo "  make deps         - Download dependencies"
 	@echo ""
 	@echo "Platform-specific builds:"
@@ -113,17 +113,8 @@ clean:
 	@rm -rf $(DIST_DIR)
 	@echo "✓ Cleaned"
 
-# Install to /usr/local/bin (system-wide, requires sudo)
-install: build
-	@echo "Installing to /usr/local/bin (requires sudo)..."
-	@sudo cp $(BINARY_NAME) /usr/local/bin/
-	@sudo chmod +x /usr/local/bin/$(BINARY_NAME)
-	@echo "✓ Installed to /usr/local/bin/$(BINARY_NAME)"
-	@echo ""
-	@echo "You can now run '$(BINARY_NAME)' from anywhere"
-
 # Install to ~/bin (user-specific, no sudo required)
-install-user: build
+install: build
 	@echo "Installing to ~/bin..."
 	@mkdir -p ~/bin
 	@cp $(BINARY_NAME) ~/bin/
@@ -132,6 +123,15 @@ install-user: build
 	@echo ""
 	@echo "Make sure ~/bin is in your PATH:"
 	@echo '  export PATH="$$HOME/bin:$$PATH"'
+
+install-user: install
+
+# Install to /usr/local/bin (system-wide, requires sudo)
+install-system: build
+	@echo "Installing to /usr/local/bin (requires sudo)..."
+	@sudo cp $(BINARY_NAME) /usr/local/bin/
+	@sudo chmod +x /usr/local/bin/$(BINARY_NAME)
+	@echo "✓ Installed to /usr/local/bin/$(BINARY_NAME)"
 
 # Uninstall from system
 uninstall:
