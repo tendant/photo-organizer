@@ -791,6 +791,9 @@ func main() {
 		case "migrate":
 			runMigrate(os.Args[2:])
 			return
+		case "collect":
+			runCollect(os.Args[2:])
+			return
 		case "rescan":
 			runRescan(os.Args[2:])
 			return
@@ -812,9 +815,11 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "Commands:\n")
 	fmt.Fprintf(os.Stderr, "  scan [directory]              Scan a directory and write a manifest CSV\n")
 	fmt.Fprintf(os.Stderr, "  rescan                        Re-scan all folders previously scanned on this machine\n")
+	fmt.Fprintf(os.Stderr, "  collect --from <machine>      Pull manifests from remote machines via SSH\n")
 	fmt.Fprintf(os.Stderr, "  analyze                       Compare manifests, find cross-machine duplicates\n")
 	fmt.Fprintf(os.Stderr, "  plan --keep <machine>         Generate safe-delete script for duplicates\n")
 	fmt.Fprintf(os.Stderr, "  migrate --from <machine> --dest <path>  Copy unique files preserving folder structure\n\n")
+	fmt.Fprintf(os.Stderr, "machines config: ~/.photo-organizer-machines  (machine_id = user@host)\n\n")
 	fmt.Fprintf(os.Stderr, "scan flags:\n")
 	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ (default: ~/manifests)\n")
 	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n")
@@ -1058,5 +1063,176 @@ func runRescan(args []string) {
 		}
 
 		printScanSummary(scanStats, manifestStats)
+	}
+}
+
+// =============================================================================
+// Machines Config (~/.photo-organizer-machines)
+// =============================================================================
+
+const machinesConfigFile = ".photo-organizer-machines"
+
+// loadMachinesConfig reads ~/.photo-organizer-machines and returns a map of
+// machine_id → ssh_target. File format:
+//
+//	# comment
+//	ubuntu-max-acb605 = ubuntu@192.168.1.100
+//	nas-main          = admin@nas.local
+func loadMachinesConfig() map[string]string {
+	cfg := make(map[string]string)
+	path := filepath.Join(os.Getenv("HOME"), machinesConfigFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cfg
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		id := strings.TrimSpace(parts[0])
+		target := strings.TrimSpace(parts[1])
+		if id != "" && target != "" {
+			cfg[id] = target
+		}
+	}
+	return cfg
+}
+
+// sshTargetFor returns the SSH target for a machine ID. Falls back to the
+// machine ID itself if no entry exists (works if ~/.ssh/config has a match).
+func sshTargetFor(machineID string, cfg map[string]string) string {
+	if target, ok := cfg[machineID]; ok {
+		return target
+	}
+	return machineID
+}
+
+// saveMachinesConfig writes the machines config file, creating it if needed.
+func saveMachinesConfig(cfg map[string]string) error {
+	path := filepath.Join(os.Getenv("HOME"), machinesConfigFile)
+	var sb strings.Builder
+	sb.WriteString("# photo-organizer machines configuration\n")
+	sb.WriteString("# Format: machine_id = user@host\n")
+	sb.WriteString("# SSH connection details (port, key, etc.) go in ~/.ssh/config\n\n")
+	ids := make([]string, 0, len(cfg))
+	for id := range cfg {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		fmt.Fprintf(&sb, "%-30s = %s\n", id, cfg[id])
+	}
+	return os.WriteFile(path, []byte(sb.String()), 0644)
+}
+
+// =============================================================================
+// Collect (pull manifests from remote machines)
+// =============================================================================
+
+func runCollect(args []string) {
+	// Collect all --from values manually (flag package doesn't support
+	// repeated string flags natively).
+	var fromMachines []string
+	var remaining []string
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "--from" || args[i] == "-from") && i+1 < len(args) {
+			fromMachines = append(fromMachines, args[i+1])
+			i++
+		} else if strings.HasPrefix(args[i], "--from=") {
+			fromMachines = append(fromMachines, strings.TrimPrefix(args[i], "--from="))
+		} else {
+			remaining = append(remaining, args[i])
+		}
+	}
+
+	fs := flag.NewFlagSet("collect", flag.ExitOnError)
+	rootFlag := fs.String("root", "", "local manifest directory (default: ~/manifests)")
+	addFlag := fs.String("add", "", "register a new machine: --add machine_id=user@host")
+	listFlag := fs.Bool("list", false, "list configured machines")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect --from <machine> [--from <machine> ...]\n\n")
+		fmt.Fprintf(os.Stderr, "Pulls manifests from remote machines into ~/manifests/_Manifest/.\n")
+		fmt.Fprintf(os.Stderr, "SSH targets are looked up from ~/.photo-organizer-machines.\n\n")
+		fmt.Fprintf(os.Stderr, "Register a machine:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect --add ubuntu-max-acb605=ubuntu@192.168.1.100\n\n")
+		fmt.Fprintf(os.Stderr, "List configured machines:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect --list\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(remaining)
+
+	cfg := loadMachinesConfig()
+
+	// --add: register a new machine.
+	if *addFlag != "" {
+		parts := strings.SplitN(*addFlag, "=", 2)
+		if len(parts) != 2 {
+			fmt.Fprintln(os.Stderr, "collect: --add format is machine_id=user@host")
+			os.Exit(1)
+		}
+		id, target := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		cfg[id] = target
+		if err := saveMachinesConfig(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "collect: could not save config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Registered: %-30s → %s\n", id, target)
+		fmt.Printf("Config saved to ~/%s\n", machinesConfigFile)
+		return
+	}
+
+	// --list: show all configured machines.
+	if *listFlag {
+		if len(cfg) == 0 {
+			fmt.Fprintf(os.Stderr, "No machines configured. Add one with:\n")
+			fmt.Fprintf(os.Stderr, "  photo-organizer collect --add machine_id=user@host\n")
+			return
+		}
+		fmt.Println("Configured machines:")
+		ids := make([]string, 0, len(cfg))
+		for id := range cfg {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			fmt.Printf("  %-30s → %s\n", id, cfg[id])
+		}
+		return
+	}
+
+	if len(fromMachines) == 0 {
+		fmt.Fprintln(os.Stderr, "collect: --from <machine> is required")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	manifestRoot := *rootFlag
+	if manifestRoot == "" {
+		manifestRoot = filepath.Join(os.Getenv("HOME"), "manifests")
+	}
+	localDir := filepath.Join(manifestRoot, "_Manifest") + "/"
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "collect: cannot create local manifest dir: %v\n", err)
+		os.Exit(1)
+	}
+
+	for _, machine := range fromMachines {
+		target := sshTargetFor(machine, cfg)
+		remoteDir := target + ":~/manifests/_Manifest/"
+		fmt.Printf("Collecting from %s (%s)...\n", machine, target)
+
+		cmd := exec.Command("rsync", "-av", "--update", remoteDir, localDir)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "collect: rsync from %s failed: %v\n", target, err)
+		} else {
+			fmt.Printf("Done: %s\n\n", machine)
+		}
 	}
 }

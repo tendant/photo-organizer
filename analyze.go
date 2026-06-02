@@ -1326,16 +1326,26 @@ func runPlan(args []string) {
 
 	// Verify backup files exist — locally via os.Stat, or remotely via SSH.
 	verified, unverified := 0, 0
+	// Resolve SSH target: explicit --ssh flag, or auto-lookup from machines config.
+	sshTarget := *sshFlag
+	if sshTarget == "" && *keepFlag != "" {
+		cfg := loadMachinesConfig()
+		if t := sshTargetFor(*keepFlag, cfg); t != *keepFlag {
+			sshTarget = t
+			fmt.Fprintf(os.Stderr, "Using SSH target from machines config: %s → %s\n", *keepFlag, sshTarget)
+		}
+	}
+
 	var remoteExist map[string]bool
-	if *sshFlag != "" {
-		fmt.Fprintf(os.Stderr, "Verifying backups via SSH (%s)...\n", *sshFlag)
+	if sshTarget != "" {
+		fmt.Fprintf(os.Stderr, "Verifying backups via SSH (%s)...\n", sshTarget)
 		var paths []string
 		for _, c := range candidates {
 			for _, b := range c.Backups {
 				paths = append(paths, b.AbsPath)
 			}
 		}
-		remoteExist = sshVerifyPaths(*sshFlag, paths)
+		remoteExist = sshVerifyPaths(sshTarget, paths)
 	}
 	for i := range candidates {
 		for j := range candidates[i].Backups {
