@@ -519,29 +519,68 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 		"machine_name",
 	}
 
-	// Load existing entries keyed by relative path, padding rows to current width.
+	// Build a column index for the new (current) headers.
+	headerIdx := make(map[string]int)
+	for i, h := range headers {
+		headerIdx[h] = i
+	}
+
+	// Load existing entries, normalising each row to the current schema.
+	// Old manifests used different column names/positions; we re-map by header
+	// name so the on-disk data is always correct after the first re-scan.
 	existing := make(map[string][]string)
 	if f, err := os.Open(manifestFile); err == nil {
 		r := csv.NewReader(f)
 		records, _ := r.ReadAll()
 		f.Close()
-		for _, row := range records[1:] { // skip header row
+		if len(records) < 1 {
+			goto doneLoading
+		}
+		// Build source column index from the manifest's own header row.
+		srcIdx := make(map[string]int)
+		for i, h := range records[0] {
+			srcIdx[h] = i
+		}
+		srcCol := func(row []string, name string) string {
+			i, ok := srcIdx[name]
+			if !ok || i >= len(row) {
+				return ""
+			}
+			return row[i]
+		}
+		for _, row := range records[1:] {
 			if len(row) < 2 {
 				continue
 			}
-			// Pad short rows (from older manifest versions) to current column count
-			for len(row) < len(headers) {
-				row = append(row, "")
+			relPath := srcCol(row, "relative_path")
+			if relPath == "" {
+				continue
 			}
-			existing[row[1]] = row
+			// Resolve partial_hash: new column name, or fall back to old file_hash.
+			partialHash := srcCol(row, "partial_hash")
+			if partialHash == "" {
+				partialHash = srcCol(row, "file_hash")
+			}
+			// Rebuild row in current schema order.
+			newRow := make([]string, len(headers))
+			newRow[headerIdx["filename"]] = srcCol(row, "filename")
+			newRow[headerIdx["relative_path"]] = relPath
+			newRow[headerIdx["file_size_bytes"]] = srcCol(row, "file_size_bytes")
+			newRow[headerIdx["file_size_mb"]] = srcCol(row, "file_size_mb")
+			newRow[headerIdx["file_modified"]] = srcCol(row, "file_modified")
+			newRow[headerIdx["capture_date"]] = srcCol(row, "capture_date")
+			newRow[headerIdx["camera_make"]] = srcCol(row, "camera_make")
+			newRow[headerIdx["camera_model"]] = srcCol(row, "camera_model")
+			newRow[headerIdx["partial_hash"]] = partialHash
+			newRow[headerIdx["full_hash"]] = srcCol(row, "full_hash")
+			newRow[headerIdx["extension"]] = srcCol(row, "extension")
+			newRow[headerIdx["scan_date"]] = srcCol(row, "scan_date")
+			newRow[headerIdx["scan_path"]] = srcCol(row, "scan_path")
+			newRow[headerIdx["machine_name"]] = srcCol(row, "machine_name")
+			existing[relPath] = newRow
 		}
 	}
-
-	// Build a column index so we can find hash/hash_mode in existing rows.
-	headerIdx := make(map[string]int)
-	for i, h := range headers {
-		headerIdx[h] = i
-	}
+doneLoading:
 
 	newCount, updatedCount := 0, 0
 	for _, fi := range files {
