@@ -589,6 +589,13 @@ func runScan(args []string) {
 	}
 	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, absScanDir))
 
+	// Check write access to manifest directory before spending time scanning.
+	manifestDir := filepath.Dir(manifestFile)
+	if err := os.MkdirAll(manifestDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot create manifest directory %s: %v\n", manifestDir, err)
+		os.Exit(1)
+	}
+
 	fmt.Printf("Scanning:  %s\n", scanDir)
 	fmt.Printf("Manifest:  %s\n", manifestFile)
 	fmt.Printf("Machine:   %s\n\n", machineName)
