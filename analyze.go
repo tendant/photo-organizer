@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -1179,7 +1180,7 @@ func runPlan(args []string) {
 			flagArgs = append(flagArgs, a)
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && !strings.Contains(a, "=") {
 				name := strings.TrimLeft(a, "-")
-				if name == "keep" || name == "out" || name == "intra" || name == "keep-under" {
+				if name == "keep" || name == "out" || name == "intra" || name == "keep-under" || name == "ssh" {
 					i++
 					flagArgs = append(flagArgs, args[i])
 				}
@@ -1193,9 +1194,10 @@ func runPlan(args []string) {
 	keepFlag := fs.String("keep", "", "machine name whose copies are the authoritative backup (cross-machine mode)")
 	intraFlag := fs.String("intra", "", "machine name to deduplicate within (intra-machine mode)")
 	keepUnderFlag := fs.String("keep-under", "", "with --intra: keep copies under this path, delete others")
+	sshFlag := fs.String("ssh", "", "verify backup files exist on remote machine via SSH, e.g. user@host")
 	outFlag := fs.String("out", "", "write shell script to this file instead of stdout")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer plan --keep <machine> [manifest...]\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer plan --keep <machine> [--ssh user@host] [manifest...]\n")
 		fmt.Fprintf(os.Stderr, "       photo-organizer plan --intra <machine> [--keep-under /path] [manifest...]\n\n")
 		fmt.Fprintf(os.Stderr, "Cross-machine: generate rm commands for files backed up on --keep machine.\n")
 		fmt.Fprintf(os.Stderr, "Intra-machine: generate rm commands for confirmed duplicates within one machine.\n\n")
@@ -1271,12 +1273,30 @@ func runPlan(args []string) {
 		candidates = buildDeletePlan(sources, *keepFlag)
 	}
 
-	// Verify backup files exist on disk where accessible.
-	// Paths that can't be stat'd are marked unverified in the script.
+	// Verify backup files exist — locally via os.Stat, or remotely via SSH.
 	verified, unverified := 0, 0
+	var remoteExist map[string]bool
+	if *sshFlag != "" {
+		fmt.Fprintf(os.Stderr, "Verifying backups via SSH (%s)...\n", *sshFlag)
+		var paths []string
+		for _, c := range candidates {
+			for _, b := range c.Backups {
+				paths = append(paths, b.AbsPath)
+			}
+		}
+		remoteExist = sshVerifyPaths(*sshFlag, paths)
+	}
 	for i := range candidates {
 		for j := range candidates[i].Backups {
-			if _, err := os.Stat(candidates[i].Backups[j].AbsPath); err == nil {
+			abs := candidates[i].Backups[j].AbsPath
+			var exists bool
+			if remoteExist != nil {
+				exists = remoteExist[abs]
+			} else {
+				_, err := os.Stat(abs)
+				exists = err == nil
+			}
+			if exists {
 				verified++
 			} else {
 				candidates[i].Backups[j].Label += "  ⚠ NOT VERIFIED ON DISK"
@@ -1286,7 +1306,9 @@ func runPlan(args []string) {
 	}
 	if unverified > 0 {
 		fmt.Fprintf(os.Stderr, "\n⚠  %d backup path(s) could not be verified on disk.\n", unverified)
-		fmt.Fprintf(os.Stderr, "   Re-scan the keep machine and verify paths are mounted before running the script.\n")
+		if *sshFlag == "" {
+			fmt.Fprintf(os.Stderr, "   Use --ssh user@host to verify remote paths, or ensure the remote machine is mounted.\n")
+		}
 	}
 
 	out := os.Stdout
@@ -1368,6 +1390,47 @@ func runPlan(args []string) {
 // shellQuote wraps a path in single quotes, escaping any single quotes within.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// sshVerifyPaths checks whether each path exists on a remote host via a single
+// SSH connection. Returns a map of path → exists.
+func sshVerifyPaths(sshHost string, paths []string) map[string]bool {
+	result := make(map[string]bool, len(paths))
+	if len(paths) == 0 {
+		return result
+	}
+
+	// Deduplicate paths.
+	seen := make(map[string]bool)
+	var unique []string
+	for _, p := range paths {
+		if !seen[p] {
+			seen[p] = true
+			unique = append(unique, p)
+		}
+	}
+
+	// Send all paths to a single SSH session via stdin. The remote shell
+	// reads each line and prints OK or MISSING.
+	remoteScript := `while IFS= read -r f; do
+  if [ -e "$f" ]; then echo "OK:$f"; else echo "MISSING:$f"; fi
+done`
+
+	cmd := exec.Command("ssh", sshHost, remoteScript)
+	cmd.Stdin = strings.NewReader(strings.Join(unique, "\n") + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: SSH verification failed (%v) — marking all as unverified\n", err)
+		return result
+	}
+
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "OK:") {
+			result[strings.TrimPrefix(line, "OK:")] = true
+		}
+		// MISSING: paths stay false (zero value)
+	}
+	return result
 }
 
 // =============================================================================
