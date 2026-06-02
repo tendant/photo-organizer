@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -183,7 +184,9 @@ func scanDirectory(dir string) ([]FileInfo, error) {
 			CaptureDate: getFileDate(path),
 			Hash:        getFileHash(path),
 		})
-		fmt.Fprintf(os.Stderr, "\r  %s files found...", formatCount(len(files)))
+		if len(files)%100 == 0 {
+			fmt.Fprintf(os.Stderr, "\r  %s files found...", formatCount(len(files)))
+		}
 		return nil
 	})
 	fmt.Fprintf(os.Stderr, "\r  %s files found       \n", formatCount(len(files)))
@@ -193,6 +196,24 @@ func scanDirectory(dir string) ([]FileInfo, error) {
 // =============================================================================
 // Manifest
 // =============================================================================
+
+// stableMachineName returns a human-readable, stable machine identifier.
+// On macOS it prefers the user-set LocalHostName (e.g. "Leis-MacBook-Pro").
+// Falls back to the short hostname (first component only, stripping any
+// domain/Tailscale suffix like ".tail2d949.ts.net").
+func stableMachineName() string {
+	// macOS: LocalHostName is the Bonjour/user-set name, stable and readable.
+	if out, err := exec.Command("scutil", "--get", "LocalHostName").Output(); err == nil {
+		if name := strings.TrimSpace(string(out)); name != "" {
+			return name
+		}
+	}
+	// Fallback: strip domain suffix from hostname.
+	if h, err := os.Hostname(); err == nil {
+		return strings.SplitN(h, ".", 2)[0]
+	}
+	return "unknown"
+}
 
 // manifestFilename builds a unique CSV filename encoding the machine name and
 // scan path, so manifests from different machines/folders don't overwrite each
@@ -385,9 +406,7 @@ func runScan(args []string) {
 	// Resolve machine name
 	machineName := *machineFlag
 	if machineName == "" {
-		if h, err := os.Hostname(); err == nil {
-			machineName = h
-		}
+		machineName = stableMachineName()
 	}
 
 	// Determine directory to scan
