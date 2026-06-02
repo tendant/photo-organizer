@@ -13,6 +13,7 @@ import (
 	"encoding/csv"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -105,25 +106,29 @@ func getDateFromFilename(filename string) (time.Time, bool) {
 // Hashing + Date (single file open)
 // =============================================================================
 
-// processFile opens a file once, reads the first 64KB, and derives both
-// the MD5 hash and the capture date from that single read.
-func processFile(path string) (hash string, captureDate time.Time) {
+// processFile opens a file once and derives both the MD5 hash and the capture
+// date. When fullHash is true, the entire file is hashed; otherwise only the
+// first 64KB is read (fast, sufficient for dedup in practice).
+func processFile(path string, fullHash bool) (hash string, captureDate time.Time) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", getDateFallback(path)
 	}
 	defer f.Close()
 
+	// Always read the first 64KB — needed for EXIF and the partial hash.
 	buf := make([]byte, 65536)
 	n, _ := f.Read(buf)
 	buf = buf[:n]
 
 	h := md5.New()
 	h.Write(buf)
+	if fullHash {
+		io.Copy(h, f) // hash the remainder of the file
+	}
 	hash = fmt.Sprintf("%x", h.Sum(nil))
 
-	// Try EXIF from the buffered bytes (covers most JPEGs and RAWs where
-	// EXIF sits in the first few KB).
+	// Try EXIF from the first 64KB buffer.
 	if photoExts[strings.ToLower(filepath.Ext(path))] {
 		if x, err := exif.Decode(bytes.NewReader(buf)); err == nil {
 			if t, err := x.DateTime(); err == nil {
@@ -132,7 +137,6 @@ func processFile(path string) (hash string, captureDate time.Time) {
 		}
 	}
 
-	// Fallback: filename patterns then file mtime.
 	return hash, getDateFallback(path)
 }
 
@@ -151,6 +155,7 @@ type CacheEntry struct {
 	SizeBytes   int64
 	Hash        string
 	CaptureDate time.Time
+	HashMode    string // "partial" or "full"
 }
 
 // loadCache reads an existing manifest and returns a map of relPath → CacheEntry
@@ -189,7 +194,11 @@ func loadCache(manifestFile string) map[string]CacheEntry {
 		if s := col(row, "capture_date"); s != "" {
 			captureDate, _ = time.Parse("2006:01:02 15:04:05", s)
 		}
-		cache[relPath] = CacheEntry{SizeBytes: size, Hash: hash, CaptureDate: captureDate}
+		hashMode := col(row, "hash_mode")
+		if hashMode == "" {
+			hashMode = "partial" // old manifests used partial hash
+		}
+		cache[relPath] = CacheEntry{SizeBytes: size, Hash: hash, CaptureDate: captureDate, HashMode: hashMode}
 	}
 	return cache
 }
@@ -204,6 +213,7 @@ type FileInfo struct {
 	ModTime     time.Time
 	CaptureDate time.Time
 	Hash        string
+	HashMode    string // "partial" or "full"
 }
 
 func isMediaFile(ext string) bool {
@@ -217,7 +227,7 @@ type rawFile struct {
 	modTime time.Time
 }
 
-func scanDirectory(dir string, cache map[string]CacheEntry) ([]FileInfo, error) {
+func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]FileInfo, error) {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, fmt.Errorf("directory not found: %s", dir)
 	}
@@ -226,6 +236,10 @@ func scanDirectory(dir string, cache map[string]CacheEntry) ([]FileInfo, error) 
 	var raw []rawFile
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			return nil
+		}
+		// Skip symlinks — they may point outside the scan tree or cause loops.
+		if info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
 		if info.IsDir() {
@@ -256,6 +270,11 @@ func scanDirectory(dir string, cache map[string]CacheEntry) ([]FileInfo, error) 
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 
+	wantMode := "partial"
+	if fullHash {
+		wantMode = "full"
+	}
+
 	for i, rf := range raw {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -264,14 +283,14 @@ func scanDirectory(dir string, cache map[string]CacheEntry) ([]FileInfo, error) 
 			defer func() { <-sem }()
 
 			relPath, _ := filepath.Rel(dir, rf.path)
-			fi := FileInfo{Path: rf.path, Size: rf.size, ModTime: rf.modTime}
+			fi := FileInfo{Path: rf.path, Size: rf.size, ModTime: rf.modTime, HashMode: wantMode}
 
-			// Use cached hash/date if file size is unchanged.
-			if entry, ok := cache[relPath]; ok && entry.SizeBytes == rf.size {
+			// Use cached hash/date if size matches and hash mode is compatible.
+			if entry, ok := cache[relPath]; ok && entry.SizeBytes == rf.size && entry.HashMode == wantMode {
 				fi.Hash = entry.Hash
 				fi.CaptureDate = entry.CaptureDate
 			} else {
-				fi.Hash, fi.CaptureDate = processFile(rf.path)
+				fi.Hash, fi.CaptureDate = processFile(rf.path, fullHash)
 			}
 			files[i] = fi
 
@@ -420,6 +439,7 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 		"scan_date",
 		"scan_path",
 		"machine_name",
+		"hash_mode",
 	}
 
 	// Load existing entries keyed by relative path, padding rows to current width.
@@ -459,6 +479,7 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 			time.Now().Format("2006-01-02 15:04:05"),
 			scanDir,
 			machineName,
+			fi.HashMode,
 		}
 		newCount++
 	}
@@ -516,7 +537,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  analyze manifest1 manifest2   Compare manifests, find cross-machine duplicates\n\n")
 	fmt.Fprintf(os.Stderr, "scan flags:\n")
 	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ (default: ~/manifests)\n")
-	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n\n")
+	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n")
+	fmt.Fprintf(os.Stderr, "  --full-hash      hash entire file instead of first 64KB (slower, more thorough)\n\n")
 	fmt.Fprintf(os.Stderr, "analyze flags:\n")
 	fmt.Fprintf(os.Stderr, "  --csv prefix     also write CSV output files with this filename prefix\n")
 	fmt.Fprintf(os.Stderr, "  --threshold n    folder coverage %% to flag as nearly-redundant (default: 0.9)\n\n")
@@ -540,7 +562,7 @@ func runScan(args []string) {
 				// Only consume if this flag expects a value (not a bool flag).
 				// We check by whether the flag name is a known value-taking flag.
 				name := strings.TrimLeft(a, "-")
-				if name == "root" || name == "machine" {
+				if name == "root" || name == "machine" { // value-taking flags only
 					i++
 					flagArgs = append(flagArgs, args[i])
 				}
@@ -551,8 +573,9 @@ func runScan(args []string) {
 	}
 
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
-	rootFlag := fs.String("root", "", "where to write the manifest (default: same as scan directory)")
-	machineFlag := fs.String("machine", "", "machine label embedded in manifest (default: hostname)")
+	rootFlag := fs.String("root", "", "where to write the manifest (default: ~/manifests)")
+	machineFlag := fs.String("machine", "", "machine label embedded in manifest (default: stable machine ID)")
+	fullHashFlag := fs.Bool("full-hash", false, "hash entire file instead of first 64KB (slower, more thorough)")
 	fs.Usage = printUsage
 	fs.Parse(flagArgs)
 
@@ -601,7 +624,7 @@ func runScan(args []string) {
 	fmt.Printf("Machine:   %s\n\n", machineName)
 
 	cache := loadCache(manifestFile)
-	files, err := scanDirectory(absScanDir, cache)
+	files, err := scanDirectory(absScanDir, cache, *fullHashFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)

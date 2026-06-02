@@ -817,9 +817,16 @@ func runAnalyze(args []string) {
 
 	manifestPaths := posArgs
 	if len(manifestPaths) == 0 {
-		fmt.Fprintln(os.Stderr, "analyze: no manifest files specified")
-		fs.Usage()
-		os.Exit(1)
+		defaultDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
+		matches, _ := filepath.Glob(filepath.Join(defaultDir, "*.csv"))
+		if len(matches) > 0 {
+			manifestPaths = matches
+			fmt.Fprintf(os.Stderr, "No manifests specified, loading %s (%d files)\n\n", defaultDir, len(matches))
+		} else {
+			fmt.Fprintf(os.Stderr, "analyze: no manifests specified and none found in %s\n", defaultDir)
+			fs.Usage()
+			os.Exit(1)
+		}
 	}
 
 	var sources []ManifestSource
