@@ -1,0 +1,225 @@
+# Photo Organizer – Current Status & Roadmap
+
+**Last Updated:** 2026-06-02  
+**Project Stage:** Phase 3 complete (Migration planning), Phase 4 started (Machines config)
+
+---
+
+## ✅ Completed Features
+
+### Core Infrastructure
+- [x] CLI structure with subcommands (scan, analyze, plan, migrate, rescan, collect)
+- [x] Manifest CSV format with versioning and backward compatibility
+- [x] Machine ID generation and stability (`~/.photo-organizer-id`)
+- [x] Manifest backup system (keeps last 5 backups in `_backups/`)
+
+### Scanning & Hashing
+- [x] Recursive directory scanning with progress indication
+- [x] Metadata extraction (filename parsing, EXIF dates)
+- [x] Sampled partial hash (first 32KB + last 32KB of files)
+- [x] Full-file MD5 hash for confirmed duplicates
+- [x] Smart hash upgrade (files with colliding partial hashes get full hash)
+- [x] Caching system to skip re-hashing unchanged files
+- [x] `--full-hash` flag to force full hashing
+- [x] `--no-cache` flag to recompute all hashes
+- [x] File type filtering (photos, videos, audio, sidecars)
+- [x] System folder skipping (PRIVATE, THMBNL, AVF_INFO, etc.)
+- [x] Symlink detection with warnings
+
+### Rescanning
+- [x] `rescan` command to update existing manifests
+- [x] `--prune` flag with safety guard (skips if >50% would be removed)
+- [x] Per-machine rescan based on previous scan paths
+- [x] `--machine` flag to target specific machine
+- [x] `--root` flag to specify manifest directory
+
+### Analysis
+- [x] Manifest merging across multiple machines
+- [x] Duplicate group detection (confirmed vs unconfirmed)
+- [x] Unique file identification (single-machine files)
+- [x] Intra-machine duplicate detection
+- [x] Folder redundancy analysis with coverage percentages
+- [x] Stale manifest warnings (30+ days without rescan)
+- [x] Per-machine file count and size breakdown
+- [x] CSV output export
+
+### Planning & Scripts
+- [x] Cross-machine cleanup planning (`plan --keep <machine>`)
+- [x] Intra-machine deduplication (`plan --intra <machine>`)
+- [x] Safe delete script generation (all `rm` commands commented out)
+- [x] `--keep-under <path>` for intra-machine dedupe strategy
+- [x] SSH backup verification (`plan --ssh user@host`)
+- [x] Backup path flagging (verified vs unverified)
+
+### Migration
+- [x] Unique file migration planning (`migrate --from <machine>`)
+- [x] Rsync script generation with `--partial` and `--progress` flags
+- [x] Folder structure preservation
+- [x] Remote destination support (user@host:/path)
+- [x] File list management via `/tmp`
+- [x] Re-run safety (rsync skips completed files)
+
+### Configuration & Metadata
+- [x] Machines config file for machine metadata
+- [x] `collect` subcommand to gather manifests
+
+---
+
+## 🔄 In Progress / Known Gaps
+
+### Testing & Quality
+- [ ] Comprehensive test coverage for edge cases
+  - Large file handling (>10GB)
+  - Deep directory trees (1000+ levels)
+  - Special characters in filenames
+  - Concurrent manifest writes
+  - Manifest corruption recovery
+- [ ] Integration tests for end-to-end workflows
+- [ ] Performance benchmarking on real datasets
+
+### Documentation
+- [ ] Detailed API documentation for internals
+- [ ] Troubleshooting guide
+- [ ] Examples for common workflows
+- [ ] Video walkthrough
+
+### Edge Cases & Robustness
+- [ ] Handle interrupted transfers in migrate command
+- [ ] Better error messages for SSH connection failures
+- [ ] Validation of CSV manifest integrity
+- [ ] Recovery from corrupted manifest files
+- [ ] Handle disk space exhaustion during scanning
+
+---
+
+## 📋 Potential Future Features (Priority Order)
+
+### High Priority
+1. **SQLite backend** — Replace CSV for faster queries on large manifests
+   - Index by full_hash for O(1) lookups
+   - Index by machine_id, scan_date for freshness queries
+   - Atomic transactions for consistency
+
+2. **Perceptual hashing** — Detect near-duplicate photos
+   - Use image fingerprinting (dhash, phash)
+   - Detect re-encoded videos, rotated images
+   - Useful for finding subtle duplicates missed by full hash
+
+3. **Web UI** — Browser-based visualization
+   - Duplicate group explorer
+   - Machine inventory dashboard
+   - Risk visualization (unique-at-risk files)
+   - Plan review interface before running scripts
+
+### Medium Priority
+4. **Parallel scanning workers** — Distribute scanning across machines via SSH
+5. **Face recognition** — Group photos by people
+6. **Smart organization** — Organize by date, event, camera, location (EXIF)
+7. **Incremental cleanup** — Interactive duplicate selection instead of scripts
+8. **Compression analysis** — Estimate space savings from cleanup
+
+### Low Priority (Nice-to-Have)
+9. **Cloud storage integration** — Scan Google Photos, Dropbox, iCloud
+10. **Distributed backend** — PostgreSQL for team photo libraries
+11. **AI tagging** — Auto-generate labels from image content
+12. **Deduplication verification** — Cryptographic proof of deletion
+
+---
+
+## 🐛 Known Issues & Workarounds
+
+### Current Limitations
+- **CSV scaling** — Slow on manifests >1M files (use SQLite for production)
+- **SSH over slow connections** — `plan --ssh` may timeout on high-latency links
+- **No automatic cleanup** — Requires manual script review (by design, for safety)
+- **Windows symlinks** — May behave unexpectedly on Windows
+- **iCloud photos** — Can't scan iCloud Photos Library directly (need manual export)
+
+### Workarounds
+- For very large manifests: Consider splitting into per-volume scans
+- For SSH timeouts: Use `--timeout` flag (needs implementation)
+- For Windows: Use WSL2 for consistent symlink handling
+
+---
+
+## 🚀 Recommended Next Steps (Short-term)
+
+### 1. Improve Test Coverage
+- Add test cases for manifest corruption scenarios
+- Test concurrent manifest writes
+- Test with real large datasets (100K+ files)
+- **Effort:** 2-3 days
+
+### 2. SQLite Migration (Optional but Recommended)
+- Design schema (machines, manifests, files, duplicates)
+- Implement CSV→SQLite import
+- Update analyze/plan to use SQLite
+- **Effort:** 3-5 days
+- **Payoff:** 10-100x faster queries on large datasets
+
+### 3. Web UI Prototype
+- Simple React dashboard
+- Duplicate group browser
+- Script preview before execution
+- **Effort:** 4-7 days
+- **Payoff:** Much safer user experience
+
+### 4. Edge Case Fixes
+- Handle partial manifest corruption
+- Better SSH error handling
+- Disk space checks before operations
+- **Effort:** 1-2 days
+
+---
+
+## 📊 Architecture Notes
+
+### Current Design Decisions
+- **Append-only manifests:** Preserves history, enables rollback
+- **CSV format:** Human-readable, easy to debug, versioned for compatibility
+- **Sampled hashing:** 99.9% accuracy with 1000x faster scanning than full hash
+- **Commented-out deletes:** Forces review, prevents accidental data loss
+- **SSH verification:** Ensures backup files actually exist before cleanup
+
+### Scalability Limits (Current CSV-based)
+- 1M files: ~1 second load time
+- 10M files: ~10 seconds load time
+- 100M files: Not practical (need SQLite or database)
+
+### Suggested Optimizations
+1. Index manifests by full_hash for O(1) duplicate detection
+2. Cache duplicate groups between runs
+3. Parallelize file list generation in migrate
+4. Stream manifest reads instead of loading into memory
+
+---
+
+## 🎯 Success Criteria
+
+The tool is successful when:
+- ✅ Users can discover 90%+ of duplicate files across multiple machines
+- ✅ No accidental data loss (all deletes require explicit review)
+- ✅ Manifests remain accurate after months of rescans
+- ✅ Handles photo libraries 100K+ files without manual intervention
+- ✅ SSH-based backup verification works reliably
+- ✅ Migration scripts can resume after interruption
+
+---
+
+## 🔐 Safety Guarantees (Maintained)
+
+1. **Never delete without backup verification**
+   - All cleanup scripts have `rm` commands commented out
+   - `plan --ssh` verifies files exist before suggesting deletion
+   - Users must manually uncomment each `rm` before running
+
+2. **Manifest integrity**
+   - Automatic backups before every write (last 5 retained)
+   - CSV versioning for backward compatibility
+   - Append-only design preserves history
+
+3. **Distributed safety**
+   - Works with disconnected drives (manifest caching)
+   - Handles machines offline for weeks
+   - No single point of failure
+
