@@ -343,20 +343,19 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 		fmt.Sprintf("%s / %s processed", formatCount(len(raw)), formatCount(len(raw))))
 	stats.Cached = int(cachedCount.Load())
 
-	// Phase 3: always upgrade files whose partial hash collides with at least
-	// one other file in this scan to a full-file hash. This eliminates false
-	// positives from cameras whose videos share identical first-64KB headers.
-	// --full-hash additionally upgrades all remaining partial-hash files.
-	// Phase 3: compute full hash for files whose partial hash collides with
-	// at least one other file, and for all files when --full-hash is set.
-	byPartial := make(map[string][]int)
+	// Phase 3: compute full hash only for files that share BOTH the same
+	// partial hash AND the same file size with at least one other file in
+	// this scan. Different sizes can never be duplicates regardless of
+	// partial hash match. --full-hash upgrades all remaining files too.
+	byKey := make(map[string][]int)
 	for i, fi := range files {
-		if fi.FullHash == "" { // skip files already full-hashed from cache
-			byPartial[fi.PartialHash] = append(byPartial[fi.PartialHash], i)
+		if fi.FullHash == "" {
+			k := indexKey(fi.PartialHash, fi.Size)
+			byKey[k] = append(byKey[k], i)
 		}
 	}
 	var upgradeIdx []int
-	for _, indices := range byPartial {
+	for _, indices := range byKey {
 		if len(indices) >= 2 || fullHash {
 			upgradeIdx = append(upgradeIdx, indices...)
 		}
