@@ -266,7 +266,8 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 		}
 		// Skip symlinks — they may point outside the scan tree or cause loops.
 		if info.Mode()&os.ModeSymlink != 0 {
-			fmt.Fprintf(os.Stderr, "  skipping symlink: %s\n", path)
+			// Clear the current progress line before printing the warning.
+			fmt.Fprintf(os.Stderr, "\r%-80s\n  skipping symlink: %s\n", "", path)
 			stats.Symlinks++
 			return nil
 		}
@@ -275,7 +276,12 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 				return filepath.SkipDir
 			}
 			rel, _ := filepath.Rel(dir, path)
-			fmt.Fprintf(os.Stderr, "\r  %-78s", "walking: "+rel)
+			// Truncate long paths so they don't overflow the line width.
+			label := "walking: " + rel
+			if len(label) > 78 {
+				label = "walking: ..." + rel[len(rel)-65:]
+			}
+			fmt.Fprintf(os.Stderr, "\r  %-78s", label)
 			return nil
 		}
 		if strings.HasPrefix(info.Name(), ".") || !isMediaFile(filepath.Ext(path)) {
