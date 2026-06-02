@@ -194,6 +194,37 @@ func scanDirectory(dir string) ([]FileInfo, error) {
 // Manifest
 // =============================================================================
 
+// manifestFilename builds a unique CSV filename encoding the machine name and
+// scan path, so manifests from different machines/folders don't overwrite each
+// other when collected in the same directory.
+// Example: photo_manifest_macbook-pro_Users_lei_Photos.csv
+func manifestFilename(machine, absPath string) string {
+	// Sanitize: replace path separators and non-alphanumeric chars with underscores.
+	sanitize := func(s string) string {
+		var b strings.Builder
+		for _, r := range s {
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
+				b.WriteRune(r)
+			} else {
+				b.WriteByte('_')
+			}
+		}
+		// Collapse consecutive underscores and trim leading/trailing ones.
+		result := strings.Trim(b.String(), "_")
+		for strings.Contains(result, "__") {
+			result = strings.ReplaceAll(result, "__", "_")
+		}
+		return result
+	}
+	m := sanitize(machine)
+	p := sanitize(absPath)
+	// Cap total length to keep filenames reasonable.
+	if len(p) > 60 {
+		p = p[len(p)-60:]
+	}
+	return fmt.Sprintf("photo_manifest_%s_%s.csv", m, p)
+}
+
 func updateManifest(scanDir string, files []FileInfo, manifestFile string, machineName string) error {
 	manifestDir := filepath.Dir(manifestFile)
 	if err := os.MkdirAll(manifestDir, 0755); err != nil {
@@ -373,24 +404,30 @@ func runScan(args []string) {
 		}
 	}
 
+	// Resolve scanDir to an absolute path for stable manifest naming.
+	absScanDir, err := filepath.Abs(scanDir)
+	if err != nil {
+		absScanDir = scanDir
+	}
+
 	// Determine where manifest is written
 	manifestRoot := *rootFlag
 	if manifestRoot == "" {
-		manifestRoot = scanDir
+		manifestRoot = absScanDir
 	}
-	manifestFile := filepath.Join(manifestRoot, "_Manifest", "photo_manifest.csv")
+	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, absScanDir))
 
 	fmt.Printf("Scanning:  %s\n", scanDir)
 	fmt.Printf("Manifest:  %s\n", manifestFile)
 	fmt.Printf("Machine:   %s\n\n", machineName)
 
-	files, err := scanDirectory(scanDir)
+	files, err := scanDirectory(absScanDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 
-	if err := updateManifest(scanDir, files, manifestFile, machineName); err != nil {
+	if err := updateManifest(absScanDir, files, manifestFile, machineName); err != nil {
 		fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
 		os.Exit(1)
 	}

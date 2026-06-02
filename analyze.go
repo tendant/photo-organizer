@@ -115,14 +115,15 @@ func readManifest(csvPath string) (ManifestSource, error) {
 		}
 	}
 	if machine == "" {
-		// Use filename stem, stripping common prefixes like "photo_manifest_"
+		// Derive from filename: photo_manifest_<machine>_<path>.csv → first segment after prefix.
 		stem := strings.TrimSuffix(filepath.Base(csvPath), filepath.Ext(csvPath))
 		stem = strings.TrimPrefix(stem, "photo_manifest_")
 		stem = strings.TrimPrefix(stem, "photo_manifest")
-		if stem == "" {
-			stem = filepath.Base(csvPath)
+		if parts := strings.SplitN(stem, "_", 2); len(parts) >= 1 && parts[0] != "" {
+			machine = parts[0]
+		} else {
+			machine = filepath.Base(csvPath)
 		}
-		machine = stem
 	}
 
 	label := machine
