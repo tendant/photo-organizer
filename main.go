@@ -2,9 +2,9 @@
 //
 // Usage:
 //
-//	photo-organizer [directory]           # scan directory, write manifest inside it
-//	photo-organizer                       # scan current directory
-//	photo-organizer /photos --root /other # scan /photos, write manifest to /other/_Manifest/
+//	photo-organizer [directory]            scan directory, manifest written inside it
+//	photo-organizer scan [directory]       explicit scan subcommand
+//	photo-organizer analyze a.csv b.csv    compare manifests across machines
 package main
 
 import (
@@ -192,7 +192,7 @@ func scanDirectory(dir string) ([]FileInfo, error) {
 // Manifest
 // =============================================================================
 
-func updateManifest(scanDir string, files []FileInfo, manifestFile string) error {
+func updateManifest(scanDir string, files []FileInfo, manifestFile string, machineName string) error {
 	manifestDir := filepath.Dir(manifestFile)
 	if err := os.MkdirAll(manifestDir, 0755); err != nil {
 		return err
@@ -212,6 +212,7 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string) error
 		"extension",
 		"scan_date",
 		"scan_path",
+		"machine_name",
 	}
 
 	// Load existing entries keyed by relative path, padding rows to current width.
@@ -250,6 +251,7 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string) error
 			strings.ToLower(filepath.Ext(fi.Path)),
 			time.Now().Format("2006-01-02 15:04:05"),
 			scanDir,
+			machineName,
 		}
 		newCount++
 	}
@@ -278,24 +280,86 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string) error
 }
 
 // =============================================================================
-// Main
+// Main / Subcommand Dispatch
 // =============================================================================
 
 func main() {
-	rootFlag := flag.String("root", "", "where to write the manifest (default: same as scan directory)")
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "photo-organizer — scan a folder and generate a photo manifest\n\n")
-		fmt.Fprintf(os.Stderr, "Usage:\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer [directory]            scan directory, manifest written inside it\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer                        scan current directory\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer /photos --root /other  scan /photos, manifest in /other/_Manifest/\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "analyze":
+			runAnalyze(os.Args[2:])
+			return
+		case "scan":
+			// Strip the subcommand word and fall through to runScan
+			os.Args = append(os.Args[:1], os.Args[2:]...)
+		case "help", "--help", "-h":
+			printUsage()
+			return
+		}
 	}
-	flag.Parse()
+	runScan(os.Args[1:])
+}
+
+func printUsage() {
+	fmt.Fprintf(os.Stderr, "photo-organizer — scan folders and analyze photo manifests across machines\n\n")
+	fmt.Fprintf(os.Stderr, "Commands:\n")
+	fmt.Fprintf(os.Stderr, "  scan [directory]              Scan a directory and write a manifest CSV\n")
+	fmt.Fprintf(os.Stderr, "  analyze manifest1 manifest2   Compare manifests, find cross-machine duplicates\n\n")
+	fmt.Fprintf(os.Stderr, "scan flags:\n")
+	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ instead of scan dir\n")
+	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: hostname)\n\n")
+	fmt.Fprintf(os.Stderr, "analyze flags:\n")
+	fmt.Fprintf(os.Stderr, "  --csv prefix     also write CSV output files with this filename prefix\n")
+	fmt.Fprintf(os.Stderr, "  --threshold n    folder coverage %% to flag as nearly-redundant (default: 0.9)\n\n")
+	fmt.Fprintf(os.Stderr, "Examples:\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer /Volumes/SSD\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer scan /Volumes/SSD --machine nas-main\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer analyze macbook.csv nas.csv laptop.csv\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer analyze *.csv --csv report\n")
+}
+
+func runScan(args []string) {
+	// Separate flag args from the positional directory argument so that
+	// both orderings work: --machine foo /dir  and  /dir --machine foo
+	var flagArgs, posArgs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flagArgs = append(flagArgs, a)
+			// Peek ahead: if next arg is the flag value (not another flag), consume it too.
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && !strings.Contains(a, "=") {
+				// Only consume if this flag expects a value (not a bool flag).
+				// We check by whether the flag name is a known value-taking flag.
+				name := strings.TrimLeft(a, "-")
+				if name == "root" || name == "machine" {
+					i++
+					flagArgs = append(flagArgs, args[i])
+				}
+			}
+		} else {
+			posArgs = append(posArgs, a)
+		}
+	}
+
+	fs := flag.NewFlagSet("scan", flag.ExitOnError)
+	rootFlag := fs.String("root", "", "where to write the manifest (default: same as scan directory)")
+	machineFlag := fs.String("machine", "", "machine label embedded in manifest (default: hostname)")
+	fs.Usage = printUsage
+	fs.Parse(flagArgs)
+
+	// Resolve machine name
+	machineName := *machineFlag
+	if machineName == "" {
+		if h, err := os.Hostname(); err == nil {
+			machineName = h
+		}
+	}
 
 	// Determine directory to scan
-	scanDir := flag.Arg(0)
+	scanDir := ""
+	if len(posArgs) > 0 {
+		scanDir = posArgs[0]
+	}
 	if scanDir == "" {
 		var err error
 		scanDir, err = os.Getwd()
@@ -312,8 +376,9 @@ func main() {
 	}
 	manifestFile := filepath.Join(manifestRoot, "_Manifest", "photo_manifest.csv")
 
-	fmt.Printf("Scanning: %s\n", scanDir)
-	fmt.Printf("Manifest: %s\n\n", manifestFile)
+	fmt.Printf("Scanning:  %s\n", scanDir)
+	fmt.Printf("Manifest:  %s\n", manifestFile)
+	fmt.Printf("Machine:   %s\n\n", machineName)
 
 	files, err := scanDirectory(scanDir)
 	if err != nil {
@@ -321,7 +386,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := updateManifest(scanDir, files, manifestFile); err != nil {
+	if err := updateManifest(scanDir, files, manifestFile, machineName); err != nil {
 		fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
 		os.Exit(1)
 	}
