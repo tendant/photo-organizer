@@ -1,6 +1,6 @@
 # photo-organizer
 
-Scan photo and video folders across multiple machines, find duplicates, and generate safe-delete plans. Non-destructive — never moves or deletes files.
+Scan photo and video folders across multiple machines, find duplicates, and safely migrate or clean up files. Non-destructive — never moves or deletes files unless you explicitly run a generated script.
 
 ## Installation
 
@@ -39,20 +39,45 @@ photo-organizer analyze *.csv --csv report       # also write CSV output files
 ```
 
 The report shows:
-- **Machine summaries** — file counts, total size, unique vs duplicated
-- **Duplicate groups** — files that exist on 2+ machines (sorted by size)
+- **Machine summaries** — file counts, total size, unique vs duplicated per machine
+- **Stale manifest warnings** — sources not scanned in 30+ days
+- **Duplicate groups** — files that exist on 2+ machines (sorted by size, confirmed vs unconfirmed)
 - **Unique files** — files only on one machine (at risk if that machine fails)
-- **Intra-machine duplicates** — same file in multiple folders on one machine, with paths
+- **Intra-machine duplicates** — same file in multiple folders, confirmed vs unconfirmed
 - **Folder redundancy** — per-folder coverage %, flagging fully/nearly-redundant folders
 
 ### 4. Plan safe deletes
 
 ```bash
-photo-organizer plan --keep nas-main             # what can be removed from other machines
-photo-organizer plan --keep nas-main --out cleanup.sh
+# Cross-machine: delete copies from other machines, keep on ubuntu
+photo-organizer plan --keep ubuntu-max-acb605 --ssh ubuntu-max-acb605 --out cleanup.sh
+
+# Intra-machine: delete duplicates within one machine
+photo-organizer plan --intra Ls-MBP-967e82 --keep-under ~/Photos/Originals --out intra.sh
+
+# Review (all rm commands are commented out), then run
+bash cleanup.sh
 ```
 
-Generates a shell script of `rm` commands for files confirmed to exist on the `--keep` machine. Backup paths are verified on disk where accessible. All commands are **commented out** — review before running.
+### 5. Migrate unique files to another machine
+
+```bash
+photo-organizer migrate --from Ls-MBP-967e82 \
+  --dest ubuntu@server:/tankm1/incoming \
+  --out migrate.sh
+
+bash migrate.sh   # safe to re-run — rsync skips completed files
+```
+
+### 6. Keep manifests fresh
+
+```bash
+photo-organizer rescan               # re-scan all previously scanned folders
+photo-organizer rescan --prune       # also remove entries for deleted files
+photo-organizer rescan --no-cache    # recompute all hashes (after algorithm change)
+```
+
+---
 
 ## Commands
 
@@ -64,14 +89,35 @@ photo-organizer scan [directory] [flags]
 Flags:
   --root dir        write manifest to dir/_Manifest/  (default: ~/manifests)
   --machine name    machine label in manifest          (default: stable hardware ID)
-  --full-hash       full-file hash for colliding files (default: first 64KB only)
+  --full-hash       hash all files fully, not just colliding ones (rarely needed)
+  --no-cache        recompute all hashes, ignoring cached values
+  --prune           remove manifest entries for files no longer on disk
 ```
 
 - Skips dot-folders, system dirs (`PRIVATE`, `THMBNL`, `AVF_INFO`, etc.), and symlinks (with warning)
 - Caches results: repeat scans are near-instant when files haven't changed
-- Captures date from EXIF → filename patterns → file modification time
+- **Sampled hash**: reads first 32KB + last 32KB per file — captures both header and image data, dramatically reducing false collisions for RAW/HIF files from the same camera
+- Automatically upgrades files with colliding partial hashes to full MD5
 - Progress: shows current folder during walk, then X/Y processed
-- Summary: files found, cached, new, upgraded, symlinks skipped, total size
+- Summary: files found, cached, new entries, hash upgrades, pruned, symlinks skipped, total size
+- Backs up manifest before every write (keeps last 5 backups in `_backups/`)
+
+### `rescan`
+
+```
+photo-organizer rescan [flags]
+
+Flags:
+  --machine id      rescan paths for this machine ID (default: current machine)
+  --root dir        manifest directory (default: ~/manifests)
+  --full-hash       hash all files fully, not just colliding ones
+  --no-cache        recompute all hashes, ignoring cached values
+  --prune           remove entries for deleted files (skips if >50% would be removed)
+```
+
+Reads all manifests in `~/manifests/_Manifest/`, finds unique scan paths for the current machine, and re-scans each one. Skips paths that no longer exist on disk.
+
+**Prune safety**: if `--prune` would remove more than 50% of a manifest's entries (e.g. volume is unmounted), pruning is skipped with a warning for that path.
 
 ### `analyze [manifest...]`
 
@@ -85,24 +131,44 @@ Flags:
 
 Auto-loads `~/manifests/_Manifest/*.csv` when no manifests are specified.
 
-Detects and handles overlapping parent/child scans on the same machine — shared files are never falsely reported as duplicates.
+- Detects overlapping parent/child scans — shared files are never falsely reported as duplicates
+- Warns when any source hasn't been scanned in 30+ days
+- Duplicate groups marked **CONFIRMED** (full hash match) vs **UNCONFIRMED** (partial hash only — re-scan to resolve)
 
-### `plan --keep <machine> [manifest...]`
+### `plan --keep <machine> | --intra <machine>`
 
 ```
-photo-organizer plan --keep <machine> [manifest...] [flags]
+photo-organizer plan --keep <machine> [--ssh user@host] [--out file] [manifest...]
+photo-organizer plan --intra <machine> [--keep-under /path] [--out file] [manifest...]
 
 Flags:
-  --keep machine    authoritative machine to keep (required)
+  --keep machine      cross-machine: keep copies on this machine, delete from others
+  --intra machine     intra-machine: deduplicate files within this machine
+  --keep-under path   with --intra: keep copies under this path, delete others
+  --ssh user@host     verify backup files exist on remote machine via SSH
+  --out file          write script to file instead of stdout
+```
+
+Safety guarantees:
+- **Cross-machine**: only files confirmed on the keep machine are included
+- **Intra-machine**: only files with matching full hashes (confirmed identical) are included
+- Backup paths are stat'd on disk (or via `--ssh`) — unverified paths flagged with ⚠
+- All `rm` commands are **commented out** — review before running
+
+### `migrate --from <machine> --dest <path>`
+
+```
+photo-organizer migrate --from <machine> --dest <dest-root> [--out file] [manifest...]
+
+Flags:
+  --from machine    source machine to copy unique files from (required)
+  --dest path       destination root, e.g. user@host:/path or /local/path (required)
   --out file        write script to file instead of stdout
 ```
 
-Auto-loads `~/manifests/_Manifest/*.csv` when no manifests are specified.
+Generates a bash script using `rsync --partial --progress --files-from` to copy files unique to `--from` to `--dest`, preserving folder structure. Groups files by source scan path. Re-running is safe — rsync skips already-complete files.
 
-Safety guarantees:
-- Files unique to any machine are never included
-- Backup paths are stat'd on disk — unverified paths are flagged with ⚠
-- All `rm` commands are commented out — nothing executes automatically
+---
 
 ## Machine identity
 
@@ -113,11 +179,30 @@ Ls-MBP-967e82
 ubuntu-server-acb605
 ```
 
-Stored in `~/.photo-organizer-id` and reused on every scan — stable across network changes, hostname renames, or Tailscale suffixes. Edit the file to rename a machine; use `--machine` to override for a single scan.
+Stored in `~/.photo-organizer-id` — stable across network changes, hostname renames, or Tailscale suffixes. Edit the file to rename a machine; use `--machine` to override for a single scan.
+
+---
+
+## Hashing
+
+Files are identified by a **sampled partial hash**: MD5 of the first 32KB + last 32KB. This captures both the camera header and actual image data, making collisions rare even for RAW/HIF files from the same camera.
+
+When two files share the same (partial hash, size), a **full-file MD5** is computed to confirm. The manifest stores both:
+
+| Column | Description |
+|--------|-------------|
+| `partial_hash` | MD5 of first+last 32KB (always computed) |
+| `full_hash` | MD5 of entire file (only when a collision is detected) |
+
+In `analyze`, duplicate groups are marked:
+- **CONFIRMED** — all copies have matching full hashes
+- **UNCONFIRMED** — partial hash only; re-scan to resolve
+
+---
 
 ## Manifest format
 
-Manifests are CSV files in `~/manifests/_Manifest/` named `photo_manifest_<machine>_<path>.csv`. One row per file:
+Manifests are CSV files in `~/manifests/_Manifest/` named `photo_manifest_<machine>_<path>.csv`.
 
 | Column | Description |
 |--------|-------------|
@@ -125,12 +210,15 @@ Manifests are CSV files in `~/manifests/_Manifest/` named `photo_manifest_<machi
 | `relative_path` | Path relative to scan root (unique key) |
 | `file_size_bytes` | File size in bytes |
 | `capture_date` | From EXIF, filename pattern, or mtime |
-| `file_hash` | MD5 of first 64KB (or full file if collision) |
-| `hash_mode` | `partial` or `full` |
+| `partial_hash` | Sampled MD5 (first+last 32KB) |
+| `full_hash` | Full-file MD5 (empty if not needed) |
+| `scan_date` | When this file was last scanned |
 | `scan_path` | Absolute path of scan root |
 | `machine_name` | Machine ID |
 
 Manifests are append-only and backward-compatible with older formats.
+
+---
 
 ## Supported file types
 
@@ -142,6 +230,8 @@ Manifests are append-only and backward-compatible with older formats.
 
 **Sidecars:** `.lrf` `.xmp` `.json`
 
+---
+
 ## Building
 
 ```bash
@@ -149,4 +239,5 @@ make            # show help
 make build      # build for current platform
 make build-all  # build for Linux, macOS, Windows
 make install    # install to ~/bin
+make test       # run tests
 ```

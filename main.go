@@ -745,10 +745,24 @@ doneLoading:
 			relPath, _ := filepath.Rel(scanDir, fi.Path)
 			scanned[relPath] = true
 		}
+		wouldPrune := 0
 		for relPath := range existing {
 			if !scanned[relPath] {
-				delete(existing, relPath)
-				mstats.Pruned++
+				wouldPrune++
+			}
+		}
+		// Safety: if pruning would remove more than 50% of existing entries,
+		// the volume is likely unmounted or empty — skip pruning and warn.
+		if len(existing) > 0 && wouldPrune*100/len(existing) > 50 {
+			fmt.Fprintf(os.Stderr, "⚠  Skipping prune: would remove %s of %s entries (>50%%).\n",
+				formatCount(wouldPrune), formatCount(len(existing)))
+			fmt.Fprintf(os.Stderr, "   Is the volume mounted? Re-run with --prune after verifying.\n")
+		} else {
+			for relPath := range existing {
+				if !scanned[relPath] {
+					delete(existing, relPath)
+					mstats.Pruned++
+				}
 			}
 		}
 	}

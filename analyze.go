@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // =============================================================================
@@ -24,6 +25,7 @@ type ManifestRow struct {
 	PartialHash  string
 	FullHash     string // empty if full hash not yet computed
 	Extension    string
+	ScanDate     string // when this file was last scanned
 	ScanPath     string
 	MachineName  string // empty on old 12-column manifests
 }
@@ -34,6 +36,7 @@ type ManifestSource struct {
 	MachineName string
 	ScanPath    string
 	Label       string // "machineName @ scanPath"
+	LastScanned string // most recent scan_date value in this manifest
 	Rows        []ManifestRow
 }
 
@@ -105,14 +108,16 @@ func readManifest(csvPath string) (ManifestSource, error) {
 			PartialHash:  partialHash,
 			FullHash:     col(row, "full_hash"),
 			Extension:    col(row, "extension"),
+			ScanDate:     col(row, "scan_date"),
 			ScanPath:     col(row, "scan_path"),
 			MachineName:  col(row, "machine_name"),
 		})
 	}
 
-	// Derive machine name: from rows, or fall back to CSV filename stem.
+	// Derive machine name, scan path, and most recent scan date from rows.
 	machine := ""
 	scanPath := ""
+	lastScanned := ""
 	for _, row := range rows {
 		if row.MachineName != "" {
 			machine = row.MachineName
@@ -120,8 +125,17 @@ func readManifest(csvPath string) (ManifestSource, error) {
 		if row.ScanPath != "" {
 			scanPath = row.ScanPath
 		}
-		if machine != "" && scanPath != "" {
+		if row.ScanDate > lastScanned {
+			lastScanned = row.ScanDate
+		}
+		if machine != "" && scanPath != "" && lastScanned != "" {
 			break
+		}
+	}
+	// Scan all rows to find the true latest scan date.
+	for _, row := range rows {
+		if row.ScanDate > lastScanned {
+			lastScanned = row.ScanDate
 		}
 	}
 	if machine == "" {
@@ -153,6 +167,7 @@ func readManifest(csvPath string) (ManifestSource, error) {
 		MachineName: machine,
 		ScanPath:    scanPath,
 		Label:       label,
+		LastScanned: lastScanned,
 		Rows:        rows,
 	}, nil
 }
@@ -558,6 +573,34 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 		for _, w2 := range warnings {
 			fmt.Fprintln(w, w2)
 		}
+	}
+
+	// Freshness check: warn about sources not scanned in 30+ days.
+	const staleThreshold = 30 * 24 * time.Hour
+	now := time.Now()
+	var stale []string
+	for _, src := range sources {
+		if src.LastScanned == "" {
+			stale = append(stale, fmt.Sprintf("  %s  (no scan date recorded)", src.Label))
+			continue
+		}
+		t, err := time.Parse("2006-01-02 15:04:05", src.LastScanned)
+		if err != nil {
+			continue
+		}
+		age := now.Sub(t)
+		if age > staleThreshold {
+			days := int(age.Hours() / 24)
+			stale = append(stale, fmt.Sprintf("  %s  (last scanned %d days ago)", src.Label, days))
+		}
+	}
+	if len(stale) > 0 {
+		fmt.Fprintln(w, "\n⚠  STALE MANIFESTS — results may not reflect current state")
+		fmt.Fprintln(w, "─────────────────────────────────────────────────────────────────")
+		for _, s := range stale {
+			fmt.Fprintln(w, s)
+		}
+		fmt.Fprintln(w, "  Run 'photo-organizer rescan' on these machines to refresh.")
 	}
 
 	// Machine Summaries
