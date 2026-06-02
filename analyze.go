@@ -24,6 +24,7 @@ type ManifestRow struct {
 	Extension    string
 	ScanPath     string
 	MachineName  string // empty on old 12-column manifests
+	HashMode     string // "partial" or "full"; empty = partial (old manifests)
 }
 
 // ManifestSource is one scan run: one CSV file = one (machine, folder) pair.
@@ -89,6 +90,10 @@ func readManifest(csvPath string) (ManifestSource, error) {
 			continue
 		}
 		size, _ := strconv.ParseInt(col(row, "file_size_bytes"), 10, 64)
+		hashMode := col(row, "hash_mode")
+		if hashMode == "" {
+			hashMode = "partial"
+		}
 		rows = append(rows, ManifestRow{
 			Filename:     col(row, "filename"),
 			RelativePath: col(row, "relative_path"),
@@ -97,6 +102,7 @@ func readManifest(csvPath string) (ManifestSource, error) {
 			Extension:    col(row, "extension"),
 			ScanPath:     col(row, "scan_path"),
 			MachineName:  col(row, "machine_name"),
+			HashMode:     hashMode,
 		})
 	}
 
@@ -301,10 +307,11 @@ func findUnique(sources []ManifestSource, idx map[string][]hashLocation) map[str
 // findIntraMachine returns groups of rows that share a hash within the same
 // machine but across different sources (folders) or different relative paths.
 type intraDupGroup struct {
-	MachineName string
-	Hash        string
-	SizeBytes   int64
-	Locations   []string // "label: relative_path"
+	MachineName   string
+	Hash          string
+	SizeBytes     int64
+	Locations     []string // "label: relative_path"
+	HashMode      string   // "partial" or "full"
 }
 
 func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) []intraDupGroup {
@@ -322,6 +329,7 @@ func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) [
 			seenAbs := make(map[string]bool)
 			var locations []string
 			var sizeBytes int64
+			hashMode := "full"
 			for _, loc := range mLocs {
 				row := sources[loc.sourceIdx].Rows[loc.rowIdx]
 				abs := absFilePath(sources[loc.sourceIdx], row)
@@ -331,6 +339,9 @@ func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) [
 				seenAbs[abs] = true
 				locations = append(locations, sources[loc.sourceIdx].Label+": "+row.RelativePath)
 				sizeBytes = row.SizeBytes
+				if row.HashMode == "partial" {
+					hashMode = "partial"
+				}
 			}
 			if len(locations) < 2 {
 				continue
@@ -341,6 +352,7 @@ func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) [
 				Hash:        hash,
 				SizeBytes:   sizeBytes,
 				Locations:   locations,
+				HashMode:    hashMode,
 			})
 		}
 	}
@@ -598,46 +610,53 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 		fmt.Fprintln(w, "  (none — all files have copies on at least one other machine)")
 	}
 
-	// Intra-machine duplicates
+	// Intra-machine duplicates — split into confirmed (full hash) and unconfirmed (partial).
 	if len(intraDups) > 0 {
-		// Sort by size descending so largest waste appears first.
 		sort.Slice(intraDups, func(i, j int) bool {
 			return intraDups[i].SizeBytes > intraDups[j].SizeBytes
 		})
-		// Group by machine for the header summary.
-		byMachine := make(map[string]struct{ count int; bytes int64 })
+
+		var confirmed, unconfirmed []intraDupGroup
 		for _, g := range intraDups {
-			e := byMachine[g.MachineName]
-			e.count++
-			e.bytes += g.SizeBytes
-			byMachine[g.MachineName] = e
-		}
-		fmt.Fprintln(w, "INTRA-MACHINE DUPLICATES  (same file in multiple folders, same machine)")
-		fmt.Fprintln(w, "─────────────────────────────────────────────────────────────────")
-		mnames := make([]string, 0, len(byMachine))
-		for m := range byMachine {
-			mnames = append(mnames, m)
-		}
-		sort.Strings(mnames)
-		for _, m := range mnames {
-			e := byMachine[m]
-			fmt.Fprintf(w, "  %s  %s groups  ~%s wasted (not a backup risk)\n",
-				m, formatCount(e.count), formatSize(e.bytes))
-		}
-		// Show top 20 groups with paths.
-		fmt.Fprintln(w)
-		limit := len(intraDups)
-		if limit > 20 {
-			limit = 20
-		}
-		for _, g := range intraDups[:limit] {
-			fmt.Fprintf(w, "  [%s]  %s\n", formatSize(g.SizeBytes), g.Hash[:12]+"...")
-			for _, loc := range g.Locations {
-				fmt.Fprintf(w, "    %s\n", loc)
+			if g.HashMode == "full" {
+				confirmed = append(confirmed, g)
+			} else {
+				unconfirmed = append(unconfirmed, g)
 			}
 		}
-		if len(intraDups) > 20 {
-			fmt.Fprintf(w, "  ... and %s more groups\n", formatCount(len(intraDups)-20))
+
+		fmt.Fprintln(w, "INTRA-MACHINE DUPLICATES  (same file in multiple folders, same machine)")
+		fmt.Fprintln(w, "─────────────────────────────────────────────────────────────────")
+
+		printIntraDupGroups := func(groups []intraDupGroup, label string) {
+			if len(groups) == 0 {
+				return
+			}
+			totalBytes := int64(0)
+			for _, g := range groups {
+				totalBytes += g.SizeBytes
+			}
+			fmt.Fprintf(w, "\n  %s (%s groups, ~%s)\n", label, formatCount(len(groups)), formatSize(totalBytes))
+			limit := len(groups)
+			if limit > 20 {
+				limit = 20
+			}
+			for _, g := range groups[:limit] {
+				fmt.Fprintf(w, "  [%s]  %s\n", formatSize(g.SizeBytes), g.Hash[:12]+"...")
+				for _, loc := range g.Locations {
+					fmt.Fprintf(w, "    %s\n", loc)
+				}
+			}
+			if len(groups) > 20 {
+				fmt.Fprintf(w, "  ... and %s more groups\n", formatCount(len(groups)-20))
+			}
+		}
+
+		printIntraDupGroups(confirmed, "CONFIRMED duplicates (full hash)")
+		if len(unconfirmed) > 0 {
+			printIntraDupGroups(unconfirmed, "UNCONFIRMED — partial hash only (may be false positives for videos)")
+			fmt.Fprintf(w, "\n  ⚠  Re-scan with --full-hash to confirm or dismiss these %s groups.\n",
+				formatCount(len(unconfirmed)))
 		}
 		fmt.Fprintln(w)
 	}

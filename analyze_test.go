@@ -20,6 +20,7 @@ func makeSource(machine, scanPath string, files []struct{ rel, hash string; size
 			Extension:    ".jpg",
 			ScanPath:     scanPath,
 			MachineName:  machine,
+			HashMode:     "full",
 		})
 	}
 	return ManifestSource{
