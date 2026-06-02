@@ -727,7 +727,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "scan flags:\n")
 	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ (default: ~/manifests)\n")
 	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n")
-	fmt.Fprintf(os.Stderr, "  --full-hash      hash all files fully, not just colliding ones (rarely needed)\n\n")
+	fmt.Fprintf(os.Stderr, "  --full-hash      hash all files fully, not just colliding ones (rarely needed)\n")
+	fmt.Fprintf(os.Stderr, "  --no-cache       recompute all hashes, ignoring cached values\n\n")
 	fmt.Fprintf(os.Stderr, "analyze flags:\n")
 	fmt.Fprintf(os.Stderr, "  --csv prefix     also write CSV output files with this filename prefix\n")
 	fmt.Fprintf(os.Stderr, "  --threshold n    folder coverage %% to flag as nearly-redundant (default: 0.9)\n\n")
@@ -764,7 +765,8 @@ func runScan(args []string) {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	rootFlag := fs.String("root", "", "where to write the manifest (default: ~/manifests)")
 	machineFlag := fs.String("machine", "", "machine label embedded in manifest (default: stable machine ID)")
-	fullHashFlag := fs.Bool("full-hash", false, "hash entire file instead of first 64KB (slower, more thorough)")
+	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones (rarely needed)")
+	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values (use after hash algorithm change)")
 	fs.Usage = printUsage
 	fs.Parse(flagArgs)
 
@@ -813,6 +815,9 @@ func runScan(args []string) {
 	fmt.Printf("Machine:   %s\n\n", machineName)
 
 	cache := loadCache(manifestFile)
+	if *noCacheFlag {
+		cache = make(map[string]CacheEntry) // discard cache — force full recompute
+	}
 	files, scanStats, err := scanDirectory(absScanDir, cache, *fullHashFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
@@ -870,8 +875,9 @@ func runRescan(args []string) {
 	machineFlag := fs.String("machine", "", "machine ID to rescan (default: current machine)")
 	rootFlag := fs.String("root", "", "manifest directory (default: ~/manifests)")
 	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones")
+	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer rescan [--machine id] [--root dir] [--full-hash]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer rescan [--machine id] [--root dir] [--full-hash] [--no-cache]\n\n")
 		fmt.Fprintf(os.Stderr, "Re-scans all folders previously scanned on this machine.\n\n")
 		fs.PrintDefaults()
 	}
@@ -939,6 +945,9 @@ func runRescan(args []string) {
 		}
 
 		cache := loadCache(manifestFile)
+		if *noCacheFlag {
+			cache = make(map[string]CacheEntry)
+		}
 		files, scanStats, err := scanDirectory(scanDir, cache, *fullHashFlag)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", scanDir, err)
