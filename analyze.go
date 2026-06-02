@@ -224,11 +224,16 @@ func overlapWarnings(sources []ManifestSource, pairs map[[2]int]bool) []string {
 // Analysis
 // =============================================================================
 
-// buildHashIndex returns hash → list of (sourceIndex, rowIndex) pairs.
-// sourceIndex indexes into sources; rowIndex into sources[i].Rows.
+// buildHashIndex returns (partial_hash|size) → list of (sourceIndex, rowIndex) pairs.
+// Including size in the key ensures hash collisions between files of different
+// sizes are never treated as duplicates.
 type hashLocation struct {
 	sourceIdx int
 	rowIdx    int
+}
+
+func indexKey(partialHash string, sizeBytes int64) string {
+	return fmt.Sprintf("%s|%d", partialHash, sizeBytes)
 }
 
 func buildHashIndex(sources []ManifestSource) map[string][]hashLocation {
@@ -238,7 +243,8 @@ func buildHashIndex(sources []ManifestSource) map[string][]hashLocation {
 			if row.PartialHash == "" {
 				continue
 			}
-			idx[row.PartialHash] = append(idx[row.PartialHash], hashLocation{si, ri})
+			key := indexKey(row.PartialHash, row.SizeBytes)
+			idx[key] = append(idx[key], hashLocation{si, ri})
 		}
 	}
 	return idx
@@ -273,7 +279,7 @@ func confirmed(locs []hashLocation, sources []ManifestSource) bool {
 
 func findDuplicates(sources []ManifestSource, idx map[string][]hashLocation) []DuplicateGroup {
 	var groups []DuplicateGroup
-	for partialHash, locs := range idx {
+	for _, locs := range idx {
 		machines := distinctMachines(locs, sources)
 		if len(machines) < 2 {
 			continue
@@ -291,8 +297,9 @@ func findDuplicates(sources []ManifestSource, idx map[string][]hashLocation) []D
 			}
 		}
 		sort.Strings(locations)
+		firstRow := sources[locs[0].sourceIdx].Rows[locs[0].rowIdx]
 		groups = append(groups, DuplicateGroup{
-			PartialHash: partialHash,
+			PartialHash: firstRow.PartialHash,
 			FullHash:    fullHash,
 			SizeBytes:   sizeBytes,
 			Locations:   locations,
@@ -403,7 +410,7 @@ func computeFolderRedundancy(sources []ManifestSource, idx map[string][]hashLoca
 			key := folderKey{si, folder}
 			totals[key]++
 
-			locs := idx[row.PartialHash]
+			locs := idx[indexKey(row.PartialHash, row.SizeBytes)]
 			for _, loc := range locs {
 				if loc.sourceIdx == si {
 					continue

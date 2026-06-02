@@ -128,6 +128,21 @@ func TestFindDuplicates(t *testing.T) {
 	}
 }
 
+func TestFindDuplicatesSameHashDifferentSize(t *testing.T) {
+	// Same partial hash, different size — must NOT be reported as duplicate.
+	mac := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+		{"IMG_001.jpg", "aaa", 100},
+	})
+	nas := makeSource("nas", "/volume1", []struct{ rel, hash string; size int64 }{
+		{"IMG_001.jpg", "aaa", 999}, // same hash, different size — hash collision
+	})
+	idx := buildHashIndex([]ManifestSource{mac, nas})
+	dups := findDuplicates([]ManifestSource{mac, nas}, idx)
+	if len(dups) != 0 {
+		t.Errorf("same hash but different size should not be a duplicate, got %d groups", len(dups))
+	}
+}
+
 func TestFindDuplicatesNone(t *testing.T) {
 	mac := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
 		{"IMG_001.jpg", "aaa", 100},
