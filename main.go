@@ -293,22 +293,79 @@ func scanDirectory(dir string, cache map[string]CacheEntry) ([]FileInfo, error) 
 // Manifest
 // =============================================================================
 
-// stableMachineName returns a human-readable, stable machine identifier.
-// On macOS it prefers the user-set LocalHostName (e.g. "Leis-MacBook-Pro").
-// Falls back to the short hostname (first component only, stripping any
-// domain/Tailscale suffix like ".tail2d949.ts.net").
-func stableMachineName() string {
-	// macOS: LocalHostName is the Bonjour/user-set name, stable and readable.
+// machineID returns a stable, unique machine identifier of the form
+// "Ls-MBP-a3f7c2". It is computed once and cached in ~/.photo-organizer-id
+// so it never changes even if the hostname is later renamed.
+func machineID() string {
+	idFile := filepath.Join(os.Getenv("HOME"), ".photo-organizer-id")
+
+	// Return cached ID if it exists.
+	if data, err := os.ReadFile(idFile); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id
+		}
+	}
+
+	// Build a new ID: short hostname + 6-char hardware UUID suffix.
+	id := buildMachineID()
+
+	// Persist it so it never changes.
+	os.WriteFile(idFile, []byte(id+"\n"), 0644)
+	return id
+}
+
+func buildMachineID() string {
+	name := localHostName()
+	suffix := hardwareUUIDSuffix()
+	if suffix == "" {
+		return name
+	}
+	return name + "-" + suffix
+}
+
+// localHostName returns the user-set computer name, falling back to the
+// short hostname (first label only, stripping domain/Tailscale suffixes).
+func localHostName() string {
+	// macOS: LocalHostName is stable and not network-dependent.
 	if out, err := exec.Command("scutil", "--get", "LocalHostName").Output(); err == nil {
 		if name := strings.TrimSpace(string(out)); name != "" {
 			return name
 		}
 	}
-	// Fallback: strip domain suffix from hostname.
 	if h, err := os.Hostname(); err == nil {
 		return strings.SplitN(h, ".", 2)[0]
 	}
 	return "unknown"
+}
+
+// hardwareUUIDSuffix returns the first 6 hex chars of the hardware UUID.
+// On macOS this comes from ioreg; on Linux from /etc/machine-id.
+func hardwareUUIDSuffix() string {
+	// macOS: line format is:  "IOPlatformUUID" = "XXXXXXXX-XXXX-..."
+	if out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if !strings.Contains(line, "IOPlatformUUID") {
+				continue
+			}
+			// Extract the value between the last pair of quotes.
+			if i := strings.LastIndex(line, "\""); i > 0 {
+				if j := strings.LastIndex(line[:i], "\""); j >= 0 {
+					uuid := line[j+1 : i]
+					raw := strings.ToLower(strings.ReplaceAll(uuid, "-", ""))
+					if len(raw) >= 6 {
+						return raw[:6]
+					}
+				}
+			}
+		}
+	}
+	// Linux
+	if data, err := os.ReadFile("/etc/machine-id"); err == nil {
+		if id := strings.TrimSpace(string(data)); len(id) >= 6 {
+			return id[:6]
+		}
+	}
+	return ""
 }
 
 // manifestFilename builds a unique CSV filename encoding the machine name and
@@ -502,7 +559,7 @@ func runScan(args []string) {
 	// Resolve machine name
 	machineName := *machineFlag
 	if machineName == "" {
-		machineName = stableMachineName()
+		machineName = machineID()
 	}
 
 	// Determine directory to scan
