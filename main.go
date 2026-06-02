@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/csv"
 	"flag"
@@ -18,6 +19,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -88,19 +90,6 @@ var datePatterns = []struct {
 	{regexp.MustCompile(`(\d{8})`), "20060102"},
 }
 
-func getExifDate(path string) (time.Time, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return time.Time{}, err
-	}
-	defer f.Close()
-	x, err := exif.Decode(f)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return x.DateTime()
-}
-
 func getDateFromFilename(filename string) (time.Time, bool) {
 	for _, p := range datePatterns {
 		if m := p.regex.FindStringSubmatch(filename); len(m) >= 2 {
@@ -112,12 +101,42 @@ func getDateFromFilename(filename string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func getFileDate(path string) time.Time {
+// =============================================================================
+// Hashing + Date (single file open)
+// =============================================================================
+
+// processFile opens a file once, reads the first 64KB, and derives both
+// the MD5 hash and the capture date from that single read.
+func processFile(path string) (hash string, captureDate time.Time) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", getDateFallback(path)
+	}
+	defer f.Close()
+
+	buf := make([]byte, 65536)
+	n, _ := f.Read(buf)
+	buf = buf[:n]
+
+	h := md5.New()
+	h.Write(buf)
+	hash = fmt.Sprintf("%x", h.Sum(nil))
+
+	// Try EXIF from the buffered bytes (covers most JPEGs and RAWs where
+	// EXIF sits in the first few KB).
 	if photoExts[strings.ToLower(filepath.Ext(path))] {
-		if t, err := getExifDate(path); err == nil {
-			return t
+		if x, err := exif.Decode(bytes.NewReader(buf)); err == nil {
+			if t, err := x.DateTime(); err == nil {
+				return hash, t
+			}
 		}
 	}
+
+	// Fallback: filename patterns then file mtime.
+	return hash, getDateFallback(path)
+}
+
+func getDateFallback(path string) time.Time {
 	if t, ok := getDateFromFilename(filepath.Base(path)); ok {
 		return t
 	}
@@ -127,21 +146,52 @@ func getFileDate(path string) time.Time {
 	return time.Now()
 }
 
-// =============================================================================
-// Hashing
-// =============================================================================
+// CacheEntry holds previously computed values for a file keyed by relative path.
+type CacheEntry struct {
+	SizeBytes   int64
+	Hash        string
+	CaptureDate time.Time
+}
 
-func getFileHash(path string) string {
-	f, err := os.Open(path)
+// loadCache reads an existing manifest and returns a map of relPath → CacheEntry
+// so unchanged files can skip re-processing.
+func loadCache(manifestFile string) map[string]CacheEntry {
+	cache := make(map[string]CacheEntry)
+	f, err := os.Open(manifestFile)
 	if err != nil {
-		return ""
+		return cache
 	}
 	defer f.Close()
-	h := md5.New()
-	buf := make([]byte, 65536)
-	n, _ := f.Read(buf)
-	h.Write(buf[:n])
-	return fmt.Sprintf("%x", h.Sum(nil))
+	r := csv.NewReader(f)
+	records, err := r.ReadAll()
+	if err != nil || len(records) < 2 {
+		return cache
+	}
+	colIdx := make(map[string]int)
+	for i, h := range records[0] {
+		colIdx[h] = i
+	}
+	col := func(row []string, name string) string {
+		i, ok := colIdx[name]
+		if !ok || i >= len(row) {
+			return ""
+		}
+		return row[i]
+	}
+	for _, row := range records[1:] {
+		relPath := col(row, "relative_path")
+		hash := col(row, "file_hash")
+		if relPath == "" || hash == "" {
+			continue
+		}
+		size, _ := strconv.ParseInt(col(row, "file_size_bytes"), 10, 64)
+		var captureDate time.Time
+		if s := col(row, "capture_date"); s != "" {
+			captureDate, _ = time.Parse("2006:01:02 15:04:05", s)
+		}
+		cache[relPath] = CacheEntry{SizeBytes: size, Hash: hash, CaptureDate: captureDate}
+	}
+	return cache
 }
 
 // =============================================================================
@@ -167,7 +217,7 @@ type rawFile struct {
 	modTime time.Time
 }
 
-func scanDirectory(dir string) ([]FileInfo, error) {
+func scanDirectory(dir string, cache map[string]CacheEntry) ([]FileInfo, error) {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, fmt.Errorf("directory not found: %s", dir)
 	}
@@ -195,10 +245,14 @@ func scanDirectory(dir string) ([]FileInfo, error) {
 	}
 	fmt.Fprintf(os.Stderr, "  %s files found, processing...\n", formatCount(len(raw)))
 
-	// Phase 2: extract EXIF dates and compute hashes in parallel.
+	// Phase 2: extract EXIF dates and compute hashes.
+	// Limit to 4 workers — more than that causes I/O contention on SSDs.
 	files := make([]FileInfo, len(raw))
 	var processed atomic.Int64
 	workers := runtime.NumCPU()
+	if workers > 4 {
+		workers = 4
+	}
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 
@@ -208,13 +262,19 @@ func scanDirectory(dir string) ([]FileInfo, error) {
 		go func(i int, rf rawFile) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			files[i] = FileInfo{
-				Path:        rf.path,
-				Size:        rf.size,
-				ModTime:     rf.modTime,
-				CaptureDate: getFileDate(rf.path),
-				Hash:        getFileHash(rf.path),
+
+			relPath, _ := filepath.Rel(dir, rf.path)
+			fi := FileInfo{Path: rf.path, Size: rf.size, ModTime: rf.modTime}
+
+			// Use cached hash/date if file size is unchanged.
+			if entry, ok := cache[relPath]; ok && entry.SizeBytes == rf.size {
+				fi.Hash = entry.Hash
+				fi.CaptureDate = entry.CaptureDate
+			} else {
+				fi.Hash, fi.CaptureDate = processFile(rf.path)
 			}
+			files[i] = fi
+
 			n := processed.Add(1)
 			if n%100 == 0 {
 				fmt.Fprintf(os.Stderr, "\r  %s / %s processed...",
@@ -476,7 +536,8 @@ func runScan(args []string) {
 	fmt.Printf("Manifest:  %s\n", manifestFile)
 	fmt.Printf("Machine:   %s\n\n", machineName)
 
-	files, err := scanDirectory(absScanDir)
+	cache := loadCache(manifestFile)
+	files, err := scanDirectory(absScanDir, cache)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
