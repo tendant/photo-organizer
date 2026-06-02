@@ -106,8 +106,12 @@ func getDateFromFilename(filename string) (time.Time, bool) {
 // Hashing + Date (single file open)
 // =============================================================================
 
-// processFile opens a file once, reads the first 64KB, and derives both the
-// partial MD5 hash and the capture date.
+const sampleSize = 32 * 1024 // 32KB per sample position
+
+// processFile computes a sampled partial hash by reading the first 32KB and
+// last 32KB of the file (64KB total). Sampling the tail captures actual image
+// data, which is unique per shot even when camera headers are identical —
+// dramatically reducing false collisions for RAW/HIF files from the same camera.
 func processFile(path string) (hash string, captureDate time.Time) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -115,17 +119,28 @@ func processFile(path string) (hash string, captureDate time.Time) {
 	}
 	defer f.Close()
 
-	buf := make([]byte, 65536)
-	n, _ := f.Read(buf)
-	buf = buf[:n]
+	// Read first 32KB — used for both the hash and EXIF extraction.
+	firstBuf := make([]byte, sampleSize)
+	firstN, _ := f.Read(firstBuf)
+	firstBuf = firstBuf[:firstN]
 
 	h := md5.New()
-	h.Write(buf)
+	h.Write(firstBuf)
+
+	// Also sample the last 32KB for files larger than 32KB.
+	if info, err := f.Stat(); err == nil && info.Size() > int64(sampleSize) {
+		lastBuf := make([]byte, sampleSize)
+		if _, err := f.Seek(-int64(sampleSize), io.SeekEnd); err == nil {
+			n, _ := f.Read(lastBuf)
+			h.Write(lastBuf[:n])
+		}
+	}
+
 	hash = fmt.Sprintf("%x", h.Sum(nil))
 
-	// Try EXIF from the first 64KB buffer.
+	// Try EXIF from the first 32KB buffer.
 	if photoExts[strings.ToLower(filepath.Ext(path))] {
-		if x, err := exif.Decode(bytes.NewReader(buf)); err == nil {
+		if x, err := exif.Decode(bytes.NewReader(firstBuf)); err == nil {
 			if t, err := x.DateTime(); err == nil {
 				return hash, t
 			}
