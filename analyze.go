@@ -148,6 +148,70 @@ func readManifest(csvPath string) (ManifestSource, error) {
 }
 
 // =============================================================================
+// Overlap Detection
+// =============================================================================
+
+// overlappingPairs returns a set of (i,j) source-index pairs where both
+// sources are on the same machine and one scan path is an ancestor of the
+// other. Files appearing in both sources are the same physical file.
+func overlappingPairs(sources []ManifestSource) map[[2]int]bool {
+	pairs := make(map[[2]int]bool)
+	sep := string(filepath.Separator)
+	for i := range sources {
+		for j := range sources {
+			if i == j {
+				continue
+			}
+			if sources[i].MachineName != sources[j].MachineName {
+				continue
+			}
+			pi := filepath.Clean(sources[i].ScanPath)
+			pj := filepath.Clean(sources[j].ScanPath)
+			if pi == pj ||
+				strings.HasPrefix(pi, pj+sep) ||
+				strings.HasPrefix(pj, pi+sep) {
+				pairs[[2]int{i, j}] = true
+			}
+		}
+	}
+	return pairs
+}
+
+// absFilePath returns the absolute path of a file given its source and row.
+// Used to identify the same physical file across overlapping scans.
+func absFilePath(src ManifestSource, row ManifestRow) string {
+	return filepath.Clean(filepath.Join(src.ScanPath, filepath.FromSlash(row.RelativePath)))
+}
+
+// overlapWarnings returns human-readable warnings for overlapping source pairs.
+func overlapWarnings(sources []ManifestSource, pairs map[[2]int]bool) []string {
+	seen := make(map[[2]int]bool)
+	var warnings []string
+	for pair := range pairs {
+		canonical := [2]int{pair[0], pair[1]}
+		if pair[0] > pair[1] {
+			canonical = [2]int{pair[1], pair[0]}
+		}
+		if seen[canonical] {
+			continue
+		}
+		seen[canonical] = true
+		i, j := canonical[0], canonical[1]
+		pi := filepath.Clean(sources[i].ScanPath)
+		pj := filepath.Clean(sources[j].ScanPath)
+		parent, child := i, j
+		if strings.HasPrefix(pi, pj+string(filepath.Separator)) {
+			parent, child = j, i
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"  %s contains %s — overlapping scans detected, shared files excluded from duplicate reports",
+			sources[parent].Label, sources[child].Label))
+	}
+	sort.Strings(warnings)
+	return warnings
+}
+
+// =============================================================================
 // Analysis
 // =============================================================================
 
@@ -243,24 +307,25 @@ type intraDupGroup struct {
 func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) []intraDupGroup {
 	var result []intraDupGroup
 	for hash, locs := range idx {
-		// Group locs by machine
 		byMachine := make(map[string][]hashLocation)
 		for _, loc := range locs {
 			m := sources[loc.sourceIdx].MachineName
 			byMachine[m] = append(byMachine[m], loc)
 		}
 		for machine, mLocs := range byMachine {
-			// Only report if there are multiple distinct (source, relPath) pairs
-			seen := make(map[string]bool)
+			// Deduplicate by absolute file path — overlapping scans produce the
+			// same physical file under different relative paths; don't report those
+			// as duplicates.
+			seenAbs := make(map[string]bool)
 			var locations []string
 			var sizeBytes int64
 			for _, loc := range mLocs {
 				row := sources[loc.sourceIdx].Rows[loc.rowIdx]
-				key := sources[loc.sourceIdx].Label + "|" + row.RelativePath
-				if seen[key] {
+				abs := absFilePath(sources[loc.sourceIdx], row)
+				if seenAbs[abs] {
 					continue
 				}
-				seen[key] = true
+				seenAbs[abs] = true
 				locations = append(locations, sources[loc.sourceIdx].Label+": "+row.RelativePath)
 				sizeBytes = row.SizeBytes
 			}
@@ -280,8 +345,8 @@ func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) [
 }
 
 func computeFolderRedundancy(sources []ManifestSource, idx map[string][]hashLocation) []FolderStats {
-	// For each source, group files by their top-level folder.
-	// A file is "covered" if its hash exists in any other source.
+	overlaps := overlappingPairs(sources)
+
 	type folderKey struct {
 		sourceIdx int
 		folder    string
@@ -297,10 +362,16 @@ func computeFolderRedundancy(sources []ManifestSource, idx map[string][]hashLoca
 
 			locs := idx[row.FileHash]
 			for _, loc := range locs {
-				if loc.sourceIdx != si {
-					covered[key]++
-					break
+				if loc.sourceIdx == si {
+					continue
 				}
+				// Don't count overlapping same-machine scans as external coverage —
+				// that would be the same physical file counted twice.
+				if overlaps[[2]int{si, loc.sourceIdx}] {
+					continue
+				}
+				covered[key]++
+				break
 			}
 		}
 	}
@@ -418,6 +489,7 @@ func fileType(ext string) string {
 const sep = "================================================================="
 
 func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
+	overlaps := overlappingPairs(sources)
 	idx := buildHashIndex(sources)
 	duplicates := findDuplicates(sources, idx)
 	uniqueByMachine := findUnique(sources, idx)
@@ -428,6 +500,14 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 	fmt.Fprintln(w, sep)
 	fmt.Fprintf(w, " PHOTO DUPLICATE ANALYSIS — %d manifest(s)\n", len(sources))
 	fmt.Fprintln(w, sep)
+
+	if warnings := overlapWarnings(sources, overlaps); len(warnings) > 0 {
+		fmt.Fprintln(w, "\nOVERLAPPING SCANS DETECTED")
+		fmt.Fprintln(w, "─────────────────────────────────────────────────────────────────")
+		for _, w2 := range warnings {
+			fmt.Fprintln(w, w2)
+		}
+	}
 
 	// Machine Summaries
 	fmt.Fprintln(w, "\nMACHINE SUMMARIES")
