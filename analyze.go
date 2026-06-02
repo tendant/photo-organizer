@@ -1121,14 +1121,22 @@ func buildIntraPlan(sources []ManifestSource, machine string, keepUnder string) 
 			continue
 		}
 
-		keepLabel := "same machine, kept at: " + keepItems[0].abs
+		// Build one BackupCopy entry per kept path so the script shows all
+		// surviving copies (important when 3+ copies exist and 2+ are kept).
+		var backups []BackupCopy
+		for _, k := range keepItems {
+			backups = append(backups, BackupCopy{
+				Label:   "kept at: " + k.abs,
+				AbsPath: k.abs,
+			})
+		}
 		for _, item := range deleteItems {
 			candidates = append(candidates, DeleteCandidate{
 				Machine:   machine,
 				ScanPath:  item.src.ScanPath,
 				RelPath:   item.row.RelativePath,
 				SizeBytes: item.row.SizeBytes,
-				Backups:   []BackupCopy{{Label: keepLabel, AbsPath: keepItems[0].abs}},
+				Backups:   backups,
 			})
 		}
 	}

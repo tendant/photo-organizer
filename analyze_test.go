@@ -284,6 +284,46 @@ func TestBuildDeletePlanKeepMachineNotInManifests(t *testing.T) {
 	}
 }
 
+func TestBuildIntraPlanThreeCopies(t *testing.T) {
+	// Same file exists in 3 folders on the same machine.
+	// Default (no --keep-under): keep first, delete 2. Both 2 deletes should
+	// list the one kept copy as backup.
+	src := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+		{"Originals/file.DNG", "aaa", 100},
+		{"Exports/file.DNG", "aaa", 100},
+		{"Archive/file.DNG", "aaa", 100},
+	})
+	plan := buildIntraPlan([]ManifestSource{src}, "mac", "")
+	if len(plan) != 2 {
+		t.Fatalf("expected 2 delete candidates for 3 copies, got %d", len(plan))
+	}
+	for _, c := range plan {
+		if len(c.Backups) != 1 {
+			t.Errorf("expected 1 backup copy listed, got %d", len(c.Backups))
+		}
+	}
+}
+
+func TestBuildIntraPlanKeepUnderMultipleKept(t *testing.T) {
+	// File exists in 3 folders; 2 are under keep-under prefix.
+	// Should delete the 1 outside the prefix, show both kept paths as backups.
+	src := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+		{"Originals/2025/file.DNG", "aaa", 100},
+		{"Originals/archive/file.DNG", "aaa", 100},
+		{"Exports/file.DNG", "aaa", 100}, // outside keep-under
+	})
+	plan := buildIntraPlan([]ManifestSource{src}, "mac", "/Photos/Originals")
+	if len(plan) != 1 {
+		t.Fatalf("expected 1 delete candidate (Exports copy), got %d", len(plan))
+	}
+	if len(plan[0].Backups) != 2 {
+		t.Errorf("expected 2 backup copies (both Originals paths), got %d", len(plan[0].Backups))
+	}
+	if plan[0].RelPath != "Exports/file.DNG" {
+		t.Errorf("expected Exports copy to be deleted, got %s", plan[0].RelPath)
+	}
+}
+
 func TestBuildDeletePlanNeverDeletesUniqueFiles(t *testing.T) {
 	nas := makeSource("nas", "/volume1", []struct{ rel, hash string; size int64 }{
 		{"shared.jpg", "aaa", 100},
