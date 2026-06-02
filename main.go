@@ -585,7 +585,7 @@ func runScan(args []string) {
 	// Determine where manifest is written
 	manifestRoot := *rootFlag
 	if manifestRoot == "" {
-		manifestRoot = absScanDir
+		manifestRoot = filepath.Join(os.Getenv("HOME"), "manifests")
 	}
 	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, absScanDir))
 
