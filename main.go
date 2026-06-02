@@ -362,17 +362,24 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 	// partial hash AND the same file size with at least one other file in
 	// this scan. Different sizes can never be duplicates regardless of
 	// partial hash match. --full-hash upgrades all remaining files too.
+	//
+	// All files (including those already full-hashed from cache) count toward
+	// collision detection, but only files missing a full hash get upgraded.
+	// This ensures a new file colliding with a cached full-hashed file still
+	// gets its full hash computed.
 	byKey := make(map[string][]int)
 	for i, fi := range files {
-		if fi.FullHash == "" {
-			k := indexKey(fi.PartialHash, fi.Size)
-			byKey[k] = append(byKey[k], i)
-		}
+		k := indexKey(fi.PartialHash, fi.Size)
+		byKey[k] = append(byKey[k], i)
 	}
 	var upgradeIdx []int
 	for _, indices := range byKey {
 		if len(indices) >= 2 || fullHash {
-			upgradeIdx = append(upgradeIdx, indices...)
+			for _, idx := range indices {
+				if files[idx].FullHash == "" {
+					upgradeIdx = append(upgradeIdx, idx)
+				}
+			}
 		}
 	}
 	if len(upgradeIdx) > 0 {
