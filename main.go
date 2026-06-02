@@ -168,7 +168,7 @@ func scanDirectory(dir string) ([]FileInfo, error) {
 			return nil
 		}
 		if info.IsDir() {
-			if strings.HasPrefix(info.Name(), ".") || skipFolders[info.Name()] {
+			if path != dir && (strings.HasPrefix(info.Name(), ".") || skipFolders[info.Name()]) {
 				return filepath.SkipDir
 			}
 			return nil
