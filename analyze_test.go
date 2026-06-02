@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -374,5 +375,102 @@ func TestOverlapWarnings(t *testing.T) {
 	}
 	if !strings.Contains(warnings[0], "contains") {
 		t.Errorf("warning should mention 'contains': %s", warnings[0])
+	}
+}
+
+// =============================================================================
+// readManifest: Empty, Header Only, Corrupt, Old Format
+// =============================================================================
+
+func TestReadManifestEmpty(t *testing.T) {
+	dir := t.TempDir()
+	manifestFile := dir + "/empty.csv"
+	// Write a 0-byte file.
+	if err := os.WriteFile(manifestFile, []byte{}, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	_, err := readManifest(manifestFile)
+	if err == nil {
+		t.Errorf("readManifest should return an error for empty file, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error should mention 'empty', got %q", err.Error())
+	}
+}
+
+func TestReadManifestHeaderOnly(t *testing.T) {
+	dir := t.TempDir()
+	manifestFile := dir + "/header-only.csv"
+	// Write just the header row.
+	content := `filename,relative_path,file_size_bytes,file_size_mb,file_modified,capture_date,camera_make,camera_model,partial_hash,full_hash,scan_date,scan_path,machine_name`
+	if err := os.WriteFile(manifestFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	source, _ := readManifest(manifestFile)
+	if len(source.Rows) != 0 {
+		t.Errorf("header-only manifest should have 0 rows, got %d", len(source.Rows))
+	}
+	// Check no crash on second read.
+	if _, err := readManifest(manifestFile); err != nil {
+		t.Fatalf("second read failed: %v", err)
+	}
+}
+
+func TestReadManifestCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	manifestFile := dir + "/corrupt.csv"
+	// Write valid header + corrupt mid-row (unmatched quote).
+	content := `filename,relative_path,file_size_bytes,file_size_mb,file_modified,capture_date,camera_make,camera_model,partial_hash,full_hash,scan_date,scan_path,machine_name
+test.jpg,"test.jpg,1000,0,2023-01-01,2023-01-01,,,abc123,,2023-01-01,/scan,m1`
+	if err := os.WriteFile(manifestFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	_, err := readManifest(manifestFile)
+	if err == nil {
+		t.Errorf("readManifest should return an error for corrupt CSV, got nil")
+	}
+}
+
+func TestReadManifestOldFormat(t *testing.T) {
+	dir := t.TempDir()
+	manifestFile := dir + "/old-format.csv"
+	// Old format uses file_hash instead of partial_hash.
+	content := `filename,relative_path,file_size_bytes,file_size_mb,file_modified,capture_date,camera_make,camera_model,file_hash,full_hash,scan_date,scan_path,machine_name
+test.jpg,test.jpg,1000,0,2023-01-01,2023-01-01,,,oldhash123,,2023-01-01,/scan,m1`
+	if err := os.WriteFile(manifestFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	source, _ := readManifest(manifestFile)
+	if len(source.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(source.Rows))
+	}
+	// Old file_hash should be read into PartialHash.
+	if source.Rows[0].PartialHash != "oldhash123" {
+		t.Errorf("got PartialHash %q, want %q", source.Rows[0].PartialHash, "oldhash123")
+	}
+}
+
+// =============================================================================
+// sshVerifyPaths: Empty Paths, Command Failure
+// =============================================================================
+
+func TestSSHVerifyPathsEmptyPaths(t *testing.T) {
+	// Call with empty paths; should return empty map without invoking SSH.
+	result := sshVerifyPaths("unused-host", []string{})
+	if len(result) != 0 {
+		t.Errorf("expected empty map for empty paths, got %d entries", len(result))
+	}
+}
+
+func TestSSHVerifyPathsCommandFailure(t *testing.T) {
+	// Pass an invalid/unreachable host; SSH should fail quickly (with timeout from Fix 3).
+	// The function should return an empty map (all unverified) without panicking.
+	result := sshVerifyPaths("127.0.0.1:65535", []string{"/nonexistent/path"})
+	if len(result) != 0 {
+		t.Errorf("command failure should return empty map (all unverified), got %d entries", len(result))
 	}
 }

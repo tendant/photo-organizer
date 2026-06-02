@@ -615,8 +615,11 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 	existing := make(map[string][]string)
 	if f, err := os.Open(manifestFile); err == nil {
 		r := csv.NewReader(f)
-		records, _ := r.ReadAll()
+		records, err := r.ReadAll()
 		f.Close()
+		if err != nil {
+			return mstats, fmt.Errorf("read existing manifest %s: %w", manifestFile, err)
+		}
 		if len(records) < 1 {
 			goto doneLoading
 		}
@@ -734,6 +737,9 @@ doneLoading:
 		w.Write(existing[p])
 	}
 	w.Flush()
+	if err := w.Error(); err != nil {
+		return mstats, fmt.Errorf("write manifest %s: %w", manifestFile, err)
+	}
 
 	mstats.New = newCount
 	mstats.Updated = updatedCount

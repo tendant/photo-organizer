@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"flag"
 	"fmt"
@@ -1477,7 +1478,9 @@ func sshVerifyPaths(sshHost string, paths []string) map[string]bool {
   if [ -e "$f" ]; then echo "OK:$f"; else echo "MISSING:$f"; fi
 done`
 
-	cmd := exec.Command("ssh", sshHost, remoteScript)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ssh", sshHost, remoteScript)
 	cmd.Stdin = strings.NewReader(strings.Join(unique, "\n") + "\n")
 	out, err := cmd.Output()
 	if err != nil {
