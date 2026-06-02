@@ -983,6 +983,118 @@ type DeleteCandidate struct {
 	Backups   []BackupCopy
 }
 
+// buildIntraPlan finds confirmed duplicate files within a single machine and
+// returns delete candidates. Only groups where all copies have matching full
+// hashes are included (partial-hash collisions are excluded).
+//
+// keepUnder: if non-empty, keep copies whose path starts with this prefix and
+// delete all others. If empty, keep the alphabetically first copy.
+func buildIntraPlan(sources []ManifestSource, machine string, keepUnder string) []DeleteCandidate {
+	idx := buildHashIndex(sources)
+	var candidates []DeleteCandidate
+
+	for _, locs := range idx {
+		// Collect locations for this machine only, deduped by absolute path.
+		seenAbs := make(map[string]bool)
+		var machineLocs []hashLocation
+		for _, loc := range locs {
+			if sources[loc.sourceIdx].MachineName != machine {
+				continue
+			}
+			row := sources[loc.sourceIdx].Rows[loc.rowIdx]
+			abs := absFilePath(sources[loc.sourceIdx], row)
+			if seenAbs[abs] {
+				continue
+			}
+			seenAbs[abs] = true
+			machineLocs = append(machineLocs, loc)
+		}
+		if len(machineLocs) < 2 {
+			continue
+		}
+
+		// All copies must have a non-empty full hash that matches — otherwise
+		// this is an unconfirmed partial-hash collision, not a real duplicate.
+		fullHash := ""
+		confirmed := true
+		for _, loc := range machineLocs {
+			fh := sources[loc.sourceIdx].Rows[loc.rowIdx].FullHash
+			if fh == "" {
+				confirmed = false
+				break
+			}
+			if fullHash == "" {
+				fullHash = fh
+			} else if fh != fullHash {
+				confirmed = false // different content — partial hash collision
+				break
+			}
+		}
+		if !confirmed {
+			continue
+		}
+
+		// Build sorted list of absolute paths for this group.
+		type locPath struct {
+			loc hashLocation
+			abs string
+			row ManifestRow
+			src ManifestSource
+		}
+		var items []locPath
+		for _, loc := range machineLocs {
+			src := sources[loc.sourceIdx]
+			row := src.Rows[loc.rowIdx]
+			items = append(items, locPath{loc, absFilePath(src, row), row, src})
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].abs < items[j].abs })
+
+		// Determine which copies to keep and which to delete.
+		keepPrefix := ""
+		if keepUnder != "" {
+			keepPrefix = filepath.Clean(keepUnder) + string(filepath.Separator)
+		}
+
+		var keepItems, deleteItems []locPath
+		for _, item := range items {
+			if keepPrefix != "" && strings.HasPrefix(item.abs, keepPrefix) {
+				keepItems = append(keepItems, item)
+			} else if keepPrefix != "" {
+				deleteItems = append(deleteItems, item)
+			}
+		}
+		if keepPrefix != "" {
+			if len(keepItems) == 0 {
+				continue // no copy under keep-under prefix — skip, can't safely delete
+			}
+		} else {
+			// Default: keep alphabetically first, delete the rest.
+			keepItems = items[:1]
+			deleteItems = items[1:]
+		}
+
+		if len(deleteItems) == 0 {
+			continue
+		}
+
+		keepLabel := "same machine, kept at: " + keepItems[0].abs
+		for _, item := range deleteItems {
+			candidates = append(candidates, DeleteCandidate{
+				Machine:   machine,
+				ScanPath:  item.src.ScanPath,
+				RelPath:   item.row.RelativePath,
+				SizeBytes: item.row.SizeBytes,
+				Backups:   []BackupCopy{{Label: keepLabel, AbsPath: keepItems[0].abs}},
+			})
+		}
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].SizeBytes > candidates[j].SizeBytes
+	})
+	return candidates
+}
+
 func buildDeletePlan(sources []ManifestSource, keepMachine string) []DeleteCandidate {
 	idx := buildHashIndex(sources)
 	_ = overlappingPairs(sources) // used indirectly via absFilePath dedup
@@ -1067,7 +1179,7 @@ func runPlan(args []string) {
 			flagArgs = append(flagArgs, a)
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && !strings.Contains(a, "=") {
 				name := strings.TrimLeft(a, "-")
-				if name == "keep" || name == "out" {
+				if name == "keep" || name == "out" || name == "intra" || name == "keep-under" {
 					i++
 					flagArgs = append(flagArgs, args[i])
 				}
@@ -1078,18 +1190,21 @@ func runPlan(args []string) {
 	}
 
 	fs := flag.NewFlagSet("plan", flag.ExitOnError)
-	keepFlag := fs.String("keep", "", "machine name whose copies are the authoritative backup (required)")
+	keepFlag := fs.String("keep", "", "machine name whose copies are the authoritative backup (cross-machine mode)")
+	intraFlag := fs.String("intra", "", "machine name to deduplicate within (intra-machine mode)")
+	keepUnderFlag := fs.String("keep-under", "", "with --intra: keep copies under this path, delete others")
 	outFlag := fs.String("out", "", "write shell script to this file instead of stdout")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer plan --keep <machine> [manifest...]\n\n")
-		fmt.Fprintf(os.Stderr, "Generates a shell script of rm commands for files safely backed up\n")
-		fmt.Fprintf(os.Stderr, "on the --keep machine. Review the script before running it.\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer plan --keep <machine> [manifest...]\n")
+		fmt.Fprintf(os.Stderr, "       photo-organizer plan --intra <machine> [--keep-under /path] [manifest...]\n\n")
+		fmt.Fprintf(os.Stderr, "Cross-machine: generate rm commands for files backed up on --keep machine.\n")
+		fmt.Fprintf(os.Stderr, "Intra-machine: generate rm commands for confirmed duplicates within one machine.\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(flagArgs)
 
-	if *keepFlag == "" {
-		fmt.Fprintln(os.Stderr, "plan: --keep <machine> is required")
+	if *keepFlag == "" && *intraFlag == "" {
+		fmt.Fprintln(os.Stderr, "plan: --keep <machine> or --intra <machine> is required")
 		fs.Usage()
 		os.Exit(1)
 	}
@@ -1122,16 +1237,21 @@ func runPlan(args []string) {
 		os.Exit(1)
 	}
 
-	// Verify keep machine exists in manifests.
-	keepFound := false
+	// Determine target machine and build candidates.
+	targetMachine := *keepFlag
+	if *intraFlag != "" {
+		targetMachine = *intraFlag
+	}
+
+	machineFound := false
 	for _, src := range sources {
-		if src.MachineName == *keepFlag {
-			keepFound = true
+		if src.MachineName == targetMachine {
+			machineFound = true
 			break
 		}
 	}
-	if !keepFound {
-		fmt.Fprintf(os.Stderr, "plan: machine %q not found in manifests\n", *keepFlag)
+	if !machineFound {
+		fmt.Fprintf(os.Stderr, "plan: machine %q not found in manifests\n", targetMachine)
 		fmt.Fprintf(os.Stderr, "Available machines: ")
 		seen := make(map[string]bool)
 		for _, src := range sources {
@@ -1144,7 +1264,12 @@ func runPlan(args []string) {
 		os.Exit(1)
 	}
 
-	candidates := buildDeletePlan(sources, *keepFlag)
+	var candidates []DeleteCandidate
+	if *intraFlag != "" {
+		candidates = buildIntraPlan(sources, *intraFlag, *keepUnderFlag)
+	} else {
+		candidates = buildDeletePlan(sources, *keepFlag)
+	}
 
 	// Verify backup files exist on disk where accessible.
 	// Paths that can't be stat'd are marked unverified in the script.
@@ -1193,7 +1318,16 @@ func runPlan(args []string) {
 
 	fmt.Fprintf(out, "#!/bin/bash\n")
 	fmt.Fprintf(out, "# Safe-delete plan generated by photo-organizer\n")
-	fmt.Fprintf(out, "# Keeping authoritative copy on: %s\n", *keepFlag)
+	if *intraFlag != "" {
+		fmt.Fprintf(out, "# Mode: intra-machine duplicates on %s\n", *intraFlag)
+		if *keepUnderFlag != "" {
+			fmt.Fprintf(out, "# Keeping copies under: %s\n", *keepUnderFlag)
+		} else {
+			fmt.Fprintf(out, "# Keeping: alphabetically first copy per group\n")
+		}
+	} else {
+		fmt.Fprintf(out, "# Keeping authoritative copy on: %s\n", *keepFlag)
+	}
 	fmt.Fprintf(out, "# Files to remove: %s  (%s reclaimable)\n", formatCount(len(candidates)), formatSize(totalSize))
 	fmt.Fprintf(out, "# Backup verified on disk: %d  |  unverified: %d\n", verified, unverified)
 	fmt.Fprintf(out, "#\n")
