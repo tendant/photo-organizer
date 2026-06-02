@@ -1399,12 +1399,19 @@ func runMigrate(args []string) {
 
 		fmt.Fprintf(out, "# ── %s  (%s files, %s) ──\n", scanPath, formatCount(len(rows)), formatSize(scanSize))
 		fmt.Fprintf(out, "# Destination: %s\n", destPath)
+		// Create destination directory. For remote paths (user@host:/path) use ssh.
+		if strings.Contains(destPath, ":") {
+			parts := strings.SplitN(destPath, ":", 2)
+			fmt.Fprintf(out, "ssh %s mkdir -p %s\n", shellQuote(parts[0]), shellQuote(parts[1]))
+		} else {
+			fmt.Fprintf(out, "mkdir -p %s\n", shellQuote(destPath))
+		}
 		fmt.Fprintf(out, "cat > %s << 'FILELIST'\n", shellQuote(listFile))
 		for _, row := range rows {
 			fmt.Fprintf(out, "%s\n", filepath.ToSlash(row.RelativePath))
 		}
 		fmt.Fprintf(out, "FILELIST\n")
-		fmt.Fprintf(out, "rsync -av --mkpath --partial --files-from=%s %s %s\n",
+		fmt.Fprintf(out, "rsync -av --partial --files-from=%s %s %s\n",
 			shellQuote(listFile), shellQuote(scanPath+"/"), shellQuote(destPath+"/"))
 		fmt.Fprintf(out, "rm -f %s\n\n", shellQuote(listFile))
 	}
