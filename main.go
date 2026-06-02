@@ -275,7 +275,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 				return filepath.SkipDir
 			}
 			rel, _ := filepath.Rel(dir, path)
-			fmt.Fprintf(os.Stderr, "\r  walking: %-60s", rel)
+			fmt.Fprintf(os.Stderr, "\r  %-78s", "walking: "+rel)
 			return nil
 		}
 		if strings.HasPrefix(info.Name(), ".") || !isMediaFile(filepath.Ext(path)) {
@@ -288,7 +288,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 		return nil, stats, err
 	}
 	stats.Found = len(raw)
-	fmt.Fprintf(os.Stderr, "\r  %s files found, processing...\n", formatCount(len(raw)))
+	fmt.Fprintf(os.Stderr, "\r  %-78s\n", fmt.Sprintf("%s files found, processing...", formatCount(len(raw))))
 
 	// Phase 2: extract EXIF dates and compute hashes.
 	// Limit to 4 workers — more than that causes I/O contention on SSDs.
@@ -327,14 +327,14 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 
 			n := processed.Add(1)
 			if n%100 == 0 {
-				fmt.Fprintf(os.Stderr, "\r  %s / %s processed...",
-					formatCount(int(n)), formatCount(len(raw)))
+				fmt.Fprintf(os.Stderr, "\r  %-78s",
+					fmt.Sprintf("%s / %s processed...", formatCount(int(n)), formatCount(len(raw))))
 			}
 		}(i, rf)
 	}
 	wg.Wait()
-	fmt.Fprintf(os.Stderr, "\r  %s / %s processed       \n",
-		formatCount(len(raw)), formatCount(len(raw)))
+	fmt.Fprintf(os.Stderr, "\r  %-78s\n",
+		fmt.Sprintf("%s / %s processed", formatCount(len(raw)), formatCount(len(raw))))
 	stats.Cached = int(cachedCount.Load())
 
 	// Phase 3: always upgrade files whose partial hash collides with at least
