@@ -670,6 +670,9 @@ func main() {
 		case "plan":
 			runPlan(os.Args[2:])
 			return
+		case "rescan":
+			runRescan(os.Args[2:])
+			return
 		case "scan":
 			// Strip the subcommand word and fall through to runScan
 			os.Args = append(os.Args[:1], os.Args[2:]...)
@@ -687,6 +690,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "photo-organizer — scan folders and analyze photo manifests across machines\n\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
 	fmt.Fprintf(os.Stderr, "  scan [directory]              Scan a directory and write a manifest CSV\n")
+	fmt.Fprintf(os.Stderr, "  rescan                        Re-scan all folders previously scanned on this machine\n")
 	fmt.Fprintf(os.Stderr, "  analyze                       Compare manifests, find cross-machine duplicates\n")
 	fmt.Fprintf(os.Stderr, "  plan --keep <machine>         Generate safe-delete script for duplicates\n\n")
 	fmt.Fprintf(os.Stderr, "scan flags:\n")
@@ -810,4 +814,112 @@ func printScanSummary(s ScanStats, m ManifestStats) {
 	}
 	fmt.Printf("  Total size:        %s\n", formatSize(s.TotalBytes))
 	fmt.Println("─────────────────────────────────────────────────────")
+}
+
+func runRescan(args []string) {
+	// Pre-separate flags from positional args.
+	var flagArgs, posArgs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flagArgs = append(flagArgs, a)
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && !strings.Contains(a, "=") {
+				name := strings.TrimLeft(a, "-")
+				if name == "machine" || name == "root" {
+					i++
+					flagArgs = append(flagArgs, args[i])
+				}
+			}
+		} else {
+			posArgs = append(posArgs, a)
+		}
+	}
+
+	fs := flag.NewFlagSet("rescan", flag.ExitOnError)
+	machineFlag := fs.String("machine", "", "machine ID to rescan (default: current machine)")
+	rootFlag := fs.String("root", "", "manifest directory (default: ~/manifests)")
+	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer rescan [--machine id] [--root dir] [--full-hash]\n\n")
+		fmt.Fprintf(os.Stderr, "Re-scans all folders previously scanned on this machine.\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(flagArgs)
+	_ = posArgs
+
+	machine := *machineFlag
+	if machine == "" {
+		machine = machineID()
+	}
+
+	manifestRoot := *rootFlag
+	if manifestRoot == "" {
+		manifestRoot = filepath.Join(os.Getenv("HOME"), "manifests")
+	}
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+
+	// Discover all manifests for this machine.
+	allCSVs, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+	if len(allCSVs) == 0 {
+		fmt.Fprintf(os.Stderr, "rescan: no manifests found in %s\n", manifestDir)
+		os.Exit(1)
+	}
+
+	// Collect unique scan_path values for this machine.
+	seen := make(map[string]bool)
+	var scanPaths []string
+	for _, csvPath := range allCSVs {
+		src, err := readManifest(csvPath)
+		if err != nil || src.MachineName != machine {
+			continue
+		}
+		if src.ScanPath != "" && !seen[src.ScanPath] {
+			seen[src.ScanPath] = true
+			scanPaths = append(scanPaths, src.ScanPath)
+		}
+	}
+	sort.Strings(scanPaths)
+
+	if len(scanPaths) == 0 {
+		fmt.Fprintf(os.Stderr, "rescan: no scan paths found for machine %q in %s\n", machine, manifestDir)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Machine:  %s\n", machine)
+	fmt.Printf("Folders to rescan (%d):\n", len(scanPaths))
+	for _, p := range scanPaths {
+		fmt.Printf("  %s\n", p)
+	}
+	fmt.Println()
+
+	// Rescan each path.
+	for i, scanDir := range scanPaths {
+		if _, err := os.Stat(scanDir); os.IsNotExist(err) {
+			fmt.Printf("[%d/%d] Skipping (not found): %s\n\n", i+1, len(scanPaths), scanDir)
+			continue
+		}
+		fmt.Printf("[%d/%d] Scanning: %s\n", i+1, len(scanPaths), scanDir)
+		manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machine, scanDir))
+		fmt.Printf("        Manifest: %s\n\n", manifestFile)
+
+		if err := os.MkdirAll(filepath.Dir(manifestFile), 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot create manifest directory: %v\n", err)
+			continue
+		}
+
+		cache := loadCache(manifestFile)
+		files, scanStats, err := scanDirectory(scanDir, cache, *fullHashFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", scanDir, err)
+			continue
+		}
+
+		manifestStats, err := updateManifest(scanDir, files, manifestFile, machine)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing manifest: %v\n", err)
+			continue
+		}
+
+		printScanSummary(scanStats, manifestStats)
+	}
 }
