@@ -357,8 +357,9 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 	}
 	if len(upgradeIdx) > 0 {
 		stats.FullHashed = len(upgradeIdx)
-		fmt.Fprintf(os.Stderr, "  %s files need full hash — computing...\n",
-			formatCount(len(upgradeIdx)))
+		total := len(upgradeIdx)
+		fmt.Fprintf(os.Stderr, "\r  %-78s\n", fmt.Sprintf("%s files need full hash — computing...", formatCount(total)))
+		var fullDone atomic.Int64
 		var uwg sync.WaitGroup
 		for _, idx := range upgradeIdx {
 			uwg.Add(1)
@@ -367,9 +368,16 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 				defer uwg.Done()
 				defer func() { <-sem }()
 				files[idx].FullHash = computeFullHash(files[idx].Path)
+				n := fullDone.Add(1)
+				if n%100 == 0 || int(n) == total {
+					fmt.Fprintf(os.Stderr, "\r  %-78s",
+						fmt.Sprintf("full hash: %s / %s", formatCount(int(n)), formatCount(total)))
+				}
 			}(idx)
 		}
 		uwg.Wait()
+		fmt.Fprintf(os.Stderr, "\r  %-78s\n",
+			fmt.Sprintf("full hash: %s / %s done", formatCount(total), formatCount(total)))
 	}
 
 	for _, fi := range files {
