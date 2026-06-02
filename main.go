@@ -536,8 +536,23 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 	for _, fi := range files {
 		relPath, _ := filepath.Rel(scanDir, fi.Path)
 		if row, exists := existing[relPath]; exists {
-			// Update if the hash or hash_mode changed (e.g. partial → full upgrade).
-			if row[headerIdx["file_hash"]] != fi.Hash || row[headerIdx["hash_mode"]] != fi.HashMode {
+			storedSize, _ := strconv.ParseInt(row[headerIdx["file_size_bytes"]], 10, 64)
+			sizeChanged := storedSize != fi.Size
+			hashChanged := row[headerIdx["file_hash"]] != fi.Hash || row[headerIdx["hash_mode"]] != fi.HashMode
+
+			if sizeChanged {
+				// File was modified — update all variable fields.
+				row[headerIdx["file_size_bytes"]] = fmt.Sprintf("%d", fi.Size)
+				row[headerIdx["file_size_mb"]] = fmt.Sprintf("%.2f", float64(fi.Size)/(1024*1024))
+				row[headerIdx["file_modified"]] = fi.ModTime.Format("2006-01-02 15:04:05")
+				row[headerIdx["capture_date"]] = fi.CaptureDate.Format("2006:01:02 15:04:05")
+				row[headerIdx["file_hash"]] = fi.Hash
+				row[headerIdx["hash_mode"]] = fi.HashMode
+				row[headerIdx["scan_date"]] = time.Now().Format("2006-01-02 15:04:05")
+				existing[relPath] = row
+				updatedCount++
+			} else if hashChanged {
+				// Size same but hash/mode upgraded (e.g. partial → full).
 				row[headerIdx["file_hash"]] = fi.Hash
 				row[headerIdx["hash_mode"]] = fi.HashMode
 				existing[relPath] = row

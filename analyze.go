@@ -866,7 +866,19 @@ func runAnalyze(args []string) {
 		fmt.Fprintln(os.Stderr, "analyze: no valid manifests loaded")
 		os.Exit(1)
 	}
-	fmt.Fprintln(os.Stderr)
+
+	// Print distinct machine names — useful for choosing --keep in plan.
+	machineSet := make(map[string]bool)
+	for _, src := range sources {
+		machineSet[src.MachineName] = true
+	}
+	machineNames := make([]string, 0, len(machineSet))
+	for m := range machineSet {
+		machineNames = append(machineNames, m)
+	}
+	sort.Strings(machineNames)
+	fmt.Fprintf(os.Stderr, "Machines: %s\n", strings.Join(machineNames, ", "))
+	fmt.Fprintf(os.Stderr, "Tip: photo-organizer plan --keep <machine> to generate a safe-delete script\n\n")
 
 	printReport(sources, *threshold, os.Stdout)
 
