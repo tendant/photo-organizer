@@ -515,16 +515,16 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  scan [directory]              Scan a directory and write a manifest CSV\n")
 	fmt.Fprintf(os.Stderr, "  analyze manifest1 manifest2   Compare manifests, find cross-machine duplicates\n\n")
 	fmt.Fprintf(os.Stderr, "scan flags:\n")
-	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ instead of scan dir\n")
-	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: hostname)\n\n")
+	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ (default: ~/manifests)\n")
+	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n\n")
 	fmt.Fprintf(os.Stderr, "analyze flags:\n")
 	fmt.Fprintf(os.Stderr, "  --csv prefix     also write CSV output files with this filename prefix\n")
 	fmt.Fprintf(os.Stderr, "  --threshold n    folder coverage %% to flag as nearly-redundant (default: 0.9)\n\n")
 	fmt.Fprintf(os.Stderr, "Examples:\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer /Volumes/SSD\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer scan /Volumes/SSD --machine nas-main\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer analyze macbook.csv nas.csv laptop.csv\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer analyze *.csv --csv report\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer scan /Volumes/SSD          # manifest → ~/manifests/\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer scan ~/Photos\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer analyze ~/manifests/_Manifest/*.csv\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer analyze ~/manifests/_Manifest/*.csv --csv report\n")
 }
 
 func runScan(args []string) {
