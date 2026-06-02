@@ -741,7 +741,7 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 	}
 
 	fmt.Fprintf(w, "\n%s\n", sep)
-	fmt.Fprintf(w, "  Hash mode:  MD5 first 64KB (fast; sufficient for dedup)\n")
+	fmt.Fprintf(w, "  Hash mode:  sampled MD5 (first+last 32KB)\n")
 	fmt.Fprintf(w, "  Total files across all sources:   %s  (%s)\n", formatCount(totalFiles), formatSize(totalBytes))
 	fmt.Fprintf(w, "  Duplicated on 2+ machines:        %s (%.1f%%)\n",
 		formatCount(len(duplicates)), pct(len(duplicates), totalFiles))
@@ -749,6 +749,21 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 		formatCount(totalUnique), pct(totalUnique, totalFiles))
 	fmt.Fprintf(w, "  Fully-redundant folders (100%%):   %s\n", formatCount(fullRedundant))
 	fmt.Fprintf(w, "  Nearly-redundant folders (>%.0f%%): %s\n", threshold*100, formatCount(highRedundant))
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %-28s  %10s  %10s  %8s  %8s\n", "MACHINE", "FILES", "SIZE", "UNIQUE", "DUPED")
+	fmt.Fprintf(w, "  %-28s  %10s  %10s  %8s  %8s\n",
+		strings.Repeat("─", 28), strings.Repeat("─", 10), strings.Repeat("─", 10),
+		strings.Repeat("─", 8), strings.Repeat("─", 8))
+	for _, s := range summaries {
+		uniqueRows := uniqueByMachine[s.MachineName]
+		uniqueCount := len(uniqueRows)
+		fmt.Fprintf(w, "  %-28s  %10s  %10s  %7.1f%%  %7.1f%%\n",
+			truncate(s.MachineName, 28),
+			formatCount(s.TotalFiles),
+			formatSize(s.TotalBytes),
+			pct(uniqueCount, s.TotalFiles),
+			pct(s.DupedFiles, s.TotalFiles))
+	}
 	fmt.Fprintln(w, sep)
 }
 
@@ -1224,6 +1239,13 @@ func shellQuote(s string) string {
 // =============================================================================
 // Formatting Helpers
 // =============================================================================
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
+}
 
 func formatCount(n int) string {
 	s := fmt.Sprintf("%d", n)
