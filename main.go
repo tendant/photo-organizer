@@ -106,26 +106,21 @@ func getDateFromFilename(filename string) (time.Time, bool) {
 // Hashing + Date (single file open)
 // =============================================================================
 
-// processFile opens a file once and derives both the MD5 hash and the capture
-// date. When fullHash is true, the entire file is hashed; otherwise only the
-// first 64KB is read (fast, sufficient for dedup in practice).
-func processFile(path string, fullHash bool) (hash string, captureDate time.Time) {
+// processFile opens a file once, reads the first 64KB, and derives both the
+// partial MD5 hash and the capture date.
+func processFile(path string) (hash string, captureDate time.Time) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", getDateFallback(path)
 	}
 	defer f.Close()
 
-	// Always read the first 64KB — needed for EXIF and the partial hash.
 	buf := make([]byte, 65536)
 	n, _ := f.Read(buf)
 	buf = buf[:n]
 
 	h := md5.New()
 	h.Write(buf)
-	if fullHash {
-		io.Copy(h, f) // hash the remainder of the file
-	}
 	hash = fmt.Sprintf("%x", h.Sum(nil))
 
 	// Try EXIF from the first 64KB buffer.
@@ -138,6 +133,18 @@ func processFile(path string, fullHash bool) (hash string, captureDate time.Time
 	}
 
 	return hash, getDateFallback(path)
+}
+
+// computeFullHash hashes the entire file and returns its MD5.
+func computeFullHash(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := md5.New()
+	io.Copy(h, f)
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func getDateFallback(path string) time.Time {
@@ -273,11 +280,8 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 
-	wantMode := "partial"
-	if fullHash {
-		wantMode = "full"
-	}
-
+	// Phase 2: compute partial hashes (and capture dates) for all files.
+	// If a full hash is already cached, use it directly.
 	for i, rf := range raw {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -286,14 +290,18 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 			defer func() { <-sem }()
 
 			relPath, _ := filepath.Rel(dir, rf.path)
-			fi := FileInfo{Path: rf.path, Size: rf.size, ModTime: rf.modTime, HashMode: wantMode}
+			fi := FileInfo{Path: rf.path, Size: rf.size, ModTime: rf.modTime}
 
-			// Use cached hash/date if size matches and hash mode is compatible.
-			if entry, ok := cache[relPath]; ok && entry.SizeBytes == rf.size && entry.HashMode == wantMode {
-				fi.Hash = entry.Hash
-				fi.CaptureDate = entry.CaptureDate
+			entry, hasCached := cache[relPath]
+			if hasCached && entry.SizeBytes == rf.size && entry.HashMode == "full" {
+				// Already fully hashed — use directly, skip phase 3.
+				fi.Hash, fi.CaptureDate, fi.HashMode = entry.Hash, entry.CaptureDate, "full"
+			} else if hasCached && entry.SizeBytes == rf.size {
+				// Partial hash cached — use it for now; phase 3 may upgrade it.
+				fi.Hash, fi.CaptureDate, fi.HashMode = entry.Hash, entry.CaptureDate, "partial"
 			} else {
-				fi.Hash, fi.CaptureDate = processFile(rf.path, fullHash)
+				fi.Hash, fi.CaptureDate = processFile(rf.path)
+				fi.HashMode = "partial"
 			}
 			files[i] = fi
 
@@ -307,6 +315,39 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 	wg.Wait()
 	fmt.Fprintf(os.Stderr, "\r  %s / %s processed       \n",
 		formatCount(len(raw)), formatCount(len(raw)))
+
+	// Phase 3 (only with --full-hash): upgrade files whose partial hash
+	// collides with at least one other file to a full-file hash.
+	if fullHash {
+		byPartial := make(map[string][]int)
+		for i, fi := range files {
+			if fi.HashMode == "partial" {
+				byPartial[fi.Hash] = append(byPartial[fi.Hash], i)
+			}
+		}
+		var upgradeIdx []int
+		for _, indices := range byPartial {
+			if len(indices) >= 2 {
+				upgradeIdx = append(upgradeIdx, indices...)
+			}
+		}
+		if len(upgradeIdx) > 0 {
+			fmt.Fprintf(os.Stderr, "  %s files share a partial hash — computing full hashes...\n",
+				formatCount(len(upgradeIdx)))
+			var uwg sync.WaitGroup
+			for _, idx := range upgradeIdx {
+				uwg.Add(1)
+				sem <- struct{}{}
+				go func(idx int) {
+					defer uwg.Done()
+					defer func() { <-sem }()
+					files[idx].Hash = computeFullHash(files[idx].Path)
+					files[idx].HashMode = "full"
+				}(idx)
+			}
+			uwg.Wait()
+		}
+	}
 
 	return files, nil
 }
@@ -463,10 +504,23 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 		}
 	}
 
-	newCount := 0
+	// Build a column index so we can find hash/hash_mode in existing rows.
+	headerIdx := make(map[string]int)
+	for i, h := range headers {
+		headerIdx[h] = i
+	}
+
+	newCount, updatedCount := 0, 0
 	for _, fi := range files {
 		relPath, _ := filepath.Rel(scanDir, fi.Path)
-		if _, exists := existing[relPath]; exists {
+		if row, exists := existing[relPath]; exists {
+			// Update if the hash or hash_mode changed (e.g. partial → full upgrade).
+			if row[headerIdx["file_hash"]] != fi.Hash || row[headerIdx["hash_mode"]] != fi.HashMode {
+				row[headerIdx["file_hash"]] = fi.Hash
+				row[headerIdx["hash_mode"]] = fi.HashMode
+				existing[relPath] = row
+				updatedCount++
+			}
 			continue
 		}
 		existing[relPath] = []string{
@@ -506,7 +560,11 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 	}
 	w.Flush()
 
-	fmt.Printf("Scanned %d files, added %d new entries to manifest\n", len(files), newCount)
+	msg := fmt.Sprintf("Scanned %d files, added %d new entries", len(files), newCount)
+	if updatedCount > 0 {
+		msg += fmt.Sprintf(", updated %d entries (hash upgraded)", updatedCount)
+	}
+	fmt.Println(msg)
 	return nil
 }
 
