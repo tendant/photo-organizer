@@ -240,6 +240,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 		}
 		// Skip symlinks — they may point outside the scan tree or cause loops.
 		if info.Mode()&os.ModeSymlink != 0 {
+			fmt.Fprintf(os.Stderr, "  skipping symlink: %s\n", path)
 			return nil
 		}
 		if info.IsDir() {
