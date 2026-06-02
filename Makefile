@@ -28,14 +28,8 @@ VERSION?=dev
 all: build
 
 # Help target
-help:
-	@echo "photo-organizer — scan folders and analyze photo manifests across machines"
-	@echo ""
-	@echo "Usage:"
-	@echo "  photo-organizer [directory]               scan dir, write manifest inside it"
-	@echo "  photo-organizer scan /path --machine name scan with explicit machine label"
-	@echo "  photo-organizer analyze a.csv b.csv ...   compare manifests, find duplicates"
-	@echo "  photo-organizer analyze *.csv --csv report  also write CSV output files"
+help: build
+	@./$(BINARY_NAME)
 	@echo ""
 	@echo "Makefile targets:"
 	@echo "  make              - Build for current platform (default)"
