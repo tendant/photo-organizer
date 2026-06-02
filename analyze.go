@@ -1354,6 +1354,15 @@ func runMigrate(args []string) {
 
 	out := os.Stdout
 	if *outFlag != "" {
+		if _, err := os.Stat(*outFlag); err == nil {
+			fmt.Fprintf(os.Stderr, "⚠  %s already exists — overwrite? [y/N] ", *outFlag)
+			var answer string
+			fmt.Fscan(os.Stdin, &answer)
+			if answer != "y" && answer != "Y" {
+				fmt.Fprintln(os.Stderr, "Aborted.")
+				os.Exit(1)
+			}
+		}
 		f, err := os.Create(*outFlag)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "migrate: cannot write output:", err)
@@ -1411,7 +1420,7 @@ func runMigrate(args []string) {
 			fmt.Fprintf(out, "%s\n", filepath.ToSlash(row.RelativePath))
 		}
 		fmt.Fprintf(out, "FILELIST\n")
-		fmt.Fprintf(out, "rsync -av --partial --files-from=%s %s %s\n",
+		fmt.Fprintf(out, "rsync -av --partial --progress --files-from=%s %s %s\n",
 			shellQuote(listFile), shellQuote(scanPath+"/"), shellQuote(destPath+"/"))
 		fmt.Fprintf(out, "rm -f %s\n\n", shellQuote(listFile))
 	}
