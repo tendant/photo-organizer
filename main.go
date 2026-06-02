@@ -374,8 +374,12 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 				files[idx].FullHash = computeFullHash(files[idx].Path)
 				n := fullDone.Add(1)
 				if n%100 == 0 || int(n) == total {
-					fmt.Fprintf(os.Stderr, "\r  %-78s",
-						fmt.Sprintf("full hash: %s / %s", formatCount(int(n)), formatCount(total)))
+					name := filepath.Base(files[idx].Path)
+					progress := fmt.Sprintf("full hash: %s / %s  %s", formatCount(int(n)), formatCount(total), name)
+					if len(progress) > 78 {
+						progress = progress[:75] + "..."
+					}
+					fmt.Fprintf(os.Stderr, "\r  %-78s", progress)
 				}
 			}(idx)
 		}
