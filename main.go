@@ -358,7 +358,6 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 	if len(upgradeIdx) > 0 {
 		stats.FullHashed = len(upgradeIdx)
 		total := len(upgradeIdx)
-		fmt.Fprintf(os.Stderr, "\r  %-78s\n", fmt.Sprintf("%s files need full hash — computing...", formatCount(total)))
 		var fullDone atomic.Int64
 		var uwg sync.WaitGroup
 		for _, idx := range upgradeIdx {
