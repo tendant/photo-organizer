@@ -327,38 +327,38 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 		formatCount(len(raw)), formatCount(len(raw)))
 	stats.Cached = int(cachedCount.Load())
 
-	// Phase 3 (only with --full-hash): upgrade files whose partial hash
-	// collides with at least one other file to a full-file hash.
-	if fullHash {
-		byPartial := make(map[string][]int)
-		for i, fi := range files {
-			if fi.HashMode == "partial" {
-				byPartial[fi.Hash] = append(byPartial[fi.Hash], i)
-			}
+	// Phase 3: always upgrade files whose partial hash collides with at least
+	// one other file in this scan to a full-file hash. This eliminates false
+	// positives from cameras whose videos share identical first-64KB headers.
+	// --full-hash additionally upgrades all remaining partial-hash files.
+	byPartial := make(map[string][]int)
+	for i, fi := range files {
+		if fi.HashMode == "partial" {
+			byPartial[fi.Hash] = append(byPartial[fi.Hash], i)
 		}
-		var upgradeIdx []int
-		for _, indices := range byPartial {
-			if len(indices) >= 2 {
-				upgradeIdx = append(upgradeIdx, indices...)
-			}
+	}
+	var upgradeIdx []int
+	for _, indices := range byPartial {
+		if len(indices) >= 2 || fullHash {
+			upgradeIdx = append(upgradeIdx, indices...)
 		}
-		if len(upgradeIdx) > 0 {
-			stats.FullHashed = len(upgradeIdx)
-			fmt.Fprintf(os.Stderr, "  %s files share a partial hash — computing full hashes...\n",
-				formatCount(len(upgradeIdx)))
-			var uwg sync.WaitGroup
-			for _, idx := range upgradeIdx {
-				uwg.Add(1)
-				sem <- struct{}{}
-				go func(idx int) {
-					defer uwg.Done()
-					defer func() { <-sem }()
-					files[idx].Hash = computeFullHash(files[idx].Path)
-					files[idx].HashMode = "full"
-				}(idx)
-			}
-			uwg.Wait()
+	}
+	if len(upgradeIdx) > 0 {
+		stats.FullHashed = len(upgradeIdx)
+		fmt.Fprintf(os.Stderr, "  %s files need full hash — computing...\n",
+			formatCount(len(upgradeIdx)))
+		var uwg sync.WaitGroup
+		for _, idx := range upgradeIdx {
+			uwg.Add(1)
+			sem <- struct{}{}
+			go func(idx int) {
+				defer uwg.Done()
+				defer func() { <-sem }()
+				files[idx].Hash = computeFullHash(files[idx].Path)
+				files[idx].HashMode = "full"
+			}(idx)
 		}
+		uwg.Wait()
 	}
 
 	for _, fi := range files {
@@ -643,7 +643,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "scan flags:\n")
 	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ (default: ~/manifests)\n")
 	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n")
-	fmt.Fprintf(os.Stderr, "  --full-hash      hash entire file instead of first 64KB (slower, more thorough)\n\n")
+	fmt.Fprintf(os.Stderr, "  --full-hash      hash all files fully, not just colliding ones (rarely needed)\n\n")
 	fmt.Fprintf(os.Stderr, "analyze flags:\n")
 	fmt.Fprintf(os.Stderr, "  --csv prefix     also write CSV output files with this filename prefix\n")
 	fmt.Fprintf(os.Stderr, "  --threshold n    folder coverage %% to flag as nearly-redundant (default: 0.9)\n\n")
