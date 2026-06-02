@@ -803,6 +803,9 @@ func main() {
 		case "rescan":
 			runRescan(os.Args[2:])
 			return
+		case "risk-report":
+			runRiskReport(os.Args[2:])
+			return
 		case "scan":
 			// Strip the subcommand word and fall through to runScan
 			os.Args = append(os.Args[:1], os.Args[2:]...)
@@ -823,6 +826,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  rescan                        Re-scan all folders previously scanned on this machine\n")
 	fmt.Fprintf(os.Stderr, "  collect --from <machine>      Pull manifests from remote machines via SSH\n")
 	fmt.Fprintf(os.Stderr, "  analyze                       Compare manifests, find cross-machine duplicates\n")
+	fmt.Fprintf(os.Stderr, "  risk-report                   Identify files at risk (only on one machine)\n")
 	fmt.Fprintf(os.Stderr, "  plan --keep <machine>         Generate safe-delete script for duplicates\n")
 	fmt.Fprintf(os.Stderr, "  migrate --from <machine> --dest <path>  Copy unique files preserving folder structure\n\n")
 	fmt.Fprintf(os.Stderr, "machines config: ~/.photo-organizer-machines  (machine_id = user@host)\n\n")

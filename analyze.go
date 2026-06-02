@@ -1498,6 +1498,270 @@ done`
 }
 
 // =============================================================================
+// Risk Report (identify files at risk — single machine only)
+// =============================================================================
+
+func runRiskReport(args []string) {
+	// Pre-split flags and positional args.
+	var flagArgs, posArgs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flagArgs = append(flagArgs, a)
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && !strings.Contains(a, "=") {
+				name := strings.TrimLeft(a, "-")
+				if name == "csv" || name == "machine" {
+					i++
+					flagArgs = append(flagArgs, args[i])
+				}
+			}
+		} else {
+			posArgs = append(posArgs, a)
+		}
+	}
+
+	fs := flag.NewFlagSet("risk-report", flag.ExitOnError)
+	csvPrefix := fs.String("csv", "", "write CSV output with this prefix")
+	machineFilter := fs.String("machine", "", "show risk only for this machine")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer risk-report [manifest...] [--machine name] [--csv prefix]\n\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(flagArgs)
+
+	manifestPaths := posArgs
+	if len(manifestPaths) == 0 {
+		defaultDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
+		matches, _ := filepath.Glob(filepath.Join(defaultDir, "*.csv"))
+		if len(matches) > 0 {
+			manifestPaths = matches
+			fmt.Fprintf(os.Stderr, "No manifests specified, loading %s (%d files)\n\n", defaultDir, len(matches))
+		} else {
+			fmt.Fprintf(os.Stderr, "risk-report: no manifests specified and none found in %s\n", defaultDir)
+			fs.Usage()
+			os.Exit(1)
+		}
+	}
+
+	// Load manifests.
+	var sources []ManifestSource
+	for _, path := range manifestPaths {
+		src, err := readManifest(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			continue
+		}
+		sources = append(sources, src)
+	}
+
+	if len(sources) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests loaded.\n")
+		os.Exit(1)
+	}
+
+	// Analyze.
+	idx := buildHashIndex(sources)
+	overlappingPairs(sources) // detect overlaps but don't warn (already detected by analyze)
+	uniqueByMachine := findUnique(sources, idx)
+
+	// Apply machine filter if specified.
+	if *machineFilter != "" {
+		filtered := make(map[string][]ManifestRow)
+		if rows, ok := uniqueByMachine[*machineFilter]; ok {
+			filtered[*machineFilter] = rows
+		}
+		uniqueByMachine = filtered
+	}
+
+	// Print to stdout.
+	printRiskReport(os.Stdout, sources, uniqueByMachine)
+
+	// Write CSV if requested.
+	if *csvPrefix != "" {
+		fmt.Fprintln(os.Stdout)
+		if err := writeRiskCSV(*csvPrefix, uniqueByMachine); err != nil {
+			fmt.Fprintln(os.Stderr, "Error writing CSV:", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func printRiskReport(w io.Writer, sources []ManifestSource, uniqueByMachine map[string][]ManifestRow) {
+	sep := "================================================================="
+
+	// Stale warnings.
+	const staleThreshold = 30 * 24 * time.Hour
+	now := time.Now()
+	var stale []string
+	for _, src := range sources {
+		if src.LastScanned == "" {
+			stale = append(stale, fmt.Sprintf("  %s  (no scan date recorded)", src.Label))
+			continue
+		}
+		t, err := time.Parse("2006-01-02 15:04:05", src.LastScanned)
+		if err != nil {
+			continue
+		}
+		age := now.Sub(t)
+		if age > staleThreshold {
+			days := int(age.Hours() / 24)
+			stale = append(stale, fmt.Sprintf("  %s  (last scanned %d days ago)", src.Label, days))
+		}
+	}
+	if len(stale) > 0 {
+		fmt.Fprintln(w, "\n⚠  STALE MANIFESTS — results may not reflect current state")
+		fmt.Fprintln(w, strings.Repeat("─", 65))
+		for _, s := range stale {
+			fmt.Fprintln(w, s)
+		}
+		fmt.Fprintln(w, "  Run 'photo-organizer rescan' on these machines to refresh.")
+	}
+
+	// Summary header.
+	fmt.Fprintln(w, "\n" + sep)
+	fmt.Fprintln(w, "RISK REPORT — Files with no backup (single machine only)")
+	fmt.Fprintln(w, sep)
+
+	// Compute per-machine totals.
+	type machineInfo struct {
+		name     string
+		files    int
+		size     int64
+	}
+	var machineStats []machineInfo
+	for machine, rows := range uniqueByMachine {
+		var totalSize int64
+		for _, row := range rows {
+			totalSize += row.SizeBytes
+		}
+		machineStats = append(machineStats, machineInfo{machine, len(rows), totalSize})
+	}
+	// Sort by size descending (highest risk first).
+	sort.Slice(machineStats, func(i, j int) bool {
+		return machineStats[i].size > machineStats[j].size
+	})
+
+	// Print summary table.
+	fmt.Fprintf(w, "  %-30s  %10s  %10s\n", "MACHINE", "FILES", "SIZE")
+	fmt.Fprintf(w, "  %-30s  %10s  %10s\n", strings.Repeat("─", 30), strings.Repeat("─", 10), strings.Repeat("─", 10))
+
+	var totalFiles, totalSize int64
+	for _, m := range machineStats {
+		riskLabel := ""
+		if m.files > 100 || m.size > 10*1024*1024*1024 {
+			riskLabel = "  ← HIGH RISK"
+		}
+		fmt.Fprintf(w, "  %-30s  %10s  %10s%s\n", m.name, formatCount(m.files), formatSize(m.size), riskLabel)
+		totalFiles += int64(m.files)
+		totalSize += m.size
+	}
+
+	// Per-machine breakdown.
+	for _, mi := range machineStats {
+		rows := uniqueByMachine[mi.name]
+		fmt.Fprintln(w, strings.Repeat("─", 65))
+		fmt.Fprintf(w, "%s  —  %s files  (%s at risk)\n", mi.name, formatCount(len(rows)), formatSize(mi.size))
+		fmt.Fprintln(w, strings.Repeat("─", 65))
+
+		// Group by top-level folder.
+		folderMap := make(map[string]struct {
+			files int
+			size  int64
+		})
+		for _, row := range rows {
+			folder := topLevelFolder(row.RelativePath)
+			info := folderMap[folder]
+			info.files++
+			info.size += row.SizeBytes
+			folderMap[folder] = info
+		}
+
+		// Sort folders by size descending.
+		type folderInfo struct {
+			name  string
+			files int
+			size  int64
+		}
+		var folders []folderInfo
+		for name, info := range folderMap {
+			folders = append(folders, folderInfo{name, info.files, info.size})
+		}
+		sort.Slice(folders, func(i, j int) bool {
+			return folders[i].size > folders[j].size
+		})
+
+		// Print folders.
+		fmt.Fprintf(w, "  %-30s  %10s  %10s\n", "FOLDER", "FILES", "SIZE")
+		fmt.Fprintf(w, "  %-30s  %10s  %10s\n", strings.Repeat("─", 30), strings.Repeat("─", 10), strings.Repeat("─", 10))
+		for _, f := range folders {
+			folderDisplay := f.name
+			if folderDisplay == "(root)" {
+				folderDisplay = "/ (root files)"
+			}
+			fmt.Fprintf(w, "  %-30s  %10s  %10s\n", folderDisplay, formatCount(f.files), formatSize(f.size))
+		}
+
+		// Top 5 largest files.
+		largestFiles := make([]ManifestRow, len(rows))
+		copy(largestFiles, rows)
+		sort.Slice(largestFiles, func(i, j int) bool {
+			return largestFiles[i].SizeBytes > largestFiles[j].SizeBytes
+		})
+		if len(largestFiles) > 5 {
+			largestFiles = largestFiles[:5]
+		}
+
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "  Largest at-risk files:")
+		for _, row := range largestFiles {
+			fmt.Fprintf(w, "    %-40s  %10s\n", truncate(row.RelativePath, 40), formatSize(row.SizeBytes))
+		}
+	}
+
+	// Footer.
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, sep)
+	fmt.Fprintf(w, "Total at risk: %s files  (%s)\n", formatCount(int(totalFiles)), formatSize(totalSize))
+	fmt.Fprintln(w, "Run 'photo-organizer migrate' to copy unique files to another machine.")
+	fmt.Fprintln(w, sep)
+}
+
+func writeRiskCSV(prefix string, uniqueByMachine map[string][]ManifestRow) error {
+	path := prefix + "_risk.csv"
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	w.Write([]string{"machine", "scan_path", "relative_path", "filename", "size_bytes", "partial_hash", "full_hash"})
+
+	for machine, rows := range uniqueByMachine {
+		for _, row := range rows {
+			w.Write([]string{
+				machine,
+				row.ScanPath,
+				row.RelativePath,
+				row.Filename,
+				strconv.FormatInt(row.SizeBytes, 10),
+				row.PartialHash,
+				row.FullHash,
+			})
+		}
+	}
+
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stdout, "Wrote %s\n", path)
+	return nil
+}
+
+// =============================================================================
 // Migrate (copy unique files preserving folder structure)
 // =============================================================================
 
