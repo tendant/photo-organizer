@@ -858,6 +858,243 @@ func runAnalyze(args []string) {
 }
 
 // =============================================================================
+// Plan (safe-delete script)
+// =============================================================================
+
+// DeleteCandidate is a file that can safely be removed from one machine
+// because it is confirmed to exist on at least one other machine.
+type DeleteCandidate struct {
+	Machine     string   // machine to delete from
+	ScanPath    string   // scan root on that machine
+	RelPath     string   // relative path within scan root
+	SizeBytes   int64
+	BackedUpOn  []string // machine labels that have a confirmed copy
+}
+
+func buildDeletePlan(sources []ManifestSource, keepMachine string) []DeleteCandidate {
+	idx := buildHashIndex(sources)
+	overlaps := overlappingPairs(sources)
+	var candidates []DeleteCandidate
+
+	for _, locs := range idx {
+		// Collect distinct machines that have this hash (excluding overlapping scans).
+		machineSet := make(map[string]bool)
+		for _, loc := range locs {
+			machineSet[sources[loc.sourceIdx].MachineName] = true
+		}
+		if len(machineSet) < 2 {
+			continue // only on one machine — not safe to delete anywhere
+		}
+		if keepMachine != "" && !machineSet[keepMachine] {
+			continue // keep machine doesn't have it — can't guarantee a backup
+		}
+
+		// Build the list of backup labels (all machines except the one being deleted).
+		backupLabels := func(skipMachine string) []string {
+			seen := make(map[string]bool)
+			var labels []string
+			for _, loc := range locs {
+				src := sources[loc.sourceIdx]
+				if src.MachineName == skipMachine {
+					continue
+				}
+				if overlaps[[2]int{loc.sourceIdx, loc.sourceIdx}] {
+					continue
+				}
+				lbl := src.Label
+				if !seen[lbl] {
+					seen[lbl] = true
+					labels = append(labels, lbl)
+				}
+			}
+			sort.Strings(labels)
+			return labels
+		}
+
+		// For each location NOT on the keep machine, it's a delete candidate.
+		seenAbs := make(map[string]bool)
+		for _, loc := range locs {
+			src := sources[loc.sourceIdx]
+			if keepMachine != "" && src.MachineName == keepMachine {
+				continue
+			}
+			row := src.Rows[loc.rowIdx]
+			abs := absFilePath(src, row)
+			if seenAbs[abs] {
+				continue
+			}
+			seenAbs[abs] = true
+			candidates = append(candidates, DeleteCandidate{
+				Machine:    src.MachineName,
+				ScanPath:   src.ScanPath,
+				RelPath:    row.RelativePath,
+				SizeBytes:  row.SizeBytes,
+				BackedUpOn: backupLabels(src.MachineName),
+			})
+		}
+	}
+
+	// Sort by machine then path for readable output.
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Machine != candidates[j].Machine {
+			return candidates[i].Machine < candidates[j].Machine
+		}
+		return candidates[i].RelPath < candidates[j].RelPath
+	})
+	return candidates
+}
+
+func runPlan(args []string) {
+	// Pre-separate flags from positional args.
+	var flagArgs, posArgs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flagArgs = append(flagArgs, a)
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && !strings.Contains(a, "=") {
+				name := strings.TrimLeft(a, "-")
+				if name == "keep" || name == "out" {
+					i++
+					flagArgs = append(flagArgs, args[i])
+				}
+			}
+		} else {
+			posArgs = append(posArgs, a)
+		}
+	}
+
+	fs := flag.NewFlagSet("plan", flag.ExitOnError)
+	keepFlag := fs.String("keep", "", "machine name whose copies are the authoritative backup (required)")
+	outFlag := fs.String("out", "", "write shell script to this file instead of stdout")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer plan --keep <machine> [manifest...]\n\n")
+		fmt.Fprintf(os.Stderr, "Generates a shell script of rm commands for files safely backed up\n")
+		fmt.Fprintf(os.Stderr, "on the --keep machine. Review the script before running it.\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(flagArgs)
+
+	if *keepFlag == "" {
+		fmt.Fprintln(os.Stderr, "plan: --keep <machine> is required")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	manifestPaths := posArgs
+	if len(manifestPaths) == 0 {
+		defaultDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
+		matches, _ := filepath.Glob(filepath.Join(defaultDir, "*.csv"))
+		if len(matches) > 0 {
+			manifestPaths = matches
+			fmt.Fprintf(os.Stderr, "No manifests specified, loading %s (%d files)\n\n", defaultDir, len(matches))
+		} else {
+			fmt.Fprintf(os.Stderr, "plan: no manifests specified and none found in %s\n", defaultDir)
+			os.Exit(1)
+		}
+	}
+
+	var sources []ManifestSource
+	for _, path := range manifestPaths {
+		src, err := readManifest(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: skipping %s: %v\n", path, err)
+			continue
+		}
+		sources = append(sources, src)
+		fmt.Fprintf(os.Stderr, "Loaded %s  (%s files)\n", path, formatCount(len(src.Rows)))
+	}
+	if len(sources) == 0 {
+		fmt.Fprintln(os.Stderr, "plan: no valid manifests loaded")
+		os.Exit(1)
+	}
+
+	// Verify keep machine exists in manifests.
+	keepFound := false
+	for _, src := range sources {
+		if src.MachineName == *keepFlag {
+			keepFound = true
+			break
+		}
+	}
+	if !keepFound {
+		fmt.Fprintf(os.Stderr, "plan: machine %q not found in manifests\n", *keepFlag)
+		fmt.Fprintf(os.Stderr, "Available machines: ")
+		seen := make(map[string]bool)
+		for _, src := range sources {
+			if !seen[src.MachineName] {
+				seen[src.MachineName] = true
+				fmt.Fprintf(os.Stderr, "%s ", src.MachineName)
+			}
+		}
+		fmt.Fprintln(os.Stderr)
+		os.Exit(1)
+	}
+
+	candidates := buildDeletePlan(sources, *keepFlag)
+
+	out := os.Stdout
+	if *outFlag != "" {
+		f, err := os.Create(*outFlag)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "plan: cannot write output:", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		out = f
+	}
+
+	// Group by machine for output.
+	byMachine := make(map[string][]DeleteCandidate)
+	for _, c := range candidates {
+		byMachine[c.Machine] = append(byMachine[c.Machine], c)
+	}
+	machines := make([]string, 0, len(byMachine))
+	for m := range byMachine {
+		machines = append(machines, m)
+	}
+	sort.Strings(machines)
+
+	totalSize := int64(0)
+	for _, c := range candidates {
+		totalSize += c.SizeBytes
+	}
+
+	fmt.Fprintf(out, "#!/bin/bash\n")
+	fmt.Fprintf(out, "# Safe-delete plan generated by photo-organizer\n")
+	fmt.Fprintf(out, "# Keeping authoritative copy on: %s\n", *keepFlag)
+	fmt.Fprintf(out, "# Files to remove: %s  (%s reclaimable)\n", formatCount(len(candidates)), formatSize(totalSize))
+	fmt.Fprintf(out, "#\n")
+	fmt.Fprintf(out, "# REVIEW CAREFULLY before running.\n")
+	fmt.Fprintf(out, "# All rm commands are commented out. Uncomment lines you want to execute,\n")
+	fmt.Fprintf(out, "# or run:  bash <(grep -v '^#' this_script.sh)\n")
+	fmt.Fprintf(out, "#\n")
+
+	for _, machine := range machines {
+		list := byMachine[machine]
+		machSize := int64(0)
+		for _, c := range list {
+			machSize += c.SizeBytes
+		}
+		fmt.Fprintf(out, "\n# === %s — %s files, %s ===\n", machine, formatCount(len(list)), formatSize(machSize))
+		for _, c := range list {
+			abs := filepath.Join(c.ScanPath, filepath.FromSlash(c.RelPath))
+			fmt.Fprintf(out, "# backed up on: %s\n", strings.Join(c.BackedUpOn, ", "))
+			fmt.Fprintf(out, "#rm %s\n", shellQuote(abs))
+		}
+	}
+
+	if *outFlag != "" {
+		fmt.Fprintf(os.Stderr, "\nWrote plan to %s (%s files, %s reclaimable)\n",
+			*outFlag, formatCount(len(candidates)), formatSize(totalSize))
+	}
+}
+
+// shellQuote wraps a path in single quotes, escaping any single quotes within.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// =============================================================================
 // Formatting Helpers
 // =============================================================================
 

@@ -247,6 +247,8 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 			if path != dir && (strings.HasPrefix(info.Name(), ".") || skipFolders[info.Name()]) {
 				return filepath.SkipDir
 			}
+			rel, _ := filepath.Rel(dir, path)
+			fmt.Fprintf(os.Stderr, "\r  walking: %-60s", rel)
 			return nil
 		}
 		if strings.HasPrefix(info.Name(), ".") || !isMediaFile(filepath.Ext(path)) {
@@ -258,7 +260,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(os.Stderr, "  %s files found, processing...\n", formatCount(len(raw)))
+	fmt.Fprintf(os.Stderr, "\r  %s files found, processing...\n", formatCount(len(raw)))
 
 	// Phase 2: extract EXIF dates and compute hashes.
 	// Limit to 4 workers — more than that causes I/O contention on SSDs.
@@ -518,6 +520,9 @@ func main() {
 		case "analyze":
 			runAnalyze(os.Args[2:])
 			return
+		case "plan":
+			runPlan(os.Args[2:])
+			return
 		case "scan":
 			// Strip the subcommand word and fall through to runScan
 			os.Args = append(os.Args[:1], os.Args[2:]...)
@@ -535,7 +540,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "photo-organizer — scan folders and analyze photo manifests across machines\n\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
 	fmt.Fprintf(os.Stderr, "  scan [directory]              Scan a directory and write a manifest CSV\n")
-	fmt.Fprintf(os.Stderr, "  analyze manifest1 manifest2   Compare manifests, find cross-machine duplicates\n\n")
+	fmt.Fprintf(os.Stderr, "  analyze                       Compare manifests, find cross-machine duplicates\n")
+	fmt.Fprintf(os.Stderr, "  plan --keep <machine>         Generate safe-delete script for duplicates\n\n")
 	fmt.Fprintf(os.Stderr, "scan flags:\n")
 	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ (default: ~/manifests)\n")
 	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n")
