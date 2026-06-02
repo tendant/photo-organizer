@@ -276,19 +276,22 @@ func findDuplicates(sources []ManifestSource, idx map[string][]hashLocation) []D
 // Result is keyed by machine name.
 func findUnique(sources []ManifestSource, idx map[string][]hashLocation) map[string][]ManifestRow {
 	result := make(map[string][]ManifestRow)
-	for hash, locs := range idx {
+	for _, locs := range idx {
 		machines := distinctMachines(locs, sources)
 		if len(machines) != 1 {
 			continue
 		}
-		// All locs are on the same machine; collect one row per unique relative path.
-		seen := make(map[string]bool)
+		// Deduplicate by absolute path — overlapping scans on the same machine
+		// (parent + child) would otherwise list the same physical file twice.
+		seenAbs := make(map[string]bool)
 		for _, loc := range locs {
-			row := sources[loc.sourceIdx].Rows[loc.rowIdx]
-			if seen[hash+"|"+row.RelativePath] {
+			src := sources[loc.sourceIdx]
+			row := src.Rows[loc.rowIdx]
+			abs := absFilePath(src, row)
+			if seenAbs[abs] {
 				continue
 			}
-			seen[hash+"|"+row.RelativePath] = true
+			seenAbs[abs] = true
 			result[row.MachineName] = append(result[row.MachineName], row)
 		}
 	}
@@ -1127,11 +1130,12 @@ func runPlan(args []string) {
 		fmt.Fprintf(out, "\n# === %s — %s files, %s ===\n", machine, formatCount(len(list)), formatSize(machSize))
 		for _, c := range list {
 			abs := filepath.Join(c.ScanPath, filepath.FromSlash(c.RelPath))
-			backupLabels := make([]string, len(c.Backups))
-		for i, b := range c.Backups {
-			backupLabels[i] = b.Label
-		}
-		fmt.Fprintf(out, "# backed up on: %s\n", strings.Join(backupLabels, ", "))
+			for _, b := range c.Backups {
+				fmt.Fprintf(out, "# backup: %s\n", b.AbsPath)
+				if strings.Contains(b.Label, "⚠") {
+					fmt.Fprintf(out, "#         ⚠ NOT VERIFIED ON DISK\n")
+				}
+			}
 			fmt.Fprintf(out, "#rm %s\n", shellQuote(abs))
 		}
 	}

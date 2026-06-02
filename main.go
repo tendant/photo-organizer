@@ -584,6 +584,12 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 
 	mstats.New = newCount
 	mstats.Updated = updatedCount
+
+	if len(existing) > 100000 {
+		fmt.Fprintf(os.Stderr, "⚠  Manifest has %s entries — consider scanning subfolders separately with --root to split it up.\n",
+			formatCount(len(existing)))
+	}
+
 	return mstats, nil
 }
 
