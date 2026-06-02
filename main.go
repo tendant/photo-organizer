@@ -160,9 +160,9 @@ func getDateFallback(path string) time.Time {
 // CacheEntry holds previously computed values for a file keyed by relative path.
 type CacheEntry struct {
 	SizeBytes   int64
-	Hash        string
+	PartialHash string
+	FullHash    string
 	CaptureDate time.Time
-	HashMode    string // "partial" or "full"
 }
 
 // loadCache reads an existing manifest and returns a map of relPath → CacheEntry
@@ -192,8 +192,7 @@ func loadCache(manifestFile string) map[string]CacheEntry {
 	}
 	for _, row := range records[1:] {
 		relPath := col(row, "relative_path")
-		hash := col(row, "file_hash")
-		if relPath == "" || hash == "" {
+		if relPath == "" {
 			continue
 		}
 		size, _ := strconv.ParseInt(col(row, "file_size_bytes"), 10, 64)
@@ -201,11 +200,20 @@ func loadCache(manifestFile string) map[string]CacheEntry {
 		if s := col(row, "capture_date"); s != "" {
 			captureDate, _ = time.Parse("2006:01:02 15:04:05", s)
 		}
-		hashMode := col(row, "hash_mode")
-		if hashMode == "" {
-			hashMode = "partial" // old manifests used partial hash
+		// partial_hash is the new column; fall back to file_hash for old manifests.
+		partialHash := col(row, "partial_hash")
+		if partialHash == "" {
+			partialHash = col(row, "file_hash")
 		}
-		cache[relPath] = CacheEntry{SizeBytes: size, Hash: hash, CaptureDate: captureDate, HashMode: hashMode}
+		if partialHash == "" {
+			continue
+		}
+		cache[relPath] = CacheEntry{
+			SizeBytes:   size,
+			PartialHash: partialHash,
+			FullHash:    col(row, "full_hash"),
+			CaptureDate: captureDate,
+		}
 	}
 	return cache
 }
@@ -219,8 +227,8 @@ type FileInfo struct {
 	Size        int64
 	ModTime     time.Time
 	CaptureDate time.Time
-	Hash        string
-	HashMode    string // "partial" or "full"
+	PartialHash string
+	FullHash    string // empty until a collision is detected
 }
 
 func isMediaFile(ext string) bool {
@@ -307,11 +315,13 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 
 			entry, hasCached := cache[relPath]
 			if hasCached && entry.SizeBytes == rf.size {
-				fi.Hash, fi.CaptureDate, fi.HashMode = entry.Hash, entry.CaptureDate, entry.HashMode
+				fi.PartialHash = entry.PartialHash
+				fi.FullHash = entry.FullHash
+				fi.CaptureDate = entry.CaptureDate
 				cachedCount.Add(1)
 			} else {
-				fi.Hash, fi.CaptureDate = processFile(rf.path)
-				fi.HashMode = "partial"
+				fi.PartialHash, fi.CaptureDate = processFile(rf.path)
+				fi.FullHash = ""
 			}
 			files[i] = fi
 
@@ -331,10 +341,12 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 	// one other file in this scan to a full-file hash. This eliminates false
 	// positives from cameras whose videos share identical first-64KB headers.
 	// --full-hash additionally upgrades all remaining partial-hash files.
+	// Phase 3: compute full hash for files whose partial hash collides with
+	// at least one other file, and for all files when --full-hash is set.
 	byPartial := make(map[string][]int)
 	for i, fi := range files {
-		if fi.HashMode == "partial" {
-			byPartial[fi.Hash] = append(byPartial[fi.Hash], i)
+		if fi.FullHash == "" { // skip files already full-hashed from cache
+			byPartial[fi.PartialHash] = append(byPartial[fi.PartialHash], i)
 		}
 	}
 	var upgradeIdx []int
@@ -354,8 +366,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 			go func(idx int) {
 				defer uwg.Done()
 				defer func() { <-sem }()
-				files[idx].Hash = computeFullHash(files[idx].Path)
-				files[idx].HashMode = "full"
+				files[idx].FullHash = computeFullHash(files[idx].Path)
 			}(idx)
 		}
 		uwg.Wait()
@@ -500,12 +511,12 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 		"capture_date",
 		"camera_make",
 		"camera_model",
-		"file_hash",
+		"partial_hash",
+		"full_hash",
 		"extension",
 		"scan_date",
 		"scan_path",
 		"machine_name",
-		"hash_mode",
 	}
 
 	// Load existing entries keyed by relative path, padding rows to current width.
@@ -538,23 +549,22 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 		if row, exists := existing[relPath]; exists {
 			storedSize, _ := strconv.ParseInt(row[headerIdx["file_size_bytes"]], 10, 64)
 			sizeChanged := storedSize != fi.Size
-			hashChanged := row[headerIdx["file_hash"]] != fi.Hash || row[headerIdx["hash_mode"]] != fi.HashMode
+			hashChanged := row[headerIdx["partial_hash"]] != fi.PartialHash ||
+				row[headerIdx["full_hash"]] != fi.FullHash
 
 			if sizeChanged {
-				// File was modified — update all variable fields.
 				row[headerIdx["file_size_bytes"]] = fmt.Sprintf("%d", fi.Size)
 				row[headerIdx["file_size_mb"]] = fmt.Sprintf("%.2f", float64(fi.Size)/(1024*1024))
 				row[headerIdx["file_modified"]] = fi.ModTime.Format("2006-01-02 15:04:05")
 				row[headerIdx["capture_date"]] = fi.CaptureDate.Format("2006:01:02 15:04:05")
-				row[headerIdx["file_hash"]] = fi.Hash
-				row[headerIdx["hash_mode"]] = fi.HashMode
+				row[headerIdx["partial_hash"]] = fi.PartialHash
+				row[headerIdx["full_hash"]] = fi.FullHash
 				row[headerIdx["scan_date"]] = time.Now().Format("2006-01-02 15:04:05")
 				existing[relPath] = row
 				updatedCount++
 			} else if hashChanged {
-				// Size same but hash/mode upgraded (e.g. partial → full).
-				row[headerIdx["file_hash"]] = fi.Hash
-				row[headerIdx["hash_mode"]] = fi.HashMode
+				row[headerIdx["partial_hash"]] = fi.PartialHash
+				row[headerIdx["full_hash"]] = fi.FullHash
 				existing[relPath] = row
 				updatedCount++
 			}
@@ -568,12 +578,12 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 			fi.ModTime.Format("2006-01-02 15:04:05"),
 			fi.CaptureDate.Format("2006:01:02 15:04:05"),
 			"", "", // camera make/model (not yet extracted)
-			fi.Hash,
+			fi.PartialHash,
+			fi.FullHash,
 			strings.ToLower(filepath.Ext(fi.Path)),
 			time.Now().Format("2006-01-02 15:04:05"),
 			scanDir,
 			machineName,
-			fi.HashMode,
 		}
 		newCount++
 	}

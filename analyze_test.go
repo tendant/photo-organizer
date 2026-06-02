@@ -16,11 +16,11 @@ func makeSource(machine, scanPath string, files []struct{ rel, hash string; size
 			Filename:     f.rel,
 			RelativePath: f.rel,
 			SizeBytes:    f.size,
-			FileHash:     f.hash,
+			PartialHash:  f.hash,
+			FullHash:     f.hash, // tests use same value for both; real files differ
 			Extension:    ".jpg",
 			ScanPath:     scanPath,
 			MachineName:  machine,
-			HashMode:     "full",
 		})
 	}
 	return ManifestSource{
@@ -120,8 +120,8 @@ func TestFindDuplicates(t *testing.T) {
 	if len(dups) != 1 {
 		t.Fatalf("expected 1 duplicate group, got %d", len(dups))
 	}
-	if dups[0].Hash != "aaa" {
-		t.Errorf("expected hash aaa, got %s", dups[0].Hash)
+	if dups[0].PartialHash != "aaa" {
+		t.Errorf("expected hash aaa, got %s", dups[0].PartialHash)
 	}
 	if len(dups[0].Locations) != 2 {
 		t.Errorf("expected 2 locations, got %d", len(dups[0].Locations))
@@ -160,10 +160,10 @@ func TestFindUnique(t *testing.T) {
 	idx := buildHashIndex(sources)
 	unique := findUnique(sources, idx)
 
-	if len(unique["mac"]) != 1 || unique["mac"][0].FileHash != "bbb" {
+	if len(unique["mac"]) != 1 || unique["mac"][0].PartialHash != "bbb" {
 		t.Errorf("mac unique: expected [bbb], got %v", unique["mac"])
 	}
-	if len(unique["nas"]) != 1 || unique["nas"][0].FileHash != "ccc" {
+	if len(unique["nas"]) != 1 || unique["nas"][0].PartialHash != "ccc" {
 		t.Errorf("nas unique: expected [ccc], got %v", unique["nas"])
 	}
 }

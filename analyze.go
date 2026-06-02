@@ -20,11 +20,11 @@ type ManifestRow struct {
 	Filename     string
 	RelativePath string
 	SizeBytes    int64
-	FileHash     string
+	PartialHash  string
+	FullHash     string // empty if full hash not yet computed
 	Extension    string
 	ScanPath     string
 	MachineName  string // empty on old 12-column manifests
-	HashMode     string // "partial" or "full"; empty = partial (old manifests)
 }
 
 // ManifestSource is one scan run: one CSV file = one (machine, folder) pair.
@@ -37,9 +37,11 @@ type ManifestSource struct {
 }
 
 type DuplicateGroup struct {
-	Hash      string
-	SizeBytes int64
-	Locations []string // "label: relative_path"
+	PartialHash string
+	FullHash    string // non-empty = confirmed via full-file hash
+	SizeBytes   int64
+	Locations   []string // "label: relative_path"
+	Confirmed   bool
 }
 
 type FolderStats struct {
@@ -90,19 +92,20 @@ func readManifest(csvPath string) (ManifestSource, error) {
 			continue
 		}
 		size, _ := strconv.ParseInt(col(row, "file_size_bytes"), 10, 64)
-		hashMode := col(row, "hash_mode")
-		if hashMode == "" {
-			hashMode = "partial"
+		// partial_hash is the new column; fall back to file_hash for old manifests.
+		partialHash := col(row, "partial_hash")
+		if partialHash == "" {
+			partialHash = col(row, "file_hash")
 		}
 		rows = append(rows, ManifestRow{
 			Filename:     col(row, "filename"),
 			RelativePath: col(row, "relative_path"),
 			SizeBytes:    size,
-			FileHash:     col(row, "file_hash"),
+			PartialHash:  partialHash,
+			FullHash:     col(row, "full_hash"),
 			Extension:    col(row, "extension"),
 			ScanPath:     col(row, "scan_path"),
 			MachineName:  col(row, "machine_name"),
-			HashMode:     hashMode,
 		})
 	}
 
@@ -232,10 +235,10 @@ func buildHashIndex(sources []ManifestSource) map[string][]hashLocation {
 	idx := make(map[string][]hashLocation)
 	for si, src := range sources {
 		for ri, row := range src.Rows {
-			if row.FileHash == "" {
+			if row.PartialHash == "" {
 				continue
 			}
-			idx[row.FileHash] = append(idx[row.FileHash], hashLocation{si, ri})
+			idx[row.PartialHash] = append(idx[row.PartialHash], hashLocation{si, ri})
 		}
 	}
 	return idx
@@ -250,25 +253,50 @@ func distinctMachines(locs []hashLocation, sources []ManifestSource) map[string]
 	return m
 }
 
+// confirmed returns true when all locations in a group have matching full hashes,
+// meaning the duplicate is verified beyond the partial hash pre-filter.
+func confirmed(locs []hashLocation, sources []ManifestSource) bool {
+	fullHash := ""
+	for _, loc := range locs {
+		fh := sources[loc.sourceIdx].Rows[loc.rowIdx].FullHash
+		if fh == "" {
+			return false // at least one file lacks a full hash
+		}
+		if fullHash == "" {
+			fullHash = fh
+		} else if fh != fullHash {
+			return false // full hashes differ — partial hash collision, not a real dup
+		}
+	}
+	return fullHash != ""
+}
+
 func findDuplicates(sources []ManifestSource, idx map[string][]hashLocation) []DuplicateGroup {
 	var groups []DuplicateGroup
-	for hash, locs := range idx {
+	for partialHash, locs := range idx {
 		machines := distinctMachines(locs, sources)
 		if len(machines) < 2 {
 			continue
 		}
 		var locations []string
 		var sizeBytes int64
+		fullHash := ""
+		isConfirmed := confirmed(locs, sources)
 		for _, loc := range locs {
 			row := sources[loc.sourceIdx].Rows[loc.rowIdx]
 			locations = append(locations, sources[loc.sourceIdx].Label+": "+row.RelativePath)
 			sizeBytes = row.SizeBytes
+			if row.FullHash != "" && fullHash == "" {
+				fullHash = row.FullHash
+			}
 		}
 		sort.Strings(locations)
 		groups = append(groups, DuplicateGroup{
-			Hash:      hash,
-			SizeBytes: sizeBytes,
-			Locations: locations,
+			PartialHash: partialHash,
+			FullHash:    fullHash,
+			SizeBytes:   sizeBytes,
+			Locations:   locations,
+			Confirmed:   isConfirmed,
 		})
 	}
 	// Sort by size descending
@@ -307,11 +335,11 @@ func findUnique(sources []ManifestSource, idx map[string][]hashLocation) map[str
 // findIntraMachine returns groups of rows that share a hash within the same
 // machine but across different sources (folders) or different relative paths.
 type intraDupGroup struct {
-	MachineName   string
-	Hash          string
-	SizeBytes     int64
-	Locations     []string // "label: relative_path"
-	HashMode      string   // "partial" or "full"
+	MachineName string
+	Hash        string
+	SizeBytes   int64
+	Locations   []string // "label: relative_path"
+	FullHashed  bool     // true when all locations have full hashes
 }
 
 func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) []intraDupGroup {
@@ -329,7 +357,7 @@ func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) [
 			seenAbs := make(map[string]bool)
 			var locations []string
 			var sizeBytes int64
-			hashMode := "full"
+			allFullHashed := true
 			for _, loc := range mLocs {
 				row := sources[loc.sourceIdx].Rows[loc.rowIdx]
 				abs := absFilePath(sources[loc.sourceIdx], row)
@@ -339,8 +367,8 @@ func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) [
 				seenAbs[abs] = true
 				locations = append(locations, sources[loc.sourceIdx].Label+": "+row.RelativePath)
 				sizeBytes = row.SizeBytes
-				if row.HashMode == "partial" {
-					hashMode = "partial"
+				if row.FullHash == "" {
+					allFullHashed = false
 				}
 			}
 			if len(locations) < 2 {
@@ -348,11 +376,11 @@ func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) [
 			}
 			sort.Strings(locations)
 			result = append(result, intraDupGroup{
-				MachineName: machine,
-				Hash:        hash,
-				SizeBytes:   sizeBytes,
-				Locations:   locations,
-				HashMode:    hashMode,
+				MachineName:  machine,
+				Hash:         hash,
+				SizeBytes:    sizeBytes,
+				Locations:    locations,
+				FullHashed:   allFullHashed,
 			})
 		}
 	}
@@ -375,7 +403,7 @@ func computeFolderRedundancy(sources []ManifestSource, idx map[string][]hashLoca
 			key := folderKey{si, folder}
 			totals[key]++
 
-			locs := idx[row.FileHash]
+			locs := idx[row.PartialHash]
 			for _, loc := range locs {
 				if loc.sourceIdx == si {
 					continue
@@ -559,7 +587,11 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 		limit = 20
 	}
 	for _, g := range duplicates[:limit] {
-		fmt.Fprintf(w, "  [%8s]  %s\n", formatSize(g.SizeBytes), g.Hash[:12]+"...")
+		conf := ""
+		if !g.Confirmed {
+			conf = "  ⚠ unconfirmed (partial hash only)"
+		}
+		fmt.Fprintf(w, "  [%8s]  %s%s\n", formatSize(g.SizeBytes), g.PartialHash[:12]+"...", conf)
 		for i, loc := range g.Locations {
 			if i >= 4 {
 				fmt.Fprintf(w, "    (+%d more locations)\n", len(g.Locations)-4)
@@ -616,12 +648,12 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 			return intraDups[i].SizeBytes > intraDups[j].SizeBytes
 		})
 
-		var confirmed, unconfirmed []intraDupGroup
+		var confirmedDups, unconfirmedDups []intraDupGroup
 		for _, g := range intraDups {
-			if g.HashMode == "full" {
-				confirmed = append(confirmed, g)
+			if g.FullHashed {
+				confirmedDups = append(confirmedDups, g)
 			} else {
-				unconfirmed = append(unconfirmed, g)
+				unconfirmedDups = append(unconfirmedDups, g)
 			}
 		}
 
@@ -652,11 +684,11 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 			}
 		}
 
-		printIntraDupGroups(confirmed, "CONFIRMED duplicates (full hash)")
-		if len(unconfirmed) > 0 {
-			printIntraDupGroups(unconfirmed, "UNCONFIRMED — partial hash only (may be false positives for videos)")
-			fmt.Fprintf(w, "\n  ⚠  Re-scan with --full-hash to confirm or dismiss these %s groups.\n",
-				formatCount(len(unconfirmed)))
+		printIntraDupGroups(confirmedDups, "CONFIRMED duplicates (full hash)")
+		if len(unconfirmedDups) > 0 {
+			printIntraDupGroups(unconfirmedDups, "UNCONFIRMED — partial hash only (may be false positives for videos)")
+			fmt.Fprintf(w, "\n  ⚠  Re-scan to confirm or dismiss these %s groups (collisions will auto-upgrade to full hash).\n",
+				formatCount(len(unconfirmedDups)))
 		}
 		fmt.Fprintln(w)
 	}
@@ -767,10 +799,10 @@ func writeDuplicatesCSV(path string, groups []DuplicateGroup) error {
 	}
 	defer f.Close()
 	w := csv.NewWriter(f)
-	w.Write([]string{"hash", "size_bytes", "location"})
+	w.Write([]string{"partial_hash", "full_hash", "confirmed", "size_bytes", "location"})
 	for _, g := range groups {
 		for _, loc := range g.Locations {
-			w.Write([]string{g.Hash, strconv.FormatInt(g.SizeBytes, 10), loc})
+			w.Write([]string{g.PartialHash, g.FullHash, strconv.FormatBool(g.Confirmed), strconv.FormatInt(g.SizeBytes, 10), loc})
 		}
 	}
 	w.Flush()
@@ -784,7 +816,7 @@ func writeUniqueCSV(path string, uniqueByMachine map[string][]ManifestRow) error
 	}
 	defer f.Close()
 	w := csv.NewWriter(f)
-	w.Write([]string{"machine_name", "relative_path", "size_bytes", "extension", "file_hash"})
+	w.Write([]string{"machine_name", "relative_path", "size_bytes", "extension", "partial_hash", "full_hash"})
 	machines := make([]string, 0, len(uniqueByMachine))
 	for m := range uniqueByMachine {
 		machines = append(machines, m)
@@ -794,7 +826,7 @@ func writeUniqueCSV(path string, uniqueByMachine map[string][]ManifestRow) error
 		rows := uniqueByMachine[m]
 		sort.Slice(rows, func(i, j int) bool { return rows[i].RelativePath < rows[j].RelativePath })
 		for _, row := range rows {
-			w.Write([]string{m, row.RelativePath, strconv.FormatInt(row.SizeBytes, 10), row.Extension, row.FileHash})
+			w.Write([]string{m, row.RelativePath, strconv.FormatInt(row.SizeBytes, 10), row.Extension, row.PartialHash, row.FullHash})
 		}
 	}
 	w.Flush()
