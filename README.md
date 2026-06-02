@@ -1,155 +1,152 @@
-# Photo Organizer
+# photo-organizer
 
-A fast, single-binary tool to organize photos by date.
-
-## Features
-
-- Extracts dates from EXIF metadata
-- Parses dates from filenames (DJI, Sony, etc.)
-- Organizes into `Originals/YYYY/YYYY-MM-DD/` structure
-- Detects and skips duplicates
-- Maintains a manifest CSV for tracking
-- Zero dependencies after compilation
-
-## Building
-
-Requires Go 1.21+
-
-```bash
-# Build for current platform
-make
-
-# Build for all platforms (Linux, macOS, Windows)
-make build-all
-
-# Clean and rebuild
-make clean build
-
-# View all available targets
-make help
-```
-
-## Quick Start
-
-### Initialize a New Photo Library
-
-```bash
-# Create directory structure (Incoming, Originals, Exports, _Manifest)
-make init
-# or
-./photo-organizer --init
-
-# For a custom location
-./photo-organizer --root /path/to/photos --init
-```
+Scan photo and video folders across multiple machines, find duplicates, and generate safe-delete plans. Non-destructive — never moves or deletes files.
 
 ## Installation
 
-### Using Make
-
 ```bash
-# Install system-wide (requires sudo)
-make install
-
-# Install to ~/bin (no sudo required)
-make install-user
-
-# Install Claude Code skill
-make install-skill
+make install        # install to ~/bin (no sudo)
+make install-system # install to /usr/local/bin (requires sudo)
 ```
 
-### Manual Installation
-
+Make sure `~/bin` is in your PATH:
 ```bash
-# Copy to Photos folder
-cp photo-organizer ~/Photos/
-
-# Or install system-wide
-sudo cp photo-organizer /usr/local/bin/
-```
-
-## Usage
-
-```bash
-cd ~/Photos
-
-# Preview what will happen (default - safe)
-./photo-organizer
-
-# Actually move the files
-./photo-organizer --execute
-./photo-organizer -x              # short form
-
-# Execute and update manifest
-./photo-organizer -x -m
-./photo-organizer --execute --update-manifest
-
-# Use custom root directory
-./photo-organizer --root /path/to/photos -x
-```
-
-## Expected Folder Structure
-
-```
-Photos/
-├── Incoming/          ← Drop new photos here
-├── Originals/         ← Organized photos go here
-│   └── 2025/
-│       ├── 2025-01-15/
-│       └── ...
-├── Exports/           ← Your curated/edited photos
-├── _Manifest/         ← Tracking CSV
-└── photo-organizer    ← This binary
+export PATH="$HOME/bin:$PATH"
 ```
 
 ## Workflow
 
-1. Import photos from camera/SD card to `Incoming/`
-2. Run `./photo-organizer` to preview (dry-run by default)
-3. Run `./photo-organizer -x -m` to organize and update manifest
-4. Done!
+### 1. Scan each machine
 
-## Supported Formats
-
-**Photos:** JPG, JPEG, PNG, GIF, HEIC, DNG, ARW, CR2, NEF, RAF
-
-**Videos:** MP4, MOV, AVI, MKV
-
-**Audio:** WAV, MP3 (DJI audio files)
-
-**Sidecars:** LRF, XMP, JSON
-
-## Claude Code Integration
-
-This project includes a Claude Code skill for interactive photo organization.
-
-### Installing the Skill
-
-You can install the skill to any photo library directory:
+Run on every machine that has photos. Manifests land in `~/manifests/` automatically.
 
 ```bash
-# Install to current directory
-./photo-organizer --install-skill
-
-# Install to a specific directory
-./photo-organizer --root /path/to/photos --install-skill
+photo-organizer scan ~/Photos
+photo-organizer scan /Volumes/ExternalDrive
+photo-organizer scan /data/photos
 ```
 
-This creates `.claude/skills/photo-organizer/SKILL.md` in your photo library.
+### 2. Collect manifests
 
-### Using the Skill
+Copy all `~/manifests/_Manifest/*.csv` files from every machine to one place — Dropbox, USB drive, or any shared folder works.
 
-If you have [Claude Code](https://docs.anthropic.com/claude-code) installed, you can use:
+### 3. Analyze
 
 ```bash
-# In Claude Code CLI
-/organize-photos
+photo-organizer analyze                          # auto-loads ~/manifests/_Manifest/*.csv
+photo-organizer analyze *.csv                    # explicit list
+photo-organizer analyze *.csv --csv report       # also write CSV output files
 ```
 
-The skill will guide you through:
-- Previewing photos to be organized
-- Running the organizer in safe or execute mode
-- Updating the manifest
-- Troubleshooting any issues
+The report shows:
+- **Machine summaries** — file counts, total size, unique vs duplicated
+- **Duplicate groups** — files that exist on 2+ machines (sorted by size)
+- **Unique files** — files only on one machine (at risk if that machine fails)
+- **Intra-machine duplicates** — same file in multiple folders on one machine, with paths
+- **Folder redundancy** — per-folder coverage %, flagging fully/nearly-redundant folders
 
-The skill provides intelligent assistance for managing your photo library.
+### 4. Plan safe deletes
+
+```bash
+photo-organizer plan --keep nas-main             # what can be removed from other machines
+photo-organizer plan --keep nas-main --out cleanup.sh
+```
+
+Generates a shell script of `rm` commands for files confirmed to exist on the `--keep` machine. Backup paths are verified on disk where accessible. All commands are **commented out** — review before running.
+
+## Commands
+
+### `scan [directory]`
+
+```
+photo-organizer scan [directory] [flags]
+
+Flags:
+  --root dir        write manifest to dir/_Manifest/  (default: ~/manifests)
+  --machine name    machine label in manifest          (default: stable hardware ID)
+  --full-hash       full-file hash for colliding files (default: first 64KB only)
+```
+
+- Skips dot-folders, system dirs (`PRIVATE`, `THMBNL`, `AVF_INFO`, etc.), and symlinks (with warning)
+- Caches results: repeat scans are near-instant when files haven't changed
+- Captures date from EXIF → filename patterns → file modification time
+- Progress: shows current folder during walk, then X/Y processed
+- Summary: files found, cached, new, upgraded, symlinks skipped, total size
+
+### `analyze [manifest...]`
+
+```
+photo-organizer analyze [manifest...] [flags]
+
+Flags:
+  --csv prefix      write CSV output files with this prefix
+  --threshold n     folder coverage % to flag as nearly-redundant (default: 0.9)
+```
+
+Auto-loads `~/manifests/_Manifest/*.csv` when no manifests are specified.
+
+Detects and handles overlapping parent/child scans on the same machine — shared files are never falsely reported as duplicates.
+
+### `plan --keep <machine> [manifest...]`
+
+```
+photo-organizer plan --keep <machine> [manifest...] [flags]
+
+Flags:
+  --keep machine    authoritative machine to keep (required)
+  --out file        write script to file instead of stdout
+```
+
+Auto-loads `~/manifests/_Manifest/*.csv` when no manifests are specified.
+
+Safety guarantees:
+- Files unique to any machine are never included
+- Backup paths are stat'd on disk — unverified paths are flagged with ⚠
+- All `rm` commands are commented out — nothing executes automatically
+
+## Machine identity
+
+On first run, a stable machine ID is generated from `LocalHostName` + the first 6 characters of the hardware UUID:
+
+```
+Ls-MBP-967e82
+ubuntu-server-acb605
+```
+
+Stored in `~/.photo-organizer-id` and reused on every scan — stable across network changes, hostname renames, or Tailscale suffixes. Edit the file to rename a machine; use `--machine` to override for a single scan.
+
+## Manifest format
+
+Manifests are CSV files in `~/manifests/_Manifest/` named `photo_manifest_<machine>_<path>.csv`. One row per file:
+
+| Column | Description |
+|--------|-------------|
+| `filename` | Base filename |
+| `relative_path` | Path relative to scan root (unique key) |
+| `file_size_bytes` | File size in bytes |
+| `capture_date` | From EXIF, filename pattern, or mtime |
+| `file_hash` | MD5 of first 64KB (or full file if collision) |
+| `hash_mode` | `partial` or `full` |
+| `scan_path` | Absolute path of scan root |
+| `machine_name` | Machine ID |
+
+Manifests are append-only and backward-compatible with older formats.
+
+## Supported file types
+
+**Photos:** `.jpg` `.jpeg` `.png` `.gif` `.heic` `.hif` `.dng` `.arw` `.cr2` `.nef` `.raf`
+
+**Videos:** `.mp4` `.mov` `.avi` `.mkv`
+
+**Audio:** `.wav` `.mp3`
+
+**Sidecars:** `.lrf` `.xmp` `.json`
+
+## Building
+
+```bash
+make            # show help
+make build      # build for current platform
+make build-all  # build for Linux, macOS, Windows
+make install    # install to ~/bin
+```

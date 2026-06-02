@@ -597,7 +597,11 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 
 	// Intra-machine duplicates
 	if len(intraDups) > 0 {
-		// Group by machine for summary
+		// Sort by size descending so largest waste appears first.
+		sort.Slice(intraDups, func(i, j int) bool {
+			return intraDups[i].SizeBytes > intraDups[j].SizeBytes
+		})
+		// Group by machine for the header summary.
 		byMachine := make(map[string]struct{ count int; bytes int64 })
 		for _, g := range intraDups {
 			e := byMachine[g.MachineName]
@@ -614,8 +618,23 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 		sort.Strings(mnames)
 		for _, m := range mnames {
 			e := byMachine[m]
-			fmt.Fprintf(w, "  %-20s  %s duplicate groups  (~%s wasted, not a backup risk)\n",
+			fmt.Fprintf(w, "  %s  %s groups  ~%s wasted (not a backup risk)\n",
 				m, formatCount(e.count), formatSize(e.bytes))
+		}
+		// Show top 20 groups with paths.
+		fmt.Fprintln(w)
+		limit := len(intraDups)
+		if limit > 20 {
+			limit = 20
+		}
+		for _, g := range intraDups[:limit] {
+			fmt.Fprintf(w, "  [%s]  %s\n", formatSize(g.SizeBytes), g.Hash[:12]+"...")
+			for _, loc := range g.Locations {
+				fmt.Fprintf(w, "    %s\n", loc)
+			}
+		}
+		if len(intraDups) > 20 {
+			fmt.Fprintf(w, "  ... and %s more groups\n", formatCount(len(intraDups)-20))
 		}
 		fmt.Fprintln(w)
 	}
@@ -863,17 +882,22 @@ func runAnalyze(args []string) {
 
 // DeleteCandidate is a file that can safely be removed from one machine
 // because it is confirmed to exist on at least one other machine.
+type BackupCopy struct {
+	Label   string // "nas @ /volume1/photos"
+	AbsPath string // "/volume1/photos/Vacation/IMG_001.jpg"
+}
+
 type DeleteCandidate struct {
-	Machine     string   // machine to delete from
-	ScanPath    string   // scan root on that machine
-	RelPath     string   // relative path within scan root
-	SizeBytes   int64
-	BackedUpOn  []string // machine labels that have a confirmed copy
+	Machine   string // machine to delete from
+	ScanPath  string // scan root on that machine
+	RelPath   string // relative path within scan root
+	SizeBytes int64
+	Backups   []BackupCopy
 }
 
 func buildDeletePlan(sources []ManifestSource, keepMachine string) []DeleteCandidate {
 	idx := buildHashIndex(sources)
-	overlaps := overlappingPairs(sources)
+	_ = overlappingPairs(sources) // used indirectly via absFilePath dedup
 	var candidates []DeleteCandidate
 
 	for _, locs := range idx {
@@ -889,26 +913,28 @@ func buildDeletePlan(sources []ManifestSource, keepMachine string) []DeleteCandi
 			continue // keep machine doesn't have it — can't guarantee a backup
 		}
 
-		// Build the list of backup labels (all machines except the one being deleted).
-		backupLabels := func(skipMachine string) []string {
+		// Build the list of backup copies (all non-overlapping sources except the one being deleted).
+		backupCopies := func(skipMachine string) []BackupCopy {
 			seen := make(map[string]bool)
-			var labels []string
+			var copies []BackupCopy
 			for _, loc := range locs {
 				src := sources[loc.sourceIdx]
 				if src.MachineName == skipMachine {
 					continue
 				}
-				if overlaps[[2]int{loc.sourceIdx, loc.sourceIdx}] {
+				row := src.Rows[loc.rowIdx]
+				abs := absFilePath(src, row)
+				if seen[abs] {
 					continue
 				}
-				lbl := src.Label
-				if !seen[lbl] {
-					seen[lbl] = true
-					labels = append(labels, lbl)
-				}
+				seen[abs] = true
+				copies = append(copies, BackupCopy{
+					Label:   src.Label,
+					AbsPath: abs,
+				})
 			}
-			sort.Strings(labels)
-			return labels
+			sort.Slice(copies, func(i, j int) bool { return copies[i].Label < copies[j].Label })
+			return copies
 		}
 
 		// For each location NOT on the keep machine, it's a delete candidate.
@@ -925,11 +951,11 @@ func buildDeletePlan(sources []ManifestSource, keepMachine string) []DeleteCandi
 			}
 			seenAbs[abs] = true
 			candidates = append(candidates, DeleteCandidate{
-				Machine:    src.MachineName,
-				ScanPath:   src.ScanPath,
-				RelPath:    row.RelativePath,
-				SizeBytes:  row.SizeBytes,
-				BackedUpOn: backupLabels(src.MachineName),
+				Machine:   src.MachineName,
+				ScanPath:  src.ScanPath,
+				RelPath:   row.RelativePath,
+				SizeBytes: row.SizeBytes,
+				Backups:   backupCopies(src.MachineName),
 			})
 		}
 	}
@@ -1032,6 +1058,24 @@ func runPlan(args []string) {
 
 	candidates := buildDeletePlan(sources, *keepFlag)
 
+	// Verify backup files exist on disk where accessible.
+	// Paths that can't be stat'd are marked unverified in the script.
+	verified, unverified := 0, 0
+	for i := range candidates {
+		for j := range candidates[i].Backups {
+			if _, err := os.Stat(candidates[i].Backups[j].AbsPath); err == nil {
+				verified++
+			} else {
+				candidates[i].Backups[j].Label += "  ⚠ NOT VERIFIED ON DISK"
+				unverified++
+			}
+		}
+	}
+	if unverified > 0 {
+		fmt.Fprintf(os.Stderr, "\n⚠  %d backup path(s) could not be verified on disk.\n", unverified)
+		fmt.Fprintf(os.Stderr, "   Re-scan the keep machine and verify paths are mounted before running the script.\n")
+	}
+
 	out := os.Stdout
 	if *outFlag != "" {
 		f, err := os.Create(*outFlag)
@@ -1063,10 +1107,15 @@ func runPlan(args []string) {
 	fmt.Fprintf(out, "# Safe-delete plan generated by photo-organizer\n")
 	fmt.Fprintf(out, "# Keeping authoritative copy on: %s\n", *keepFlag)
 	fmt.Fprintf(out, "# Files to remove: %s  (%s reclaimable)\n", formatCount(len(candidates)), formatSize(totalSize))
+	fmt.Fprintf(out, "# Backup verified on disk: %d  |  unverified: %d\n", verified, unverified)
 	fmt.Fprintf(out, "#\n")
 	fmt.Fprintf(out, "# REVIEW CAREFULLY before running.\n")
 	fmt.Fprintf(out, "# All rm commands are commented out. Uncomment lines you want to execute,\n")
 	fmt.Fprintf(out, "# or run:  bash <(grep -v '^#' this_script.sh)\n")
+	if unverified > 0 {
+		fmt.Fprintf(out, "#\n# WARNING: Some backups marked ⚠ could not be verified on disk.\n")
+		fmt.Fprintf(out, "# Do NOT delete files with unverified backups.\n")
+	}
 	fmt.Fprintf(out, "#\n")
 
 	for _, machine := range machines {
@@ -1078,7 +1127,11 @@ func runPlan(args []string) {
 		fmt.Fprintf(out, "\n# === %s — %s files, %s ===\n", machine, formatCount(len(list)), formatSize(machSize))
 		for _, c := range list {
 			abs := filepath.Join(c.ScanPath, filepath.FromSlash(c.RelPath))
-			fmt.Fprintf(out, "# backed up on: %s\n", strings.Join(c.BackedUpOn, ", "))
+			backupLabels := make([]string, len(c.Backups))
+		for i, b := range c.Backups {
+			backupLabels[i] = b.Label
+		}
+		fmt.Fprintf(out, "# backed up on: %s\n", strings.Join(backupLabels, ", "))
 			fmt.Fprintf(out, "#rm %s\n", shellQuote(abs))
 		}
 	}

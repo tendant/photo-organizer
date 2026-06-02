@@ -234,9 +234,20 @@ type rawFile struct {
 	modTime time.Time
 }
 
-func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]FileInfo, error) {
+type ScanStats struct {
+	Found      int
+	Cached     int
+	New        int
+	Updated    int
+	Symlinks   int
+	FullHashed int
+	TotalBytes int64
+}
+
+func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]FileInfo, ScanStats, error) {
+	var stats ScanStats
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return nil, fmt.Errorf("directory not found: %s", dir)
+		return nil, stats, fmt.Errorf("directory not found: %s", dir)
 	}
 
 	// Phase 1: walk the directory tree and collect file paths (fast).
@@ -248,6 +259,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 		// Skip symlinks — they may point outside the scan tree or cause loops.
 		if info.Mode()&os.ModeSymlink != 0 {
 			fmt.Fprintf(os.Stderr, "  skipping symlink: %s\n", path)
+			stats.Symlinks++
 			return nil
 		}
 		if info.IsDir() {
@@ -265,14 +277,15 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, stats, err
 	}
+	stats.Found = len(raw)
 	fmt.Fprintf(os.Stderr, "\r  %s files found, processing...\n", formatCount(len(raw)))
 
 	// Phase 2: extract EXIF dates and compute hashes.
 	// Limit to 4 workers — more than that causes I/O contention on SSDs.
 	files := make([]FileInfo, len(raw))
-	var processed atomic.Int64
+	var processed, cachedCount atomic.Int64
 	workers := runtime.NumCPU()
 	if workers > 4 {
 		workers = 4
@@ -293,12 +306,9 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 			fi := FileInfo{Path: rf.path, Size: rf.size, ModTime: rf.modTime}
 
 			entry, hasCached := cache[relPath]
-			if hasCached && entry.SizeBytes == rf.size && entry.HashMode == "full" {
-				// Already fully hashed — use directly, skip phase 3.
-				fi.Hash, fi.CaptureDate, fi.HashMode = entry.Hash, entry.CaptureDate, "full"
-			} else if hasCached && entry.SizeBytes == rf.size {
-				// Partial hash cached — use it for now; phase 3 may upgrade it.
-				fi.Hash, fi.CaptureDate, fi.HashMode = entry.Hash, entry.CaptureDate, "partial"
+			if hasCached && entry.SizeBytes == rf.size {
+				fi.Hash, fi.CaptureDate, fi.HashMode = entry.Hash, entry.CaptureDate, entry.HashMode
+				cachedCount.Add(1)
 			} else {
 				fi.Hash, fi.CaptureDate = processFile(rf.path)
 				fi.HashMode = "partial"
@@ -315,6 +325,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 	wg.Wait()
 	fmt.Fprintf(os.Stderr, "\r  %s / %s processed       \n",
 		formatCount(len(raw)), formatCount(len(raw)))
+	stats.Cached = int(cachedCount.Load())
 
 	// Phase 3 (only with --full-hash): upgrade files whose partial hash
 	// collides with at least one other file to a full-file hash.
@@ -332,6 +343,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 			}
 		}
 		if len(upgradeIdx) > 0 {
+			stats.FullHashed = len(upgradeIdx)
 			fmt.Fprintf(os.Stderr, "  %s files share a partial hash — computing full hashes...\n",
 				formatCount(len(upgradeIdx)))
 			var uwg sync.WaitGroup
@@ -349,7 +361,11 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 		}
 	}
 
-	return files, nil
+	for _, fi := range files {
+		stats.TotalBytes += fi.Size
+	}
+
+	return files, stats, nil
 }
 
 // =============================================================================
@@ -462,10 +478,16 @@ func manifestFilename(machine, absPath string) string {
 	return fmt.Sprintf("photo_manifest_%s_%s.csv", m, p)
 }
 
-func updateManifest(scanDir string, files []FileInfo, manifestFile string, machineName string) error {
+type ManifestStats struct {
+	New     int
+	Updated int
+}
+
+func updateManifest(scanDir string, files []FileInfo, manifestFile string, machineName string) (ManifestStats, error) {
+	var mstats ManifestStats
 	manifestDir := filepath.Dir(manifestFile)
 	if err := os.MkdirAll(manifestDir, 0755); err != nil {
-		return err
+		return mstats, err
 	}
 
 	// Always use the current header definition — never preserve old headers.
@@ -543,7 +565,7 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 
 	f, err := os.Create(manifestFile)
 	if err != nil {
-		return err
+		return mstats, err
 	}
 	defer f.Close()
 
@@ -560,12 +582,9 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 	}
 	w.Flush()
 
-	msg := fmt.Sprintf("Scanned %d files, added %d new entries", len(files), newCount)
-	if updatedCount > 0 {
-		msg += fmt.Sprintf(", updated %d entries (hash upgraded)", updatedCount)
-	}
-	fmt.Println(msg)
-	return nil
+	mstats.New = newCount
+	mstats.Updated = updatedCount
+	return mstats, nil
 }
 
 // =============================================================================
@@ -689,14 +708,36 @@ func runScan(args []string) {
 	fmt.Printf("Machine:   %s\n\n", machineName)
 
 	cache := loadCache(manifestFile)
-	files, err := scanDirectory(absScanDir, cache, *fullHashFlag)
+	files, scanStats, err := scanDirectory(absScanDir, cache, *fullHashFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 
-	if err := updateManifest(absScanDir, files, manifestFile, machineName); err != nil {
+	manifestStats, err := updateManifest(absScanDir, files, manifestFile, machineName)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
 		os.Exit(1)
 	}
+
+	printScanSummary(scanStats, manifestStats)
+}
+
+func printScanSummary(s ScanStats, m ManifestStats) {
+	fmt.Println()
+	fmt.Println("─────────────────────────────────────────────────────")
+	fmt.Printf("  Files found:       %s\n", formatCount(s.Found))
+	fmt.Printf("  Cached (skipped):  %s\n", formatCount(s.Cached))
+	fmt.Printf("  New entries:       %s\n", formatCount(m.New))
+	if m.Updated > 0 {
+		fmt.Printf("  Hash upgraded:     %s\n", formatCount(m.Updated))
+	}
+	if s.FullHashed > 0 {
+		fmt.Printf("  Full-hashed:       %s  (partial hash collision)\n", formatCount(s.FullHashed))
+	}
+	if s.Symlinks > 0 {
+		fmt.Printf("  Symlinks skipped:  %s\n", formatCount(s.Symlinks))
+	}
+	fmt.Printf("  Total size:        %s\n", formatSize(s.TotalBytes))
+	fmt.Println("─────────────────────────────────────────────────────")
 }
