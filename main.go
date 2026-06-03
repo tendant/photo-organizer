@@ -266,8 +266,38 @@ func isMediaFile(ext string) bool {
 	return photoExts[ext] || videoExts[ext] || audioExts[ext] || sidecarExts[ext]
 }
 
+// sampleFolder recursively counts files up to a max depth, collecting media ratio.
+// Always recurses into subdirectories up to the depth limit, counting all files found.
+func sampleFolder(path string, maxDepth int) (mediaCount, totalCount int) {
+	if maxDepth <= 0 {
+		return
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return
+	}
+
+	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+			// Always recurse into subdirectories (up to depth limit).
+			subMedia, subTotal := sampleFolder(filepath.Join(path, e.Name()), maxDepth-1)
+			mediaCount += subMedia
+			totalCount += subTotal
+		} else if !e.IsDir() {
+			// Count files at this level.
+			ext := filepath.Ext(e.Name())
+			totalCount++
+			if isMediaFile(ext) {
+				mediaCount++
+			}
+		}
+	}
+	return
+}
+
 // identifyPhotoFolders samples top-level subdirectories and returns those with >= threshold media ratio.
-// Samples one level deep (immediate files + files in immediate subdirs) to avoid slow full scans.
+// Samples up to 2 levels deep to handle nested photo directories without full scans.
 // Skips folders with fewer than minFiles total files.
 func identifyPhotoFolders(root string, threshold float64, minFiles int) (qualifying []string, skipped []string, err error) {
 	entries, err := os.ReadDir(root)
@@ -292,40 +322,9 @@ func identifyPhotoFolders(root string, threshold float64, minFiles int) (qualify
 		}
 
 		dirPath := filepath.Join(root, dirName)
-		mediaCount := 0
-		totalCount := 0
 
-		// Sample immediate files in this directory.
-		dirEntries, err := os.ReadDir(dirPath)
-		if err != nil {
-			continue
-		}
-
-		for _, de := range dirEntries {
-			if de.IsDir() {
-				// Sample one level deeper.
-				subEntries, err := os.ReadDir(filepath.Join(dirPath, de.Name()))
-				if err != nil {
-					continue
-				}
-				for _, subE := range subEntries {
-					if !subE.IsDir() {
-						ext := filepath.Ext(subE.Name())
-						totalCount++
-						if isMediaFile(ext) {
-							mediaCount++
-						}
-					}
-				}
-			} else {
-				// Immediate file in dirPath.
-				ext := filepath.Ext(de.Name())
-				totalCount++
-				if isMediaFile(ext) {
-					mediaCount++
-				}
-			}
-		}
+		// Sample up to 4 levels deep to handle Archive/2020/Jan/Vacation style nesting.
+		mediaCount, totalCount := sampleFolder(dirPath, 4)
 
 		// Decide: qualify if meets both criteria.
 		if totalCount >= minFiles && float64(mediaCount)/float64(totalCount) >= threshold {
@@ -1053,26 +1052,7 @@ func runScan(args []string) {
 
 		fmt.Printf("Auto-identifying photo folders in %s...\n\n", scanDir)
 		for _, dir := range qualifying {
-			entries, _ := os.ReadDir(dir)
-			mediaCount, totalCount := 0, 0
-			for _, e := range entries {
-				if !e.IsDir() {
-					totalCount++
-					if isMediaFile(filepath.Ext(e.Name())) {
-						mediaCount++
-					}
-				} else {
-					subEntries, _ := os.ReadDir(filepath.Join(dir, e.Name()))
-					for _, se := range subEntries {
-						if !se.IsDir() {
-							totalCount++
-							if isMediaFile(filepath.Ext(se.Name())) {
-								mediaCount++
-							}
-						}
-					}
-				}
-			}
+			mediaCount, totalCount := sampleFolder(dir, 4)
 			ratio := 0.0
 			if totalCount > 0 {
 				ratio = float64(mediaCount) / float64(totalCount) * 100
