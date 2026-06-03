@@ -198,6 +198,21 @@ func loadCache(manifestFile string) map[string]CacheEntry {
 	for i, h := range records[0] {
 		colIdx[h] = i
 	}
+
+	// Validate that required columns are present.
+	for _, required := range []string{"relative_path", "partial_hash"} {
+		if _, ok := colIdx[required]; !ok {
+			// Also accept file_hash as fallback for partial_hash in very old manifests.
+			if required == "partial_hash" {
+				if _, ok := colIdx["file_hash"]; ok {
+					continue
+				}
+			}
+			fmt.Fprintf(os.Stderr, "Warning: %s: missing required column %q (not a valid manifest?)\n", manifestFile, required)
+			return cache
+		}
+	}
+
 	col := func(row []string, name string) string {
 		i, ok := colIdx[name]
 		if !ok || i >= len(row) {
@@ -726,37 +741,7 @@ doneLoading:
 		newCount++
 	}
 
-	// Back up the existing manifest before overwriting.
-	if err := backupManifest(manifestFile); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not back up manifest: %v\n", err)
-	}
-
-	f, err := os.Create(manifestFile)
-	if err != nil {
-		return mstats, err
-	}
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	w.Write(headers)
-
-	var paths []string
-	for p := range existing {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	for _, p := range paths {
-		w.Write(existing[p])
-	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return mstats, fmt.Errorf("write manifest %s: %w", manifestFile, err)
-	}
-
-	mstats.New = newCount
-	mstats.Updated = updatedCount
-
-	// Remove entries for files that no longer exist on disk.
+	// Apply pruning before write (so we write the final state).
 	if prune {
 		scanned := make(map[string]bool, len(files))
 		for _, fi := range files {
@@ -783,6 +768,49 @@ doneLoading:
 				}
 			}
 		}
+	}
+
+	mstats.New = newCount
+	mstats.Updated = updatedCount
+
+	// Back up the existing manifest before overwriting.
+	if err := backupManifest(manifestFile); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not back up manifest: %v\n", err)
+	}
+
+	// Write manifest atomically: write to temp file first, then rename.
+	// This ensures the old manifest is never truncated before the new one is complete.
+	tmpFile, err := os.CreateTemp(filepath.Dir(manifestFile), ".manifest-tmp-*")
+	if err != nil {
+		return mstats, err
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath) // clean up temp file if we error
+
+	w := csv.NewWriter(tmpFile)
+	w.Write(headers)
+
+	var paths []string
+	for p := range existing {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		w.Write(existing[p])
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		tmpFile.Close()
+		return mstats, fmt.Errorf("write manifest %s: %w", manifestFile, err)
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return mstats, fmt.Errorf("close manifest %s: %w", manifestFile, err)
+	}
+
+	// Atomic rename: either old file stays intact or new one is in place, never both truncated.
+	if err := os.Rename(tmpPath, manifestFile); err != nil {
+		return mstats, fmt.Errorf("finalize manifest %s: %w", manifestFile, err)
 	}
 
 	if len(existing) > 100000 {

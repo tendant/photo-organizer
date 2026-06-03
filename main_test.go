@@ -243,9 +243,14 @@ test.jpg,test.jpg,1000,0,2023-01-01,2023-01-01,,,abc123,,2023-01-01,/scan`
 }
 
 func TestUpdateManifestDiskFull(t *testing.T) {
-	// Create a temp dir where we can test disk-full scenario.
+	// Create a temp dir and make it read-only to prevent temp file creation.
+	// With atomic write, os.CreateTemp tries to create in the manifest directory.
 	dir := t.TempDir()
-	manifestFile := filepath.Join(dir, "test.csv")
+	manifestDir := filepath.Join(dir, "manifests")
+	if err := os.Mkdir(manifestDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	manifestFile := filepath.Join(manifestDir, "test.csv")
 
 	// Pre-create the manifest file with a valid entry.
 	var buf bytes.Buffer
@@ -257,11 +262,11 @@ func TestUpdateManifestDiskFull(t *testing.T) {
 		t.Fatalf("write manifest: %v", err)
 	}
 
-	// Make the manifest itself read-only so we can't write to it.
-	if err := os.Chmod(manifestFile, 0o444); err != nil {
+	// Make the manifest directory read-only to prevent temp file creation.
+	if err := os.Chmod(manifestDir, 0o555); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	defer os.Chmod(manifestFile, 0o644) // restore for cleanup
+	defer os.Chmod(manifestDir, 0o755) // restore for cleanup
 
 	files := []FileInfo{{Path: filepath.Join(dir, "newfile.jpg"), Size: 2000}}
 	_, err := updateManifest(dir, files, manifestFile, "m1", false)

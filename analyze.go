@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"flag"
@@ -81,6 +82,19 @@ func readManifest(csvPath string) (ManifestSource, error) {
 	colIdx := make(map[string]int)
 	for i, name := range records[0] {
 		colIdx[name] = i
+	}
+
+	// Validate that required columns are present.
+	for _, required := range []string{"relative_path", "partial_hash", "file_size_bytes"} {
+		if _, ok := colIdx[required]; !ok {
+			// Also accept file_hash as fallback for partial_hash in very old manifests.
+			if required == "partial_hash" {
+				if _, ok := colIdx["file_hash"]; ok {
+					continue
+				}
+			}
+			return ManifestSource{}, fmt.Errorf("%s: missing required column %q (not a valid manifest?)", csvPath, required)
+		}
 	}
 
 	col := func(row []string, name string) string {
@@ -1482,9 +1496,18 @@ done`
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ssh", sshHost, remoteScript)
 	cmd.Stdin = strings.NewReader(strings.Join(unique, "\n") + "\n")
+
+	// Capture stderr to provide better error messages.
+	var sshStderr bytes.Buffer
+	cmd.Stderr = &sshStderr
+
 	out, err := cmd.Output()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: SSH verification failed (%v) — marking all as unverified\n", err)
+		detail := strings.TrimSpace(sshStderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		fmt.Fprintf(os.Stderr, "Warning: SSH verification failed (%s) — marking all as unverified\n", detail)
 		return result
 	}
 
@@ -1916,7 +1939,8 @@ func runMigrate(args []string) {
 	fmt.Fprintf(out, "# terminal reconnects. Re-running is safe — rsync skips completed files.\n")
 	fmt.Fprintf(out, "# Review and run: bash %s\n", scriptName+".sh")
 	fmt.Fprintf(out, "#\n")
-	fmt.Fprintf(out, "set -euo pipefail\n\n")
+	fmt.Fprintf(out, "set -uo pipefail\n")
+	fmt.Fprintf(out, "_fail=0\n\n")
 
 	for i, scanPath := range scanPaths {
 		rows := byScanPath[scanPath]
@@ -1945,10 +1969,15 @@ func runMigrate(args []string) {
 			fmt.Fprintf(out, "%s\n", filepath.ToSlash(row.RelativePath))
 		}
 		fmt.Fprintf(out, "FILELIST\n")
-		fmt.Fprintf(out, "rsync -av --partial --progress --files-from=%s %s %s\n",
-			shellQuote(listFile), shellQuote(scanPath+"/"), shellQuote(destPath+"/"))
+		fmt.Fprintf(out, "rsync -av --checksum --partial --progress --files-from=%s %s %s || { echo \"⚠  rsync failed for scan group %d\"; _fail=$((_fail+1)); }\n",
+			shellQuote(listFile), shellQuote(scanPath+"/"), shellQuote(destPath+"/"), i+1)
 		fmt.Fprintf(out, "rm -f %s\n\n", shellQuote(listFile))
 	}
+
+	fmt.Fprintf(out, "if [ \"$_fail\" -gt 0 ]; then\n")
+	fmt.Fprintf(out, "  echo \"⚠  $_fail scan group(s) failed. Re-run this script to retry.\"\n")
+	fmt.Fprintf(out, "  exit 1\n")
+	fmt.Fprintf(out, "fi\n")
 
 	if *outFlag != "" {
 		fmt.Fprintf(os.Stderr, "Wrote migration script to %s (%s files, %s)\n",
