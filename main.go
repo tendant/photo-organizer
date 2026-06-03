@@ -1105,7 +1105,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "Commands:\n")
 	fmt.Fprintf(os.Stderr, "  scan [directory]              Scan a directory and write a manifest CSV\n")
 	fmt.Fprintf(os.Stderr, "  rescan                        Re-scan all folders previously scanned on this machine\n")
-	fmt.Fprintf(os.Stderr, "  collect --from <machine>      Pull manifests from remote machines via SSH\n")
+	fmt.Fprintf(os.Stderr, "  collect [--from <machine>]    Pull manifests from remote machines via SSH (all if --from omitted)\n")
 	fmt.Fprintf(os.Stderr, "  machines                      List all machines in manifests with metadata\n")
 	fmt.Fprintf(os.Stderr, "  analyze                       Compare manifests, find cross-machine duplicates\n")
 	fmt.Fprintf(os.Stderr, "  risk-report                   Identify files at risk (only on one machine)\n")
@@ -1661,9 +1661,14 @@ func runCollect(args []string) {
 	addFlag := fs.String("add", "", "register a new machine: --add machine_id=user@host")
 	listFlag := fs.Bool("list", false, "list configured machines")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect --from <machine> [--from <machine> ...]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect [--from <machine> [--from <machine> ...]]\n\n")
 		fmt.Fprintf(os.Stderr, "Pulls manifests from remote machines into ~/manifests/_Manifest/.\n")
+		fmt.Fprintf(os.Stderr, "If --from is omitted, collects from all configured machines.\n")
 		fmt.Fprintf(os.Stderr, "SSH targets are looked up from ~/manifests/machines.conf.\n\n")
+		fmt.Fprintf(os.Stderr, "Collect from all machines:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect\n\n")
+		fmt.Fprintf(os.Stderr, "Collect from specific machines:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect --from ubuntu-max --from nas\n\n")
 		fmt.Fprintf(os.Stderr, "Register a machine:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer collect --add ubuntu-max-acb605=ubuntu@192.168.1.100\n\n")
 		fmt.Fprintf(os.Stderr, "List configured machines:\n")
@@ -1711,10 +1716,18 @@ func runCollect(args []string) {
 		return
 	}
 
+	// If no --from specified, collect from all configured machines.
 	if len(fromMachines) == 0 {
-		fmt.Fprintln(os.Stderr, "collect: --from <machine> is required")
-		fs.Usage()
-		os.Exit(1)
+		if len(cfg) == 0 {
+			fmt.Fprintln(os.Stderr, "collect: no machines configured. Add one with:")
+			fmt.Fprintln(os.Stderr, "  photo-organizer collect --add machine_id=user@host")
+			os.Exit(1)
+		}
+		// Collect from all machines.
+		for id := range cfg {
+			fromMachines = append(fromMachines, id)
+		}
+		sort.Strings(fromMachines)
 	}
 
 	manifestRoot := *rootFlag
