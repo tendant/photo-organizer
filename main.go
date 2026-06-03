@@ -422,13 +422,24 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 // =============================================================================
 
 // machineID returns a stable, unique machine identifier of the form
-// "Ls-MBP-a3f7c2". It is computed once and cached in ~/.photo-organizer-id
+// "Ls-MBP-a3f7c2". It is computed once and cached in ~/manifests/machine-id
 // so it never changes even if the hostname is later renamed.
 func machineID() string {
-	idFile := filepath.Join(os.Getenv("HOME"), ".photo-organizer-id")
+	newPath := machineIDFile()
+	oldPath := filepath.Join(os.Getenv("HOME"), ".photo-organizer-id")
+
+	// Migrate old dotfile to new location if needed.
+	if _, err := os.Stat(newPath); os.IsNotExist(err) {
+		if data, err := os.ReadFile(oldPath); err == nil {
+			os.MkdirAll(filepath.Dir(newPath), 0755)
+			if os.WriteFile(newPath, data, 0644) == nil {
+				os.Remove(oldPath)
+			}
+		}
+	}
 
 	// Return cached ID if it exists.
-	if data, err := os.ReadFile(idFile); err == nil {
+	if data, err := os.ReadFile(newPath); err == nil {
 		if id := strings.TrimSpace(string(data)); id != "" {
 			return id
 		}
@@ -438,7 +449,8 @@ func machineID() string {
 	id := buildMachineID()
 
 	// Persist it so it never changes.
-	os.WriteFile(idFile, []byte(id+"\n"), 0644)
+	os.MkdirAll(filepath.Dir(newPath), 0755)
+	os.WriteFile(newPath, []byte(id+"\n"), 0644)
 	return id
 }
 
@@ -829,7 +841,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  risk-report                   Identify files at risk (only on one machine)\n")
 	fmt.Fprintf(os.Stderr, "  plan --keep <machine>         Generate safe-delete script for duplicates\n")
 	fmt.Fprintf(os.Stderr, "  migrate --from <machine> --dest <path>  Copy unique files preserving folder structure\n\n")
-	fmt.Fprintf(os.Stderr, "machines config: ~/.photo-organizer-machines  (machine_id = user@host)\n\n")
+	fmt.Fprintf(os.Stderr, "machines config: ~/manifests/machines.conf  (machine_id = user@host)\n\n")
 	fmt.Fprintf(os.Stderr, "scan flags:\n")
 	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ (default: ~/manifests)\n")
 	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n")
@@ -907,7 +919,7 @@ func runScan(args []string) {
 	// Determine where manifest is written
 	manifestRoot := *rootFlag
 	if manifestRoot == "" {
-		manifestRoot = filepath.Join(os.Getenv("HOME"), "manifests")
+		manifestRoot = defaultManifestRoot()
 	}
 	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, absScanDir))
 
@@ -1003,7 +1015,7 @@ func runRescan(args []string) {
 
 	manifestRoot := *rootFlag
 	if manifestRoot == "" {
-		manifestRoot = filepath.Join(os.Getenv("HOME"), "manifests")
+		manifestRoot = defaultManifestRoot()
 	}
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
 
@@ -1077,12 +1089,26 @@ func runRescan(args []string) {
 }
 
 // =============================================================================
-// Machines Config (~/.photo-organizer-machines)
+// Config Paths
 // =============================================================================
 
-const machinesConfigFile = ".photo-organizer-machines"
+func defaultManifestRoot() string {
+	return filepath.Join(os.Getenv("HOME"), "manifests")
+}
 
-// loadMachinesConfig reads ~/.photo-organizer-machines and returns a map of
+func machineIDFile() string {
+	return filepath.Join(defaultManifestRoot(), "machine-id")
+}
+
+func machinesConfFile() string {
+	return filepath.Join(defaultManifestRoot(), "machines.conf")
+}
+
+// =============================================================================
+// Machines Config (~/manifests/machines.conf)
+// =============================================================================
+
+// loadMachinesConfig reads ~/manifests/machines.conf and returns a map of
 // machine_id → ssh_target. File format:
 //
 //	# comment
@@ -1090,8 +1116,20 @@ const machinesConfigFile = ".photo-organizer-machines"
 //	nas-main          = admin@nas.local
 func loadMachinesConfig() map[string]string {
 	cfg := make(map[string]string)
-	path := filepath.Join(os.Getenv("HOME"), machinesConfigFile)
-	data, err := os.ReadFile(path)
+	newPath := machinesConfFile()
+	oldPath := filepath.Join(os.Getenv("HOME"), ".photo-organizer-machines")
+
+	// Migrate old dotfile to new location if needed.
+	if _, err := os.Stat(newPath); os.IsNotExist(err) {
+		if data, err := os.ReadFile(oldPath); err == nil {
+			os.MkdirAll(filepath.Dir(newPath), 0755)
+			if os.WriteFile(newPath, data, 0644) == nil {
+				os.Remove(oldPath)
+			}
+		}
+	}
+
+	data, err := os.ReadFile(newPath)
 	if err != nil {
 		return cfg
 	}
@@ -1124,7 +1162,8 @@ func sshTargetFor(machineID string, cfg map[string]string) string {
 
 // saveMachinesConfig writes the machines config file, creating it if needed.
 func saveMachinesConfig(cfg map[string]string) error {
-	path := filepath.Join(os.Getenv("HOME"), machinesConfigFile)
+	path := machinesConfFile()
+	os.MkdirAll(filepath.Dir(path), 0755)
 	var sb strings.Builder
 	sb.WriteString("# photo-organizer machines configuration\n")
 	sb.WriteString("# Format: machine_id = user@host\n")
@@ -1167,7 +1206,7 @@ func runCollect(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect --from <machine> [--from <machine> ...]\n\n")
 		fmt.Fprintf(os.Stderr, "Pulls manifests from remote machines into ~/manifests/_Manifest/.\n")
-		fmt.Fprintf(os.Stderr, "SSH targets are looked up from ~/.photo-organizer-machines.\n\n")
+		fmt.Fprintf(os.Stderr, "SSH targets are looked up from ~/manifests/machines.conf.\n\n")
 		fmt.Fprintf(os.Stderr, "Register a machine:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer collect --add ubuntu-max-acb605=ubuntu@192.168.1.100\n\n")
 		fmt.Fprintf(os.Stderr, "List configured machines:\n")
@@ -1192,7 +1231,7 @@ func runCollect(args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("Registered: %-30s → %s\n", id, target)
-		fmt.Printf("Config saved to ~/%s\n", machinesConfigFile)
+		fmt.Printf("Config saved to %s\n", machinesConfFile())
 		return
 	}
 
@@ -1223,7 +1262,7 @@ func runCollect(args []string) {
 
 	manifestRoot := *rootFlag
 	if manifestRoot == "" {
-		manifestRoot = filepath.Join(os.Getenv("HOME"), "manifests")
+		manifestRoot = defaultManifestRoot()
 	}
 	localDir := filepath.Join(manifestRoot, "_Manifest") + "/"
 	if err := os.MkdirAll(localDir, 0755); err != nil {
