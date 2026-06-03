@@ -1262,6 +1262,7 @@ func runPlan(args []string) {
 	keepUnderFlag := fs.String("keep-under", "", "with --intra: keep copies under this path, delete others")
 	sshFlag := fs.String("ssh", "", "verify backup files exist on remote machine via SSH, e.g. user@host")
 	outFlag := fs.String("out", "", "write shell script to this file instead of stdout")
+	deleteMode := fs.Bool("delete", false, "generate rm commands instead of mv to quarantine")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer plan --keep <machine> [--ssh user@host] [manifest...]\n")
 		fmt.Fprintf(os.Stderr, "       photo-organizer plan --intra <machine> [--keep-under /path] [manifest...]\n\n")
@@ -1430,13 +1431,41 @@ func runPlan(args []string) {
 	fmt.Fprintf(out, "# Backup verified on disk: %d  |  unverified: %d\n", verified, unverified)
 	fmt.Fprintf(out, "#\n")
 	fmt.Fprintf(out, "# REVIEW CAREFULLY before running.\n")
-	fmt.Fprintf(out, "# All rm commands are commented out. Uncomment lines you want to execute,\n")
-	fmt.Fprintf(out, "# or run:  bash <(grep -v '^#' this_script.sh)\n")
+	if *deleteMode {
+		fmt.Fprintf(out, "# All rm commands are commented out (--delete mode: permanent deletion).\n")
+		fmt.Fprintf(out, "# Uncomment lines you want to execute, or run:  bash <(grep -v '^#' this_script.sh)\n")
+	} else {
+		fmt.Fprintf(out, "# All mv commands are commented out — files will be MOVED, not deleted.\n")
+		fmt.Fprintf(out, "# Quarantine: <scanPath>/_quarantine/photo-organizer/ (same volume, instant mv)\n")
+		fmt.Fprintf(out, "# Files can be recovered from quarantine at any time before permanent cleanup.\n")
+		fmt.Fprintf(out, "# Uncomment lines you want to execute, or run:  bash <(grep -v '^#' this_script.sh)\n")
+		fmt.Fprintf(out, "# To permanently delete quarantined files after verifying:\n")
+		fmt.Fprintf(out, "#   rm -rf '<scanPath>/_quarantine/photo-organizer/'\n")
+	}
 	if unverified > 0 {
 		fmt.Fprintf(out, "#\n# WARNING: Some backups marked ⚠ could not be verified on disk.\n")
 		fmt.Fprintf(out, "# Do NOT delete files with unverified backups.\n")
 	}
 	fmt.Fprintf(out, "#\n")
+
+	// Emit mkdir -p preamble if in quarantine mode.
+	if !*deleteMode {
+		fmt.Fprintf(out, "\n# Create quarantine directories (same volume as source — mv is instant)\n")
+		mkdirs := make(map[string]bool)
+		for _, c := range candidates {
+			quarantineDest := filepath.Join(c.ScanPath, "_quarantine", "photo-organizer", filepath.FromSlash(c.RelPath))
+			quarantineDir := filepath.Dir(quarantineDest)
+			mkdirs[quarantineDir] = true
+		}
+		mkdirKeys := make([]string, 0, len(mkdirs))
+		for dir := range mkdirs {
+			mkdirKeys = append(mkdirKeys, dir)
+		}
+		sort.Strings(mkdirKeys)
+		for _, dir := range mkdirKeys {
+			fmt.Fprintf(out, "mkdir -p %s\n", shellQuote(dir))
+		}
+	}
 
 	for _, machine := range machines {
 		list := byMachine[machine]
@@ -1453,7 +1482,12 @@ func runPlan(args []string) {
 					fmt.Fprintf(out, "#         ⚠ NOT VERIFIED ON DISK\n")
 				}
 			}
-			fmt.Fprintf(out, "#rm %s\n", shellQuote(abs))
+			if *deleteMode {
+				fmt.Fprintf(out, "#rm %s\n", shellQuote(abs))
+			} else {
+				quarantineDest := filepath.Join(c.ScanPath, "_quarantine", "photo-organizer", filepath.FromSlash(c.RelPath))
+				fmt.Fprintf(out, "#mv %s %s\n", shellQuote(abs), shellQuote(quarantineDest))
+			}
 		}
 	}
 
