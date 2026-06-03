@@ -266,6 +266,81 @@ func isMediaFile(ext string) bool {
 	return photoExts[ext] || videoExts[ext] || audioExts[ext] || sidecarExts[ext]
 }
 
+// identifyPhotoFolders samples top-level subdirectories and returns those with >= threshold media ratio.
+// Samples one level deep (immediate files + files in immediate subdirs) to avoid slow full scans.
+// Skips folders with fewer than minFiles total files.
+func identifyPhotoFolders(root string, threshold float64, minFiles int) (qualifying []string, skipped []string, err error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var (
+		qualifyingDirs []string
+		skippedDirs    []string
+	)
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		dirName := entry.Name()
+		// Skip dot-prefixed directories (hidden).
+		if strings.HasPrefix(dirName, ".") {
+			continue
+		}
+
+		dirPath := filepath.Join(root, dirName)
+		mediaCount := 0
+		totalCount := 0
+
+		// Sample immediate files in this directory.
+		dirEntries, err := os.ReadDir(dirPath)
+		if err != nil {
+			continue
+		}
+
+		for _, de := range dirEntries {
+			if de.IsDir() {
+				// Sample one level deeper.
+				subEntries, err := os.ReadDir(filepath.Join(dirPath, de.Name()))
+				if err != nil {
+					continue
+				}
+				for _, subE := range subEntries {
+					if !subE.IsDir() {
+						ext := filepath.Ext(subE.Name())
+						totalCount++
+						if isMediaFile(ext) {
+							mediaCount++
+						}
+					}
+				}
+			} else {
+				// Immediate file in dirPath.
+				ext := filepath.Ext(de.Name())
+				totalCount++
+				if isMediaFile(ext) {
+					mediaCount++
+				}
+			}
+		}
+
+		// Decide: qualify if meets both criteria.
+		if totalCount >= minFiles && float64(mediaCount)/float64(totalCount) >= threshold {
+			qualifyingDirs = append(qualifyingDirs, dirPath)
+		} else {
+			skippedDirs = append(skippedDirs, dirPath)
+		}
+	}
+
+	sort.Strings(qualifyingDirs)
+	sort.Strings(skippedDirs)
+
+	return qualifyingDirs, skippedDirs, nil
+}
+
 type rawFile struct {
 	path    string
 	size    int64
@@ -879,7 +954,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n")
 	fmt.Fprintf(os.Stderr, "  --full-hash      hash all files fully, not just colliding ones (rarely needed)\n")
 	fmt.Fprintf(os.Stderr, "  --no-cache       recompute all hashes, ignoring cached values\n")
-	fmt.Fprintf(os.Stderr, "  --prune          remove manifest entries for files no longer on disk\n\n")
+	fmt.Fprintf(os.Stderr, "  --prune          remove manifest entries for files no longer on disk\n")
+	fmt.Fprintf(os.Stderr, "  --auto-identify-folders  sample subdirs and only scan those with >=5%% media files\n\n")
 	fmt.Fprintf(os.Stderr, "plan flags:\n")
 	fmt.Fprintf(os.Stderr, "  --keep <machine>     keep copies on this machine, move others to quarantine\n")
 	fmt.Fprintf(os.Stderr, "  --intra <machine>    find duplicates within a single machine\n")
@@ -926,6 +1002,7 @@ func runScan(args []string) {
 	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones (rarely needed)")
 	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values (use after hash algorithm change)")
 	pruneFlag := fs.Bool("prune", false, "remove manifest entries for files no longer on disk")
+	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those with >=5% media files")
 	fs.Usage = printUsage
 	fs.Parse(flagArgs)
 
@@ -960,36 +1037,123 @@ func runScan(args []string) {
 	if manifestRoot == "" {
 		manifestRoot = defaultManifestRoot()
 	}
-	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, absScanDir))
 
-	// Check write access to manifest directory before spending time scanning.
-	manifestDir := filepath.Dir(manifestFile)
-	if err := os.MkdirAll(manifestDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot create manifest directory %s: %v\n", manifestDir, err)
-		os.Exit(1)
+	// If auto-identify-folders is set, sample subdirectories and scan only those with >=5% media files.
+	if *autoIdentifyFlag {
+		qualifying, skipped, err := identifyPhotoFolders(absScanDir, 0.05, 3)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error identifying photo folders: %v\n", err)
+			os.Exit(1)
+		}
+
+		if len(qualifying) == 0 {
+			fmt.Fprintf(os.Stderr, "No photo folders found.\n")
+			os.Exit(1)
+		}
+
+		fmt.Printf("Auto-identifying photo folders in %s...\n\n", scanDir)
+		for _, dir := range qualifying {
+			entries, _ := os.ReadDir(dir)
+			mediaCount, totalCount := 0, 0
+			for _, e := range entries {
+				if !e.IsDir() {
+					totalCount++
+					if isMediaFile(filepath.Ext(e.Name())) {
+						mediaCount++
+					}
+				} else {
+					subEntries, _ := os.ReadDir(filepath.Join(dir, e.Name()))
+					for _, se := range subEntries {
+						if !se.IsDir() {
+							totalCount++
+							if isMediaFile(filepath.Ext(se.Name())) {
+								mediaCount++
+							}
+						}
+					}
+				}
+			}
+			ratio := 0.0
+			if totalCount > 0 {
+				ratio = float64(mediaCount) / float64(totalCount) * 100
+			}
+			fmt.Printf("  ✓ %-40s (%d%% media, %s files)\n", dir, int(ratio), formatCount(totalCount))
+		}
+		for _, dir := range skipped {
+			entries, _ := os.ReadDir(dir)
+			totalCount := len(entries)
+			fmt.Printf("  ✗ %-40s (%d files)\n", dir, totalCount)
+		}
+		fmt.Printf("\nFound %d photo folder(s). Scanning...\n\n", len(qualifying))
+
+		// Scan each qualifying folder separately.
+		for i, qualifyingDir := range qualifying {
+			qualifyingAbsDir, err := filepath.Abs(qualifyingDir)
+			if err != nil {
+				qualifyingAbsDir = qualifyingDir
+			}
+
+			manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, qualifyingAbsDir))
+			manifestDir := filepath.Dir(manifestFile)
+			if err := os.MkdirAll(manifestDir, 0755); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: cannot create manifest directory %s: %v\n", manifestDir, err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("[%d/%d] Scanning: %s\n", i+1, len(qualifying), qualifyingDir)
+			fmt.Printf("        Manifest: %s\n\n", manifestFile)
+
+			cache := loadCache(manifestFile)
+			if *noCacheFlag {
+				cache = make(map[string]CacheEntry)
+			}
+			files, scanStats, err := scanDirectory(qualifyingAbsDir, cache, *fullHashFlag)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", qualifyingDir, err)
+				continue
+			}
+
+			manifestStats, err := updateManifest(qualifyingAbsDir, files, manifestFile, machineName, *pruneFlag)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing manifest: %v\n", err)
+				continue
+			}
+
+			printScanSummary(scanStats, manifestStats)
+		}
+	} else {
+		// Original single-folder scan.
+		manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, absScanDir))
+
+		// Check write access to manifest directory before spending time scanning.
+		manifestDir := filepath.Dir(manifestFile)
+		if err := os.MkdirAll(manifestDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot create manifest directory %s: %v\n", manifestDir, err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Scanning:  %s\n", scanDir)
+		fmt.Printf("Manifest:  %s\n", manifestFile)
+		fmt.Printf("Machine:   %s\n\n", machineName)
+
+		cache := loadCache(manifestFile)
+		if *noCacheFlag {
+			cache = make(map[string]CacheEntry) // discard cache — force full recompute
+		}
+		files, scanStats, err := scanDirectory(absScanDir, cache, *fullHashFlag)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+
+		manifestStats, err := updateManifest(absScanDir, files, manifestFile, machineName, *pruneFlag)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
+			os.Exit(1)
+		}
+
+		printScanSummary(scanStats, manifestStats)
 	}
-
-	fmt.Printf("Scanning:  %s\n", scanDir)
-	fmt.Printf("Manifest:  %s\n", manifestFile)
-	fmt.Printf("Machine:   %s\n\n", machineName)
-
-	cache := loadCache(manifestFile)
-	if *noCacheFlag {
-		cache = make(map[string]CacheEntry) // discard cache — force full recompute
-	}
-	files, scanStats, err := scanDirectory(absScanDir, cache, *fullHashFlag)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	}
-
-	manifestStats, err := updateManifest(absScanDir, files, manifestFile, machineName, *pruneFlag)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
-		os.Exit(1)
-	}
-
-	printScanSummary(scanStats, manifestStats)
 }
 
 func printScanSummary(s ScanStats, m ManifestStats) {
