@@ -843,6 +843,9 @@ func main() {
 		case "rescan":
 			runRescan(os.Args[2:])
 			return
+		case "machines":
+			runMachines(os.Args[2:])
+			return
 		case "risk-report":
 			runRiskReport(os.Args[2:])
 			return
@@ -865,6 +868,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  scan [directory]              Scan a directory and write a manifest CSV\n")
 	fmt.Fprintf(os.Stderr, "  rescan                        Re-scan all folders previously scanned on this machine\n")
 	fmt.Fprintf(os.Stderr, "  collect --from <machine>      Pull manifests from remote machines via SSH\n")
+	fmt.Fprintf(os.Stderr, "  machines                      List all machines in manifests with metadata\n")
 	fmt.Fprintf(os.Stderr, "  analyze                       Compare manifests, find cross-machine duplicates\n")
 	fmt.Fprintf(os.Stderr, "  risk-report                   Identify files at risk (only on one machine)\n")
 	fmt.Fprintf(os.Stderr, "  plan --keep <machine>         Generate safe-delete script for duplicates\n")
@@ -1121,6 +1125,101 @@ func runRescan(args []string) {
 
 		printScanSummary(scanStats, manifestStats)
 	}
+}
+
+func runMachines(_ []string) {
+	// Load all manifests from the default manifest directory.
+	manifestRoot := defaultManifestRoot()
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+
+	allCSVs, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+	if len(allCSVs) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found in %s\n", manifestDir)
+		os.Exit(1)
+	}
+
+	// Collect all machines and their metadata.
+	type machineInfo struct {
+		name      string
+		scanPaths map[string]bool
+		lastScan  string
+		fileCount int
+		totalSize int64
+	}
+	machines := make(map[string]*machineInfo)
+
+	for _, csvPath := range allCSVs {
+		src, err := readManifest(csvPath)
+		if err != nil || src.MachineName == "" {
+			continue
+		}
+
+		if machines[src.MachineName] == nil {
+			machines[src.MachineName] = &machineInfo{
+				name:      src.MachineName,
+				scanPaths: make(map[string]bool),
+			}
+		}
+		m := machines[src.MachineName]
+
+		if src.ScanPath != "" {
+			m.scanPaths[src.ScanPath] = true
+		}
+		m.fileCount += len(src.Rows)
+		if src.LastScanned > m.lastScan {
+			m.lastScan = src.LastScanned
+		}
+		for _, row := range src.Rows {
+			m.totalSize += row.SizeBytes
+		}
+	}
+
+	// Load machine config for SSH targets.
+	cfg := loadMachinesConfig()
+
+	// Sort machines by name and display.
+	var names []string
+	for name := range machines {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	if len(names) == 0 {
+		fmt.Println("No machines found in manifests.")
+		return
+	}
+
+	fmt.Println("Machines in manifests:")
+	fmt.Println()
+	for _, name := range names {
+		m := machines[name]
+		sshTarget := cfg[name]
+		if sshTarget == "" {
+			sshTarget = "—"
+		}
+
+		// Collect and sort scan paths.
+		var paths []string
+		for p := range m.scanPaths {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+
+		fmt.Printf("  %s\n", name)
+		fmt.Printf("    SSH: %s\n", sshTarget)
+		fmt.Printf("    Last scanned: %s\n", m.lastScan)
+		fmt.Printf("    Files: %s  (%s)\n", formatCount(m.fileCount), formatSize(m.totalSize))
+		if len(paths) > 0 {
+			fmt.Printf("    Scan paths:\n")
+			for _, p := range paths {
+				fmt.Printf("      %s\n", p)
+			}
+		}
+		fmt.Println()
+	}
+
+	fmt.Printf("Use: photo-organizer plan --keep <machine> to generate a delete plan\n")
+	fmt.Printf("     photo-organizer plan --intra <machine> to find duplicates within a machine\n")
 }
 
 // =============================================================================
