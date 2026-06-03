@@ -39,19 +39,31 @@ var photoExts = map[string]bool{
 	".png":  true,
 	".gif":  true,
 	".heic": true,
+	".heif": true,
 	".hif":  true,
 	".dng":  true,
 	".arw":  true,
 	".cr2":  true,
+	".cr3":  true,
 	".nef":  true,
 	".raf":  true,
+	".orf":  true,
+	".rw2":  true,
+	".tif":  true,
+	".tiff": true,
+	".webp": true,
+	".raw":  true,
 }
 
 var videoExts = map[string]bool{
-	".mp4": true,
-	".mov": true,
-	".avi": true,
-	".mkv": true,
+	".mp4":  true,
+	".mov":  true,
+	".m4v":  true,
+	".avi":  true,
+	".mkv":  true,
+	".3gp":  true,
+	".hevc": true,
+	".mts":  true,
 }
 
 var audioExts = map[string]bool{
@@ -60,8 +72,9 @@ var audioExts = map[string]bool{
 }
 
 var sidecarExts = map[string]bool{
-	".lrf":  true,
-	".xmp":  true,
+	".lrf": true,
+	".xmp": true,
+	".aae": true,
 	".json": true,
 }
 
@@ -261,14 +274,32 @@ type FileInfo struct {
 	FullHash    string // empty until a collision is detected
 }
 
+type FolderSample struct {
+	MediaCount int
+	TotalCount int
+	FileNames  []string // up to 50 filenames for pattern detection
+}
+
+type ScoredFolder struct {
+	Path    string
+	Score   int
+	Reasons []string
+	Sample  FolderSample
+}
+
 func isMediaFile(ext string) bool {
 	ext = strings.ToLower(ext)
 	return photoExts[ext] || videoExts[ext] || audioExts[ext] || sidecarExts[ext]
 }
 
-// sampleFolder recursively counts files up to a max depth, collecting media ratio.
-// Always recurses into subdirectories up to the depth limit, counting all files found.
-func sampleFolder(path string, maxDepth int) (mediaCount, totalCount int) {
+// sampleFolder recursively counts files and collects sample filenames for pattern detection.
+func sampleFolder(path string, maxDepth int) FolderSample {
+	var result FolderSample
+	sampleFolderRec(path, maxDepth, &result)
+	return result
+}
+
+func sampleFolderRec(path string, maxDepth int, result *FolderSample) {
 	if maxDepth <= 0 {
 		return
 	}
@@ -280,34 +311,155 @@ func sampleFolder(path string, maxDepth int) (mediaCount, totalCount int) {
 
 	for _, e := range entries {
 		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-			// Always recurse into subdirectories (up to depth limit).
-			subMedia, subTotal := sampleFolder(filepath.Join(path, e.Name()), maxDepth-1)
-			mediaCount += subMedia
-			totalCount += subTotal
+			sampleFolderRec(filepath.Join(path, e.Name()), maxDepth-1, result)
 		} else if !e.IsDir() {
-			// Count files at this level.
 			ext := filepath.Ext(e.Name())
-			totalCount++
+			result.TotalCount++
 			if isMediaFile(ext) {
-				mediaCount++
+				result.MediaCount++
+			}
+			// Collect up to 50 filenames for pattern detection.
+			if len(result.FileNames) < 50 {
+				result.FileNames = append(result.FileNames, e.Name())
 			}
 		}
 	}
-	return
 }
 
-// identifyPhotoFolders samples top-level subdirectories and returns those with >= threshold media ratio.
-// Samples up to 2 levels deep to handle nested photo directories without full scans.
-// Skips folders with fewer than minFiles total files.
-func identifyPhotoFolders(root string, threshold float64, minFiles int) (qualifying []string, skipped []string, err error) {
+// scoreFolderSample computes a 0-100 folder score based on media ratio, file patterns, and path signals.
+func scoreFolderSample(path string, s FolderSample) (score int, reasons []string) {
+	if s.TotalCount == 0 {
+		return 0, []string{"no files"}
+	}
+
+	mediaRatio := float64(s.MediaCount) / float64(s.TotalCount)
+
+	// Positive signals.
+	if mediaRatio >= 0.8 {
+		score += 40
+		reasons = append(reasons, "high media ratio")
+	} else if mediaRatio >= 0.4 {
+		score += 20
+		reasons = append(reasons, "med media ratio")
+	}
+
+	if s.MediaCount > 100 {
+		score += 20
+		reasons = append(reasons, ">100 media files")
+	} else if s.MediaCount > 10 {
+		score += 10
+		reasons = append(reasons, ">10 media files")
+	}
+
+	// Path-based signals (check full path).
+	pathLower := strings.ToLower(path)
+	// Also get just the folder name for less aggressive matching.
+	baseName := strings.ToLower(filepath.Base(path))
+	photoWords := []string{"photos", "pictures", "dcim", "camera", "gallery", "originals", "images", "fotos", "lightroom", "capture"}
+	for _, word := range photoWords {
+		if strings.Contains(pathLower, word) {
+			score += 15
+			reasons = append(reasons, fmt.Sprintf("path:%s", strings.ToUpper(word[:1])+word[1:]))
+			break
+		}
+	}
+
+	// Special library patterns.
+	if strings.Contains(pathLower, ".photoslibrary") && strings.Contains(pathLower, "originals") {
+		score += 20
+		reasons = append(reasons, "Apple Photos library")
+	}
+	if strings.Contains(pathLower, "google photos") || strings.Contains(pathLower, "takeout") {
+		score += 20
+		reasons = append(reasons, "Google Photos export")
+	}
+	if strings.Contains(pathLower, "100apple") || (strings.Contains(pathLower, "dcim") && strings.Contains(pathLower, "100")) {
+		score += 15
+		reasons = append(reasons, "iPhone DCIM")
+	}
+
+	// Year detection (2000-2035).
+	for year := 2000; year <= 2035; year++ {
+		if strings.Contains(path, fmt.Sprintf("%d", year)) {
+			score += 10
+			reasons = append(reasons, fmt.Sprintf("year:%d", year))
+			break
+		}
+	}
+
+	// Camera filename prefixes.
+	cameraPrefixes := []string{"IMG_", "DSC_", "DJI_", "PXL_", "VID_", "GoPro", "GX0", "GOPR"}
+	for _, prefix := range cameraPrefixes {
+		for _, fname := range s.FileNames {
+			if strings.HasPrefix(fname, prefix) {
+				score += 10
+				reasons = append(reasons, fmt.Sprintf("camera:%s", prefix))
+				goto cameraFound
+			}
+		}
+	}
+cameraFound:
+
+	// Negative signals (check folder name, not full path to avoid /tmp/ false positives).
+	if strings.Contains(pathLower, ".git") || strings.Contains(pathLower, "node_modules") {
+		score -= 50
+		reasons = append(reasons, "source code")
+	}
+
+	for _, cache := range []string{"cache", "tmp", "temp", "thumbnails", ".cache"} {
+		if strings.Contains(baseName, cache) {
+			score -= 40
+			reasons = append(reasons, "cache folder")
+			break
+		}
+	}
+
+	for _, assets := range []string{"icons", "sprites", "assets", "public"} {
+		if strings.Contains(baseName, assets) {
+			score -= 30
+			reasons = append(reasons, "app assets")
+			break
+		}
+	}
+
+	for _, sys := range []string{"library", "system", "windows", "program files"} {
+		if strings.Contains(baseName, sys) {
+			score -= 40
+			reasons = append(reasons, "system folder")
+			break
+		}
+	}
+
+	if mediaRatio < 0.05 && s.TotalCount > 0 {
+		score -= 30
+		reasons = append(reasons, "low media ratio")
+	}
+
+	if s.MediaCount < 3 {
+		score -= 15
+		reasons = append(reasons, "few media files")
+	}
+
+	// Clamp to 0-100.
+	if score < 0 {
+		score = 0
+	} else if score > 100 {
+		score = 100
+	}
+
+	return score, reasons
+}
+
+// identifyPhotoFolders samples top-level subdirectories and scores them.
+func identifyPhotoFolders(root string, minScore int) (qualifying []ScoredFolder, skipped []ScoredFolder, err error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	var (
-		qualifyingDirs []string
-		skippedDirs    []string
+		qualifyingFolders []ScoredFolder
+		skippedFolders    []ScoredFolder
 	)
 
 	for _, entry := range entries {
@@ -324,20 +476,32 @@ func identifyPhotoFolders(root string, threshold float64, minFiles int) (qualify
 		dirPath := filepath.Join(root, dirName)
 
 		// Sample up to 4 levels deep to handle Archive/2020/Jan/Vacation style nesting.
-		mediaCount, totalCount := sampleFolder(dirPath, 4)
+		sample := sampleFolder(dirPath, 4)
+		score, reasons := scoreFolderSample(dirPath, sample)
 
-		// Decide: qualify if meets both criteria.
-		if totalCount >= minFiles && float64(mediaCount)/float64(totalCount) >= threshold {
-			qualifyingDirs = append(qualifyingDirs, dirPath)
+		scored := ScoredFolder{
+			Path:    dirPath,
+			Score:   score,
+			Reasons: reasons,
+			Sample:  sample,
+		}
+
+		if score >= minScore {
+			qualifyingFolders = append(qualifyingFolders, scored)
 		} else {
-			skippedDirs = append(skippedDirs, dirPath)
+			skippedFolders = append(skippedFolders, scored)
 		}
 	}
 
-	sort.Strings(qualifyingDirs)
-	sort.Strings(skippedDirs)
+	// Sort both by score descending.
+	sort.Slice(qualifyingFolders, func(i, j int) bool {
+		return qualifyingFolders[i].Score > qualifyingFolders[j].Score
+	})
+	sort.Slice(skippedFolders, func(i, j int) bool {
+		return skippedFolders[i].Score > skippedFolders[j].Score
+	})
 
-	return qualifyingDirs, skippedDirs, nil
+	return qualifyingFolders, skippedFolders, nil
 }
 
 type rawFile struct {
@@ -985,7 +1149,7 @@ func runScan(args []string) {
 				// Only consume if this flag expects a value (not a bool flag).
 				// We check by whether the flag name is a known value-taking flag.
 				name := strings.TrimLeft(a, "-")
-				if name == "root" || name == "machine" { // value-taking flags only
+				if name == "root" || name == "machine" || name == "score-threshold" { // value-taking flags only
 					i++
 					flagArgs = append(flagArgs, args[i])
 				}
@@ -1001,7 +1165,8 @@ func runScan(args []string) {
 	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones (rarely needed)")
 	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values (use after hash algorithm change)")
 	pruneFlag := fs.Bool("prune", false, "remove manifest entries for files no longer on disk")
-	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those with >=5% media files")
+	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those matching score threshold")
+	scoreThresholdFlag := fs.Int("score-threshold", 30, "minimum folder score (0-100) for --auto-identify-folders (default: 30)")
 	fs.Usage = printUsage
 	fs.Parse(flagArgs)
 
@@ -1037,9 +1202,9 @@ func runScan(args []string) {
 		manifestRoot = defaultManifestRoot()
 	}
 
-	// If auto-identify-folders is set, sample subdirectories and scan only those with >=5% media files.
+	// If auto-identify-folders is set, sample subdirectories and scan only those matching score threshold.
 	if *autoIdentifyFlag {
-		qualifying, skipped, err := identifyPhotoFolders(absScanDir, 0.05, 3)
+		qualifying, skipped, err := identifyPhotoFolders(absScanDir, *scoreThresholdFlag)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error identifying photo folders: %v\n", err)
 			os.Exit(1)
@@ -1051,26 +1216,32 @@ func runScan(args []string) {
 		}
 
 		fmt.Printf("Auto-identifying photo folders in %s...\n\n", scanDir)
-		for _, dir := range qualifying {
-			mediaCount, totalCount := sampleFolder(dir, 4)
+		for _, scored := range qualifying {
 			ratio := 0.0
-			if totalCount > 0 {
-				ratio = float64(mediaCount) / float64(totalCount) * 100
+			if scored.Sample.TotalCount > 0 {
+				ratio = float64(scored.Sample.MediaCount) / float64(scored.Sample.TotalCount) * 100
 			}
-			fmt.Printf("  ✓ %-40s (%d%% media, %s files)\n", dir, int(ratio), formatCount(totalCount))
+			reasonsStr := strings.Join(scored.Reasons, ", ")
+			fmt.Printf("  [%3d] ✓ %-40s %3d%% media, %s files  (%s)\n",
+				scored.Score, filepath.Base(scored.Path), int(ratio), formatCount(scored.Sample.TotalCount), reasonsStr)
 		}
-		for _, dir := range skipped {
-			entries, _ := os.ReadDir(dir)
-			totalCount := len(entries)
-			fmt.Printf("  ✗ %-40s (%d files)\n", dir, totalCount)
+		fmt.Printf("  ──── threshold: %d ────────────────────────────────────────────\n", *scoreThresholdFlag)
+		for _, scored := range skipped {
+			ratio := 0.0
+			if scored.Sample.TotalCount > 0 {
+				ratio = float64(scored.Sample.MediaCount) / float64(scored.Sample.TotalCount) * 100
+			}
+			reasonsStr := strings.Join(scored.Reasons, ", ")
+			fmt.Printf("  [%3d] ✗ %-40s %3d%% media, %s files  (%s)\n",
+				scored.Score, filepath.Base(scored.Path), int(ratio), formatCount(scored.Sample.TotalCount), reasonsStr)
 		}
-		fmt.Printf("\nFound %d photo folder(s). Scanning...\n\n", len(qualifying))
+		fmt.Printf("\nScanning %d photo folder(s)...\n\n", len(qualifying))
 
 		// Scan each qualifying folder separately.
-		for i, qualifyingDir := range qualifying {
-			qualifyingAbsDir, err := filepath.Abs(qualifyingDir)
+		for i, scored := range qualifying {
+			qualifyingAbsDir, err := filepath.Abs(scored.Path)
 			if err != nil {
-				qualifyingAbsDir = qualifyingDir
+				qualifyingAbsDir = scored.Path
 			}
 
 			manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, qualifyingAbsDir))
@@ -1080,7 +1251,7 @@ func runScan(args []string) {
 				os.Exit(1)
 			}
 
-			fmt.Printf("[%d/%d] Scanning: %s\n", i+1, len(qualifying), qualifyingDir)
+			fmt.Printf("[%d/%d] Scanning: %s\n", i+1, len(qualifying), scored.Path)
 			fmt.Printf("        Manifest: %s\n\n", manifestFile)
 
 			cache := loadCache(manifestFile)
@@ -1089,7 +1260,7 @@ func runScan(args []string) {
 			}
 			files, scanStats, err := scanDirectory(qualifyingAbsDir, cache, *fullHashFlag)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", qualifyingDir, err)
+				fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", scored.Path, err)
 				continue
 			}
 
