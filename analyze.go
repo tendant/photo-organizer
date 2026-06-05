@@ -1050,6 +1050,16 @@ func runAnalyze(args []string) {
 		}
 	}
 
+	// Pre-flight checks
+	fmt.Fprintf(os.Stderr, "Pre-flight checks:\n")
+	var checks []PreflightCheck
+	for _, path := range manifestPaths {
+		checks = append(checks, CheckFileReadable(path, fmt.Sprintf("Manifest %s readable", filepath.Base(path))))
+	}
+	if !RunPreflightChecks(checks) {
+		os.Exit(1)
+	}
+
 	var sources []ManifestSource
 	for _, path := range manifestPaths {
 		src, err := readManifest(path)
@@ -2026,6 +2036,39 @@ func runMigrate(args []string) {
 	for _, row := range uniqueRows {
 		byScanPath[row.ScanPath] = append(byScanPath[row.ScanPath], row)
 	}
+
+	// Pre-flight checks
+	fmt.Fprintf(os.Stderr, "\nPre-flight checks:\n")
+	var checks []PreflightCheck
+
+	// Check source scan paths are readable
+	for scanPath := range byScanPath {
+		checks = append(checks, CheckDirReadable(scanPath, fmt.Sprintf("Source path %s readable", filepath.Base(scanPath))))
+	}
+
+	// Check destination is writable (or will be via SSH)
+	if !strings.Contains(*destFlag, ":") {
+		// Local destination
+		destDir := *destFlag
+		checks = append(checks, CheckDirWritable(destDir, fmt.Sprintf("Destination %s writable", filepath.Base(destDir))))
+
+		// Calculate total size to migrate
+		totalSize := int64(0)
+		for _, rows := range byScanPath {
+			for _, row := range rows {
+				totalSize += row.SizeBytes
+			}
+		}
+		checks = append(checks, CheckDiskSpace(destDir, totalSize))
+	} else {
+		// Remote destination - just check parent manifest dir is writable
+		checks = append(checks, CheckDirWritable(filepath.Join(os.Getenv("HOME"), "manifests"), "Manifest directory writable"))
+	}
+
+	if !RunPreflightChecks(checks) {
+		os.Exit(1)
+	}
+
 	scanPaths := make([]string, 0, len(byScanPath))
 	for sp := range byScanPath {
 		scanPaths = append(scanPaths, sp)
@@ -2566,4 +2609,134 @@ func writeSearchResults(filename string, rows []ManifestRow) {
 	}
 
 	fmt.Printf("Results written to %s\n", filename)
+}
+
+// =============================================================================
+// Pre-flight Checks
+// =============================================================================
+
+// PreflightCheck represents a single validation check.
+type PreflightCheck struct {
+	Name   string
+	Pass   bool
+	Error  string
+	Hint   string
+}
+
+// RunPreflightChecks validates that an operation can proceed.
+// Returns true if all checks pass, false if any critical checks fail.
+func RunPreflightChecks(checks []PreflightCheck) bool {
+	if len(checks) == 0 {
+		return true
+	}
+
+	anyFailed := false
+	for _, check := range checks {
+		if check.Pass {
+			fmt.Fprintf(os.Stderr, "✓ %s\n", check.Name)
+		} else {
+			fmt.Fprintf(os.Stderr, "✗ %s: %s\n", check.Name, check.Error)
+			if check.Hint != "" {
+				fmt.Fprintf(os.Stderr, "  → %s\n", check.Hint)
+			}
+			anyFailed = true
+		}
+	}
+
+	if anyFailed {
+		fmt.Fprintf(os.Stderr, "\n⚠  Pre-flight checks failed. Aborting operation.\n")
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "\nPre-flight checks passed.\n\n")
+	return true
+}
+
+// CheckDirReadable checks if a directory exists and is readable.
+func CheckDirReadable(path, name string) PreflightCheck {
+	info, err := os.Stat(path)
+	if err != nil {
+		return PreflightCheck{
+			Name:  name,
+			Pass:  false,
+			Error: "not found or not accessible",
+			Hint:  fmt.Sprintf("Directory: %s", path),
+		}
+	}
+	if !info.IsDir() {
+		return PreflightCheck{
+			Name:  name,
+			Pass:  false,
+			Error: "is not a directory",
+			Hint:  fmt.Sprintf("Path: %s", path),
+		}
+	}
+	return PreflightCheck{Name: name, Pass: true}
+}
+
+// CheckDirWritable checks if a directory exists and is writable.
+func CheckDirWritable(path, name string) PreflightCheck {
+	// Try to create a test file.
+	testFile := filepath.Join(path, ".photo-organizer-write-test")
+	err := os.WriteFile(testFile, []byte("test"), 0600)
+	if err != nil {
+		return PreflightCheck{
+			Name:  name,
+			Pass:  false,
+			Error: "not writable",
+			Hint:  fmt.Sprintf("Directory: %s (check permissions)", path),
+		}
+	}
+	_ = os.Remove(testFile)
+	return PreflightCheck{Name: name, Pass: true}
+}
+
+// CheckFileReadable checks if a file exists and is readable.
+func CheckFileReadable(path, name string) PreflightCheck {
+	info, err := os.Stat(path)
+	if err != nil {
+		return PreflightCheck{
+			Name:  name,
+			Pass:  false,
+			Error: "not found or not accessible",
+			Hint:  fmt.Sprintf("File: %s", path),
+		}
+	}
+	if info.IsDir() {
+		return PreflightCheck{
+			Name:  name,
+			Pass:  false,
+			Error: "is a directory, not a file",
+			Hint:  fmt.Sprintf("Path: %s", path),
+		}
+	}
+	return PreflightCheck{Name: name, Pass: true}
+}
+
+// CheckDiskSpace checks if destination has enough free space (approximate check).
+func CheckDiskSpace(path string, neededBytes int64) PreflightCheck {
+	name := fmt.Sprintf("Disk space for %s", filepath.Base(path))
+	if neededBytes <= 0 {
+		return PreflightCheck{Name: name, Pass: true}
+	}
+
+	// Try to write a test file of 1MB to estimate available space.
+	// If we can write the test file and disk space is available, assume it's OK.
+	testFile := filepath.Join(path, ".photo-organizer-space-test")
+	testSize := int64(1024 * 1024) // 1MB test
+	if neededBytes < testSize {
+		testSize = neededBytes
+	}
+
+	err := os.WriteFile(testFile, make([]byte, testSize), 0600)
+	if err != nil {
+		return PreflightCheck{
+			Name:  name,
+			Pass:  false,
+			Error: fmt.Sprintf("cannot write to destination (need %s)", formatSize(neededBytes)),
+			Hint:  "Check disk space and permissions",
+		}
+	}
+	defer os.Remove(testFile)
+
+	return PreflightCheck{Name: name, Pass: true}
 }

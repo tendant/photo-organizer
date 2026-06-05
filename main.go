@@ -1219,6 +1219,16 @@ func runScan(args []string) {
 		manifestRoot = defaultManifestRoot()
 	}
 
+	// Pre-flight checks
+	fmt.Fprintf(os.Stderr, "Pre-flight checks:\n")
+	checks := []PreflightCheck{
+		CheckDirReadable(absScanDir, "Source directory readable"),
+		CheckDirWritable(filepath.Join(manifestRoot, "_Manifest"), "Manifest directory writable"),
+	}
+	if !RunPreflightChecks(checks) {
+		os.Exit(1)
+	}
+
 	// If auto-identify-folders is set, sample subdirectories and scan only those matching score threshold.
 	if *autoIdentifyFlag {
 		qualifying, skipped, err := identifyPhotoFolders(absScanDir, *scoreThresholdFlag)
