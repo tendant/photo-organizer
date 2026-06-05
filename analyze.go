@@ -107,27 +107,83 @@ func readManifest(csvPath string) (ManifestSource, error) {
 	}
 
 	var rows []ManifestRow
-	for _, row := range records[1:] {
+	var validationIssues []string
+	seenPaths := make(map[string]bool)
+	skippedCount := 0
+
+	for rowIdx, row := range records[1:] {
 		if len(row) < 2 {
+			skippedCount++
+			validationIssues = append(validationIssues, fmt.Sprintf("row %d: not enough columns", rowIdx+2))
 			continue
 		}
-		size, _ := strconv.ParseInt(col(row, "file_size_bytes"), 10, 64)
+
+		relPath := col(row, "relative_path")
+		sizeStr := col(row, "file_size_bytes")
+		scanDate := col(row, "scan_date")
+
+		// Validate required fields
+		if relPath == "" {
+			skippedCount++
+			validationIssues = append(validationIssues, fmt.Sprintf("row %d: empty relative_path", rowIdx+2))
+			continue
+		}
+
+		// Parse and validate size
+		size, err := strconv.ParseInt(sizeStr, 10, 64)
+		if err != nil || size < 0 {
+			skippedCount++
+			validationIssues = append(validationIssues, fmt.Sprintf("row %d: invalid size %q", rowIdx+2, sizeStr))
+			continue
+		}
+
+		// Validate scan_date (should be valid and not in future)
+		if scanDate != "" {
+			if scanTime, err := time.Parse("2006-01-02", scanDate[:10]); err == nil {
+				if scanTime.After(time.Now().AddDate(0, 0, 1)) {
+					validationIssues = append(validationIssues, fmt.Sprintf("row %d: future scan_date %s", rowIdx+2, scanDate))
+					// Don't skip, just warn
+				}
+			}
+		}
+
+		// Check for duplicates (same relative_path on same scan_path)
+		dupKey := col(row, "scan_path") + "/" + relPath
+		if seenPaths[dupKey] {
+			validationIssues = append(validationIssues, fmt.Sprintf("row %d: duplicate entry %s", rowIdx+2, relPath))
+			// Skip duplicate
+			skippedCount++
+			continue
+		}
+		seenPaths[dupKey] = true
+
 		// partial_hash is the new column; fall back to file_hash for old manifests.
 		partialHash := col(row, "partial_hash")
 		if partialHash == "" {
 			partialHash = col(row, "file_hash")
 		}
+
 		rows = append(rows, ManifestRow{
 			Filename:     col(row, "filename"),
-			RelativePath: col(row, "relative_path"),
+			RelativePath: relPath,
 			SizeBytes:    size,
 			PartialHash:  partialHash,
 			FullHash:     col(row, "full_hash"),
 			Extension:    col(row, "extension"),
-			ScanDate:     col(row, "scan_date"),
+			ScanDate:     scanDate,
 			ScanPath:     col(row, "scan_path"),
 			MachineName:  col(row, "machine_name"),
 		})
+	}
+
+	// Store validation issues for reporting
+	if skippedCount > 0 {
+		fmt.Fprintf(os.Stderr, "⚠  %s: skipped %d invalid row(s)\n", filepath.Base(csvPath), skippedCount)
+		if len(validationIssues) > 0 && len(validationIssues) <= 3 {
+			for _, issue := range validationIssues {
+				fmt.Fprintf(os.Stderr, "   %s\n", issue)
+			}
+		}
 	}
 
 	// Derive machine name, scan path, and most recent scan date from rows.
@@ -175,6 +231,16 @@ func readManifest(csvPath string) (ManifestSource, error) {
 	for i := range rows {
 		if rows[i].MachineName == "" {
 			rows[i].MachineName = machine
+		}
+	}
+
+	// Check for stale manifests (not scanned in 30+ days)
+	if lastScanned != "" {
+		if scanTime, err := time.Parse("2006-01-02", lastScanned[:10]); err == nil {
+			daysOld := int(time.Since(scanTime).Hours() / 24)
+			if daysOld > 30 {
+				fmt.Fprintf(os.Stderr, "⚠  %s: manifest is %d days old (last scanned %s)\n", label, daysOld, lastScanned)
+			}
 		}
 	}
 
