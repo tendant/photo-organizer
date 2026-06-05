@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -2064,4 +2065,403 @@ func pct(part, total int) float64 {
 		return 0
 	}
 	return float64(part) / float64(total) * 100
+}
+
+// =============================================================================
+// Search
+// =============================================================================
+
+func runSearchAnalyze(args []string) {
+	// Parse search flags
+	var (
+		namePattern    string
+		pathSubstring  string
+		hashValue      string
+		sizeStr        string
+		dateStr        string
+		machineID      string
+		duplicatesOnly bool
+		groupByHash    bool
+		csvOutput      string
+	)
+
+	// Simple flag parsing
+	var manifestFiles []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-name" && i+1 < len(args):
+			namePattern = args[i+1]
+			i++
+		case arg == "-path" && i+1 < len(args):
+			pathSubstring = args[i+1]
+			i++
+		case arg == "-hash" && i+1 < len(args):
+			hashValue = args[i+1]
+			i++
+		case arg == "-size" && i+1 < len(args):
+			sizeStr = args[i+1]
+			i++
+		case arg == "-date" && i+1 < len(args):
+			dateStr = args[i+1]
+			i++
+		case arg == "-machine" && i+1 < len(args):
+			machineID = args[i+1]
+			i++
+		case arg == "-duplicates-only":
+			duplicatesOnly = true
+		case arg == "-group":
+			groupByHash = true
+		case arg == "-csv" && i+1 < len(args):
+			csvOutput = args[i+1]
+			i++
+		case !strings.HasPrefix(arg, "-"):
+			manifestFiles = append(manifestFiles, arg)
+		}
+	}
+
+	// If no manifests specified, load all from ~/manifests/_Manifest/
+	if len(manifestFiles) == 0 {
+		manifestRoot := defaultManifestRoot()
+		manifestDir := filepath.Join(manifestRoot, "_Manifest")
+		allCSVs, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+		if len(allCSVs) == 0 {
+			fmt.Fprintf(os.Stderr, "search: no manifests found in %s\n", manifestDir)
+			os.Exit(1)
+		}
+		manifestFiles = allCSVs
+	}
+
+	// Load all manifests
+	var allRows []ManifestRow
+	hashCounts := make(map[string]int)
+	for _, csvPath := range manifestFiles {
+		src, err := readManifest(csvPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "search: cannot read %s: %v\n", csvPath, err)
+			continue
+		}
+		allRows = append(allRows, src.Rows...)
+		for _, row := range src.Rows {
+			// Use full_hash if available, otherwise use partial_hash for grouping
+			hash := row.FullHash
+			if hash == "" {
+				hash = row.PartialHash
+			}
+			hashCounts[hash]++
+		}
+	}
+
+	if len(allRows) == 0 {
+		fmt.Fprintf(os.Stderr, "search: no files found\n")
+		os.Exit(1)
+	}
+
+	// Apply filters
+	var filtered []ManifestRow
+	nameRegex, _ := compilePattern(namePattern)
+	sizeMin, sizeMax := parseSizeRange(sizeStr)
+	dateStart, dateEnd := parseDateRange(dateStr)
+
+	for _, row := range allRows {
+		// Machine filter
+		if machineID != "" && row.MachineName != machineID {
+			continue
+		}
+
+		// Name filter
+		if namePattern != "" && !matchPattern(filepath.Base(row.RelativePath), namePattern, nameRegex) {
+			continue
+		}
+
+		// Path filter
+		if pathSubstring != "" && !strings.Contains(row.RelativePath, pathSubstring) {
+			continue
+		}
+
+		// Hash filter
+		if hashValue != "" && row.FullHash != hashValue {
+			continue
+		}
+
+		// Size filter
+		if sizeMin >= 0 || sizeMax >= 0 {
+			if sizeMin >= 0 && row.SizeBytes < sizeMin {
+				continue
+			}
+			if sizeMax >= 0 && row.SizeBytes > sizeMax {
+				continue
+			}
+		}
+
+		// Date filter
+		if dateStr != "" {
+			rowDate, err := time.Parse("2006-01-02", row.ScanDate)
+			if err == nil {
+				if !dateStart.IsZero() && rowDate.Before(dateStart) {
+					continue
+				}
+				if !dateEnd.IsZero() && rowDate.After(dateEnd) {
+					continue
+				}
+			}
+		}
+
+		// Duplicates-only filter
+		if duplicatesOnly && hashCounts[row.FullHash] <= 1 {
+			continue
+		}
+
+		filtered = append(filtered, row)
+	}
+
+	if len(filtered) == 0 {
+		fmt.Println("No matching files found.")
+		return
+	}
+
+	// Output results
+	if csvOutput != "" {
+		// Write CSV
+		writeSearchResults(csvOutput, filtered)
+	} else if groupByHash {
+		// Display grouped by hash
+		displayGroupedResults(filtered, hashCounts)
+	} else {
+		// Display as table
+		displayTableResults(filtered, hashCounts)
+	}
+}
+
+func compilePattern(pattern string) (*regexp.Regexp, error) {
+	if pattern == "" {
+		return nil, nil
+	}
+	// Convert glob patterns to regex
+	globRegex := strings.NewReplacer(
+		".", "\\.",
+		"*", ".*",
+		"?", ".",
+	).Replace(pattern)
+	return regexp.Compile("^" + globRegex + "$")
+}
+
+func matchPattern(name, pattern string, compiled *regexp.Regexp) bool {
+	if pattern == "" {
+		return true
+	}
+	if compiled != nil {
+		return compiled.MatchString(name)
+	}
+	// Fallback to simple substring match
+	return strings.Contains(name, pattern)
+}
+
+func parseSizeRange(sizeStr string) (int64, int64) {
+	if sizeStr == "" {
+		return -1, -1
+	}
+
+	// Parse "100MB", "1GB", or "100MB-500MB"
+	if strings.Contains(sizeStr, "-") {
+		parts := strings.Split(sizeStr, "-")
+		if len(parts) == 2 {
+			min := parseSize(parts[0])
+			max := parseSize(parts[1])
+			return min, max
+		}
+	}
+
+	size := parseSize(sizeStr)
+	return size, size
+}
+
+func parseSize(sizeStr string) int64 {
+	sizeStr = strings.TrimSpace(sizeStr)
+	if sizeStr == "" {
+		return -1
+	}
+
+	var multiplier int64 = 1
+	if strings.HasSuffix(sizeStr, "GB") {
+		multiplier = 1 << 30
+		sizeStr = strings.TrimSuffix(sizeStr, "GB")
+	} else if strings.HasSuffix(sizeStr, "MB") {
+		multiplier = 1 << 20
+		sizeStr = strings.TrimSuffix(sizeStr, "MB")
+	} else if strings.HasSuffix(sizeStr, "KB") {
+		multiplier = 1 << 10
+		sizeStr = strings.TrimSuffix(sizeStr, "KB")
+	}
+
+	val, err := strconv.ParseFloat(strings.TrimSpace(sizeStr), 64)
+	if err != nil {
+		return -1
+	}
+	return int64(val * float64(multiplier))
+}
+
+func parseDateRange(dateStr string) (time.Time, time.Time) {
+	if dateStr == "" {
+		return time.Time{}, time.Time{}
+	}
+
+	// Parse "2024-01-01" or "2024-01-01:2024-01-31"
+	var start, end time.Time
+	if strings.Contains(dateStr, ":") {
+		parts := strings.Split(dateStr, ":")
+		if len(parts) == 2 {
+			start, _ = time.Parse("2006-01-02", parts[0])
+			end, _ = time.Parse("2006-01-02", parts[1])
+			end = end.AddDate(0, 0, 1).Add(-time.Second) // End of day
+			return start, end
+		}
+	}
+
+	start, _ = time.Parse("2006-01-02", dateStr)
+	end = start.AddDate(0, 0, 1).Add(-time.Second) // End of day
+	return start, end
+}
+
+func displayTableResults(rows []ManifestRow, hashCounts map[string]int) {
+	// Sort by machine, then path
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].MachineName != rows[j].MachineName {
+			return rows[i].MachineName < rows[j].MachineName
+		}
+		if rows[i].ScanPath != rows[j].ScanPath {
+			return rows[i].ScanPath < rows[j].ScanPath
+		}
+		return rows[i].RelativePath < rows[j].RelativePath
+	})
+
+	fmt.Printf("%-20s %-12s %-10s %-8s  %s\n",
+		"Machine", "Size", "Hash", "Copies", "Full Path")
+	fmt.Println(strings.Repeat("-", 120))
+
+	for _, row := range rows {
+		// Use full_hash if available, otherwise use partial_hash
+		displayHash := row.FullHash
+		if displayHash == "" {
+			displayHash = row.PartialHash
+		}
+		shortHash := displayHash
+		if len(shortHash) > 8 {
+			shortHash = shortHash[:8]
+		}
+		copies := hashCounts[displayHash]
+		copyStr := "1"
+		if copies > 1 {
+			copyStr = fmt.Sprintf("%d", copies)
+		}
+
+		// Show full path: scan_path/relative_path
+		fullPath := filepath.Join(row.ScanPath, filepath.FromSlash(row.RelativePath))
+
+		fmt.Printf("%-20s %-12s %-10s %-8s  %s\n",
+			row.MachineName, formatSize(row.SizeBytes), shortHash, copyStr, fullPath)
+	}
+	fmt.Printf("\nTotal: %d file(s)\n", len(rows))
+}
+
+func displayGroupedResults(rows []ManifestRow, hashCounts map[string]int) {
+	// Group by hash (prefer full_hash, fall back to partial_hash)
+	groups := make(map[string][]ManifestRow)
+	for _, row := range rows {
+		hash := row.FullHash
+		if hash == "" {
+			hash = row.PartialHash
+		}
+		groups[hash] = append(groups[hash], row)
+	}
+
+	// Sort groups by hash, then files within group
+	var hashes []string
+	for hash := range groups {
+		hashes = append(hashes, hash)
+	}
+	sort.Strings(hashes)
+
+	totalGroups := 0
+	for _, hash := range hashes {
+		group := groups[hash]
+		if len(group) <= 1 {
+			continue // Skip non-duplicates
+		}
+		totalGroups++
+	}
+
+	groupNum := 0
+	for _, hash := range hashes {
+		group := groups[hash]
+		if len(group) <= 1 {
+			continue
+		}
+
+		groupNum++
+		shortHash := hash
+		if len(shortHash) > 8 {
+			shortHash = shortHash[:8]
+		}
+
+		fmt.Printf("\n[Group %d/%d] Hash: %s (%d copies, %s each)\n",
+			groupNum, totalGroups, shortHash, len(group), formatSize(group[0].SizeBytes))
+		fmt.Println(strings.Repeat("-", 120))
+
+		// Sort by machine, then path
+		sort.Slice(group, func(i, j int) bool {
+			if group[i].MachineName != group[j].MachineName {
+				return group[i].MachineName < group[j].MachineName
+			}
+			if group[i].ScanPath != group[j].ScanPath {
+				return group[i].ScanPath < group[j].ScanPath
+			}
+			return group[i].RelativePath < group[j].RelativePath
+		})
+
+		for _, row := range group {
+			// Display hash for this specific file (prefer full_hash, fall back to partial_hash)
+			fileHash := row.FullHash
+			if fileHash == "" {
+				fileHash = row.PartialHash
+			}
+			fileShortHash := fileHash
+			if len(fileShortHash) > 8 {
+				fileShortHash = fileShortHash[:8]
+			}
+			fullPath := filepath.Join(row.ScanPath, filepath.FromSlash(row.RelativePath))
+			fmt.Printf("  %-20s %-12s %-12s %s\n", row.MachineName, formatSize(row.SizeBytes), fileShortHash, fullPath)
+		}
+	}
+
+	fmt.Printf("\nTotal: %d duplicate group(s) found\n", groupNum)
+}
+
+func writeSearchResults(filename string, rows []ManifestRow) {
+	f, err := os.Create(filename)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "search: cannot create %s: %v\n", filename, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	// Write header
+	w.Write([]string{"machine_name", "scan_path", "relative_path", "file_size_bytes", "full_hash", "scan_date"})
+
+	// Write rows
+	for _, row := range rows {
+		w.Write([]string{
+			row.MachineName,
+			row.ScanPath,
+			row.RelativePath,
+			fmt.Sprintf("%d", row.SizeBytes),
+			row.FullHash,
+			row.ScanDate,
+		})
+	}
+
+	fmt.Printf("Results written to %s\n", filename)
 }

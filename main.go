@@ -1087,6 +1087,9 @@ func main() {
 		case "risk-report":
 			runRiskReport(os.Args[2:])
 			return
+		case "search":
+			runSearch(os.Args[2:])
+			return
 		case "scan":
 			// Strip the subcommand word and fall through to runScan
 			os.Args = append(os.Args[:1], os.Args[2:]...)
@@ -1109,6 +1112,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  machines                      List all machines in manifests with metadata\n")
 	fmt.Fprintf(os.Stderr, "  analyze                       Compare manifests, find cross-machine duplicates\n")
 	fmt.Fprintf(os.Stderr, "  risk-report                   Identify files at risk (only on one machine)\n")
+	fmt.Fprintf(os.Stderr, "  search [manifests...]         Search files by name, path, hash, size, date, machine\n")
 	fmt.Fprintf(os.Stderr, "  plan --keep <machine>         Generate safe-delete script for duplicates\n")
 	fmt.Fprintf(os.Stderr, "  migrate --from <machine> --dest <path>  Copy unique files preserving folder structure\n\n")
 	fmt.Fprintf(os.Stderr, "machines config: ~/manifests/machines.conf  (machine_id = user@host)\n\n")
@@ -1131,6 +1135,16 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "analyze flags:\n")
 	fmt.Fprintf(os.Stderr, "  --csv prefix     also write CSV output files with this filename prefix\n")
 	fmt.Fprintf(os.Stderr, "  --threshold n    folder coverage %% to flag as nearly-redundant (default: 0.9)\n\n")
+	fmt.Fprintf(os.Stderr, "search flags:\n")
+	fmt.Fprintf(os.Stderr, "  -name <pattern>          filename glob/regex pattern (e.g., IMG_* or \\.jpg$)\n")
+	fmt.Fprintf(os.Stderr, "  -path <substring>        path contains substring\n")
+	fmt.Fprintf(os.Stderr, "  -hash <hash>             find by full hash (shows all copies)\n")
+	fmt.Fprintf(os.Stderr, "  -size <size>             exact size (e.g., 5MB) or range (e.g., 100MB-500MB)\n")
+	fmt.Fprintf(os.Stderr, "  -date <date>             date range: YYYY-MM-DD or YYYY-MM-DD:YYYY-MM-DD\n")
+	fmt.Fprintf(os.Stderr, "  -machine <id>            filter by machine_id\n")
+	fmt.Fprintf(os.Stderr, "  -duplicates-only         only files with >1 copy\n")
+	fmt.Fprintf(os.Stderr, "  -group                   show results grouped by hash\n")
+	fmt.Fprintf(os.Stderr, "  -csv <file>              export to CSV instead of table\n\n")
 	fmt.Fprintf(os.Stderr, "Examples:\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer scan /Volumes/SSD          # manifest → ~/manifests/\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer scan ~/Photos\n")
@@ -1754,4 +1768,8 @@ func runCollect(args []string) {
 			fmt.Printf("Done: %s\n\n", machine)
 		}
 	}
+}
+
+func runSearch(args []string) {
+	runSearchAnalyze(args)
 }

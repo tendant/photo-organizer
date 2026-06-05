@@ -56,12 +56,25 @@
 - [x] Rsync script generation with `--partial` and `--progress` flags
 - [x] Folder structure preservation
 - [x] Remote destination support (user@host:/path)
-- [x] File list management via `/tmp`
+- [x] File list management via `~/manifests/_migrate/`
+- [x] Resume via `.done` markers (skip completed groups)
+- [x] Pre-flight validation (source paths, destination writable, disk space)
+- [x] Cleanup on script exit via trap
 - [x] Re-run safety (rsync skips completed files)
 
 ### Configuration & Metadata
 - [x] Machines config file for machine metadata
 - [x] `collect` subcommand to gather manifests
+- [x] `search` subcommand with comprehensive filtering
+  - [x] Search by filename pattern (glob/regex)
+  - [x] Search by path substring
+  - [x] Search by hash (find all copies)
+  - [x] Search by size (exact or range)
+  - [x] Search by date range
+  - [x] Filter by machine
+  - [x] Duplicates-only mode
+  - [x] Group by hash display
+  - [x] CSV export
 
 ---
 
@@ -84,7 +97,6 @@
 - [ ] Video walkthrough
 
 ### Edge Cases & Robustness
-- [ ] Handle interrupted transfers in migrate command
 - [ ] Better error messages for SSH connection failures
 - [ ] Validation of CSV manifest integrity
 - [ ] Recovery from corrupted manifest files
