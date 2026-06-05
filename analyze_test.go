@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -472,5 +473,368 @@ func TestSSHVerifyPathsCommandFailure(t *testing.T) {
 	result := sshVerifyPaths("127.0.0.1:65535", []string{"/nonexistent/path"})
 	if len(result) != 0 {
 		t.Errorf("command failure should return empty map (all unverified), got %d entries", len(result))
+	}
+}
+
+// =============================================================================
+// Manifest Validation
+// =============================================================================
+
+func TestCheckpointSaveLoad(t *testing.T) {
+	tempDir := t.TempDir()
+	manifestPath := tempDir + "/test.csv"
+
+	cp := &ScanCheckpoint{
+		ManifestPath:  manifestPath,
+		ScanPath:      "/test/path",
+		ProcessedDir:  100,
+		ProcessedFile: 5000,
+		LastFile:      "IMG_001.jpg",
+	}
+
+	// Save checkpoint
+	if err := SaveCheckpoint(cp); err != nil {
+		t.Fatalf("SaveCheckpoint failed: %v", err)
+	}
+
+	// Load it back
+	loaded, err := LoadCheckpoint(manifestPath)
+	if err != nil {
+		t.Fatalf("LoadCheckpoint failed: %v", err)
+	}
+
+	if loaded.ManifestPath != cp.ManifestPath || loaded.ProcessedDir != cp.ProcessedDir {
+		t.Errorf("loaded checkpoint mismatch: got %+v, want %+v", loaded, cp)
+	}
+}
+
+func TestClearCheckpoint(t *testing.T) {
+	cp := &ScanCheckpoint{
+		ManifestPath: "test.csv",
+		ScanPath:     "/test",
+	}
+
+	// Save and then clear
+	if err := SaveCheckpoint(cp); err != nil {
+		t.Fatalf("SaveCheckpoint failed: %v", err)
+	}
+
+	if err := ClearCheckpoint("test.csv"); err != nil {
+		t.Fatalf("ClearCheckpoint failed: %v", err)
+	}
+
+	// Try to load - should return error
+	if _, err := LoadCheckpoint("test.csv"); err == nil {
+		t.Error("expected error loading cleared checkpoint, got nil")
+	}
+}
+
+// =============================================================================
+// Pre-flight Checks
+// =============================================================================
+
+func TestCheckDirReadable(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Valid directory
+	check := CheckDirReadable(tempDir, "test dir")
+	if !check.Pass {
+		t.Errorf("CheckDirReadable on valid dir should pass, got: %s", check.Error)
+	}
+
+	// Non-existent directory
+	check = CheckDirReadable(tempDir+"/nonexistent", "missing dir")
+	if check.Pass {
+		t.Error("CheckDirReadable on missing dir should fail")
+	}
+	if check.Error == "" {
+		t.Error("CheckDirReadable should provide error message")
+	}
+}
+
+func TestCheckFileReadable(t *testing.T) {
+	tempDir := t.TempDir()
+	testFile := tempDir + "/test.txt"
+
+	// Create test file
+	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Valid file
+	check := CheckFileReadable(testFile, "test file")
+	if !check.Pass {
+		t.Errorf("CheckFileReadable on valid file should pass, got: %s", check.Error)
+	}
+
+	// Non-existent file
+	check = CheckFileReadable(tempDir+"/nonexistent.txt", "missing file")
+	if check.Pass {
+		t.Error("CheckFileReadable on missing file should fail")
+	}
+
+	// Directory instead of file
+	check = CheckFileReadable(tempDir, "directory")
+	if check.Pass {
+		t.Error("CheckFileReadable on directory should fail")
+	}
+}
+
+func TestCheckDiskSpace(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Small space requirement should pass
+	check := CheckDiskSpace(tempDir, 1024)
+	if !check.Pass {
+		t.Errorf("CheckDiskSpace with small requirement should pass, got: %s", check.Error)
+	}
+
+	// Very large space requirement might fail (depends on system)
+	check = CheckDiskSpace(tempDir, 1<<50) // 1PB
+	if check.Pass {
+		t.Logf("Warning: CheckDiskSpace passed for 1PB (system has lots of space)")
+	}
+}
+
+// =============================================================================
+// Size Parsing for Search
+// =============================================================================
+
+func TestParseSize(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int64
+	}{
+		{"1KB", 1024},
+		{"1MB", 1024 * 1024},
+		{"1GB", 1024 * 1024 * 1024},
+		{"2.5MB", int64(2.5 * 1024 * 1024)},
+		{"0", 0},
+		{"", -1},
+		{"invalid", -1},
+	}
+
+	for _, tt := range tests {
+		got := parseSize(tt.input)
+		if got != tt.want {
+			t.Errorf("parseSize(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParseSizeRange(t *testing.T) {
+	tests := []struct {
+		input string
+		min   int64
+		max   int64
+	}{
+		{"100MB-500MB", 100 * 1024 * 1024, 500 * 1024 * 1024},
+		{"1GB", 1024 * 1024 * 1024, 1024 * 1024 * 1024},
+		{"", -1, -1},
+	}
+
+	for _, tt := range tests {
+		min, max := parseSizeRange(tt.input)
+		if min != tt.min || max != tt.max {
+			t.Errorf("parseSizeRange(%q) = (%d, %d), want (%d, %d)",
+				tt.input, min, max, tt.min, tt.max)
+		}
+	}
+}
+
+// =============================================================================
+// Pattern Matching
+// =============================================================================
+
+func TestMatchPattern(t *testing.T) {
+	tests := []struct {
+		name      string
+		pattern   string
+		want      bool
+	}{
+		{"IMG_001.jpg", "IMG_*", true},
+		{"IMG_001.jpg", "*.jpg", true},
+		{"photo.png", "IMG_*", false},
+		{"test.JPG", "*.jpg", false}, // case sensitive
+		{"file.txt", "", true},       // empty pattern matches all
+	}
+
+	for _, tt := range tests {
+		regex, _ := compilePattern(tt.pattern)
+		got := matchPattern(tt.name, tt.pattern, regex)
+		if got != tt.want {
+			t.Errorf("matchPattern(%q, %q) = %v, want %v",
+				tt.name, tt.pattern, got, tt.want)
+		}
+	}
+}
+
+// =============================================================================
+// Large Dataset Handling
+// =============================================================================
+
+func TestBuildHashIndexLargeDataset(t *testing.T) {
+	// Create 10000+ files across multiple machines
+	var sources []ManifestSource
+
+	for machine := 0; machine < 5; machine++ {
+		var files []struct{ rel, hash string; size int64 }
+		for i := 0; i < 2000; i++ {
+			hash := fmt.Sprintf("hash_%d_%d", machine, i)
+			files = append(files, struct{ rel, hash string; size int64 }{
+				rel:  fmt.Sprintf("IMG_%06d.jpg", i),
+				hash: hash,
+				size: 1024 * 1024,
+			})
+		}
+		src := makeSource(fmt.Sprintf("machine-%d", machine), "/photos", files)
+		sources = append(sources, src)
+	}
+
+	// Build index - should handle 10K+ files efficiently
+	idx := buildHashIndex(sources)
+	if len(idx) < 10000 {
+		t.Errorf("buildHashIndex with 10K files created index of size %d", len(idx))
+	}
+}
+
+func TestFindDuplicatesLargeDataset(t *testing.T) {
+	// Create duplicate chains across 5 machines
+	var sources []ManifestSource
+	duplicateHash := "duplicate_hash"
+
+	for machine := 0; machine < 5; machine++ {
+		var files []struct{ rel, hash string; size int64 }
+		files = append(files, struct{ rel, hash string; size int64 }{
+			rel:  "IMG_001.jpg",
+			hash: duplicateHash,
+			size: 1024 * 1024,
+		})
+		// Add unique files
+		for i := 0; i < 100; i++ {
+			files = append(files, struct{ rel, hash string; size int64 }{
+				rel:  fmt.Sprintf("IMG_%06d.jpg", i),
+				hash: fmt.Sprintf("hash_%d_%d", machine, i),
+				size: 1024 * 1024,
+			})
+		}
+		src := makeSource(fmt.Sprintf("machine-%d", machine), "/photos", files)
+		sources = append(sources, src)
+	}
+
+	// Find duplicates
+	idx := buildHashIndex(sources)
+	dupes := findDuplicates(sources, idx)
+
+	// Should find the duplicate hash across all 5 machines
+	if len(dupes) == 0 {
+		t.Error("findDuplicates failed to find cross-machine duplicates")
+	}
+
+	// Check that the duplicate was found correctly
+	found := false
+	for _, dupe := range dupes {
+		if dupe.FullHash == duplicateHash && len(dupe.Locations) == 5 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("duplicate hash should appear on 5 machines")
+	}
+}
+
+// =============================================================================
+// Edge Cases & Error Scenarios
+// =============================================================================
+
+func TestFindDuplicatesWithEmptyHash(t *testing.T) {
+	// Handle rows with empty hashes gracefully (they're skipped)
+	src := makeSource("machine-1", "/photos", []struct{ rel, hash string; size int64 }{
+		{"IMG_001.jpg", "", 1024},
+		{"IMG_002.jpg", "hash1", 2048},
+		{"IMG_003.jpg", "hash1", 2048}, // actual duplicate
+	})
+	src2 := makeSource("machine-2", "/photos", []struct{ rel, hash string; size int64 }{
+		{"IMG_004.jpg", "hash1", 2048}, // duplicate of IMG_003
+	})
+
+	idx := buildHashIndex([]ManifestSource{src, src2})
+	dupes := findDuplicates([]ManifestSource{src, src2}, idx)
+
+	// Should find the duplicate hash1 across machines, ignore empty hash
+	found := false
+	for _, dupe := range dupes {
+		if dupe.FullHash == "hash1" && len(dupe.Locations) >= 2 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("should find duplicate hash1 across machines")
+	}
+}
+
+func TestFindUniqueWithComplexOverlaps(t *testing.T) {
+	// Test with overlapping scan paths on same machine
+	src := makeSource("machine-1", "/photos", []struct{ rel, hash string; size int64 }{
+		{"IMG_001.jpg", "hash1", 1024},
+		{"IMG_002.jpg", "hash2", 2048},
+	})
+	src2 := makeSource("machine-1", "/photos/2024", []struct{ rel, hash string; size int64 }{
+		{"IMG_001.jpg", "hash3", 1024},
+		{"IMG_003.jpg", "hash1", 3072},
+	})
+
+	idx := buildHashIndex([]ManifestSource{src, src2})
+	unique := findUnique([]ManifestSource{src, src2}, idx)
+
+	// Should handle overlapping scans correctly
+	if unique == nil {
+		t.Fatal("findUnique returned nil")
+	}
+}
+
+func TestFormatSizeEdgeCases(t *testing.T) {
+	tests := []struct {
+		bytes int64
+		want  string
+	}{
+		{0, "0 B"},
+		{1, "1 B"},
+		{1023, "1023 B"},
+		{1024, "1.0 KB"},
+		{1024 * 1024, "1.0 MB"},
+		{1024*1024*1024 + 512*1024*1024, "1.5 GB"},
+		{1024*1024*1024*1024 + 1024*1024*1024*512, "1.5 TB"},
+	}
+
+	for _, tt := range tests {
+		got := formatSize(tt.bytes)
+		if got != tt.want {
+			t.Errorf("formatSize(%d) = %q, want %q", tt.bytes, got, tt.want)
+		}
+	}
+}
+
+func TestShellQuoteSpecialChars(t *testing.T) {
+	tests := []string{
+		"simple",
+		"with space",
+		"with'quote",
+		`with"doublequote`,
+		"with$dollar",
+		"with`backtick",
+		"with\\backslash",
+		"with\nnewline",
+		"with\ttab",
+		"path/with/slashes",
+	}
+
+	for _, test := range tests {
+		quoted := shellQuote(test)
+		if !strings.Contains(quoted, "'") && !strings.Contains(quoted, "\"") {
+			t.Errorf("shellQuote(%q) = %q - doesn't appear properly quoted", test, quoted)
+		}
 	}
 }
