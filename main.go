@@ -1064,6 +1064,9 @@ doneLoading:
 // =============================================================================
 
 func main() {
+	// Check for interrupted operations at startup
+	DetectInterruptedOperations()
+
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
 		case "analyze":
@@ -1126,12 +1129,13 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  --score-threshold N      minimum folder score (0-100) to qualify (default: 30)\n")
 	fmt.Fprintf(os.Stderr, "  --detect-only    with --auto-identify-folders: show results and exit without scanning\n\n")
 	fmt.Fprintf(os.Stderr, "plan flags:\n")
-	fmt.Fprintf(os.Stderr, "  --keep <machine>     keep copies on this machine, move others to quarantine\n")
-	fmt.Fprintf(os.Stderr, "  --intra <machine>    find duplicates within a single machine\n")
-	fmt.Fprintf(os.Stderr, "  --keep-under <path>  with --intra: keep copies under this path\n")
-	fmt.Fprintf(os.Stderr, "  --ssh <user@host>    verify backup files exist on remote machine\n")
-	fmt.Fprintf(os.Stderr, "  --delete             generate rm commands instead of mv to quarantine\n")
-	fmt.Fprintf(os.Stderr, "  --out <file>         write script to file instead of stdout\n\n")
+	fmt.Fprintf(os.Stderr, "  --keep <machine>      keep copies on this machine, move others to quarantine\n")
+	fmt.Fprintf(os.Stderr, "  --intra <machine>     find duplicates within a single machine\n")
+	fmt.Fprintf(os.Stderr, "  --keep-under <path>   with --intra: keep copies under this path\n")
+	fmt.Fprintf(os.Stderr, "  --ssh <user@host>     verify backup files exist on remote machine\n")
+	fmt.Fprintf(os.Stderr, "  --ssh-timeout <dur>   timeout for SSH verification (default: 30s, e.g., 60s)\n")
+	fmt.Fprintf(os.Stderr, "  --delete              generate rm commands instead of mv to quarantine\n")
+	fmt.Fprintf(os.Stderr, "  --out <file>          write script to file instead of stdout\n\n")
 	fmt.Fprintf(os.Stderr, "analyze flags:\n")
 	fmt.Fprintf(os.Stderr, "  --csv prefix     also write CSV output files with this filename prefix\n")
 	fmt.Fprintf(os.Stderr, "  --threshold n    folder coverage %% to flag as nearly-redundant (default: 0.9)\n\n")

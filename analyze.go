@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -1323,7 +1324,7 @@ func runPlan(args []string) {
 			flagArgs = append(flagArgs, a)
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && !strings.Contains(a, "=") {
 				name := strings.TrimLeft(a, "-")
-				if name == "keep" || name == "out" || name == "intra" || name == "keep-under" || name == "ssh" {
+				if name == "keep" || name == "out" || name == "intra" || name == "keep-under" || name == "ssh" || name == "ssh-timeout" {
 					i++
 					flagArgs = append(flagArgs, args[i])
 				}
@@ -1338,6 +1339,7 @@ func runPlan(args []string) {
 	intraFlag := fs.String("intra", "", "machine name to deduplicate within (intra-machine mode)")
 	keepUnderFlag := fs.String("keep-under", "", "with --intra: keep copies under this path, delete others")
 	sshFlag := fs.String("ssh", "", "verify backup files exist on remote machine via SSH, e.g. user@host")
+	sshTimeoutFlag := fs.String("ssh-timeout", "30s", "timeout for SSH verification (e.g., 60s for slow networks)")
 	outFlag := fs.String("out", "", "write shell script to this file instead of stdout")
 	deleteMode := fs.Bool("delete", false, "generate rm commands instead of mv to quarantine")
 	fs.Usage = func() {
@@ -1348,6 +1350,11 @@ func runPlan(args []string) {
 		fs.PrintDefaults()
 	}
 	fs.Parse(flagArgs)
+
+	// Set SSH timeout from flag
+	if *sshTimeoutFlag != "" && *sshTimeoutFlag != "30s" {
+		os.Setenv("PHOTO_ORGANIZER_SSH_TIMEOUT", *sshTimeoutFlag)
+	}
 
 	if *keepFlag == "" && *intraFlag == "" {
 		fmt.Fprintln(os.Stderr, "plan: --keep <machine> or --intra <machine> is required")
@@ -1637,7 +1644,15 @@ func sshVerifyPaths(sshHost string, paths []string) map[string]bool {
   if [ -e "$f" ]; then echo "OK:$f"; else echo "MISSING:$f"; fi
 done`
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Use configurable SSH timeout (default 30s, can be overridden)
+	sshTimeout := 30 * time.Second
+	if envTimeout := os.Getenv("PHOTO_ORGANIZER_SSH_TIMEOUT"); envTimeout != "" {
+		if d, err := time.ParseDuration(envTimeout); err == nil {
+			sshTimeout = d
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), sshTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ssh", sshHost, remoteScript)
 	cmd.Stdin = strings.NewReader(strings.Join(unique, "\n") + "\n")
@@ -1652,6 +1667,15 @@ done`
 		if detail == "" {
 			detail = err.Error()
 		}
+
+		// Check if it was a timeout
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Fprintf(os.Stderr, "⚠  SSH verification timeout for %s (exceeded %v)\n", sshHost, sshTimeout)
+			fmt.Fprintf(os.Stderr, "   Tip: Set PHOTO_ORGANIZER_SSH_TIMEOUT=60s for slower networks\n")
+			fmt.Fprintf(os.Stderr, "   Continuing with all paths marked unverified\n")
+			return result
+		}
+
 		fmt.Fprintf(os.Stderr, "⚠  SSH verification failed for %s\n", sshHost)
 		provideSshErrorHelp(err.Error(), detail, sshHost)
 		fmt.Fprintf(os.Stderr, "   Continuing with all paths marked unverified\n")
@@ -2739,4 +2763,112 @@ func CheckDiskSpace(path string, neededBytes int64) PreflightCheck {
 	defer os.Remove(testFile)
 
 	return PreflightCheck{Name: name, Pass: true}
+}
+
+// =============================================================================
+// Timeout & Recovery
+// =============================================================================
+
+// ScanCheckpoint tracks scan progress for resumption.
+type ScanCheckpoint struct {
+	ManifestPath string    `json:"manifest_path"`
+	ScanPath     string    `json:"scan_path"`
+	ProcessedDir int       `json:"processed_dirs"`
+	ProcessedFile int      `json:"processed_files"`
+	LastFile     string    `json:"last_file"`
+	StartTime    time.Time `json:"start_time"`
+	LastUpdate   time.Time `json:"last_update"`
+}
+
+// CheckpointDir returns the directory for storing scan checkpoints.
+func CheckpointDir() string {
+	return filepath.Join(os.Getenv("HOME"), "manifests", "_checkpoints")
+}
+
+// CheckpointPath returns the checkpoint file path for a manifest.
+func CheckpointPath(manifestPath string) string {
+	name := filepath.Base(manifestPath)
+	return filepath.Join(CheckpointDir(), name+".checkpoint")
+}
+
+// LoadCheckpoint loads a previous scan checkpoint if it exists.
+func LoadCheckpoint(manifestPath string) (*ScanCheckpoint, error) {
+	path := CheckpointPath(manifestPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err // File doesn't exist or can't read
+	}
+
+	var cp ScanCheckpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return nil, err
+	}
+	return &cp, nil
+}
+
+// SaveCheckpoint saves scan progress for potential resumption.
+func SaveCheckpoint(cp *ScanCheckpoint) error {
+	dir := CheckpointDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(cp, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	path := CheckpointPath(cp.ManifestPath)
+	return os.WriteFile(path, data, 0600)
+}
+
+// ClearCheckpoint removes a checkpoint after successful completion.
+func ClearCheckpoint(manifestPath string) error {
+	path := CheckpointPath(manifestPath)
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil // Already gone, that's fine
+	}
+	return err
+}
+
+// DetectInterruptedOperations checks for incomplete operations and provides recovery hints.
+func DetectInterruptedOperations() {
+	dir := CheckpointDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // Checkpoint dir doesn't exist yet
+	}
+
+	var found []string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".checkpoint") {
+			found = append(found, entry.Name())
+		}
+	}
+
+	if len(found) > 0 {
+		fmt.Fprintf(os.Stderr, "⚠  Found %d incomplete scan(s). Run rescan to resume:\n", len(found))
+		for _, f := range found {
+			name := strings.TrimSuffix(f, ".checkpoint")
+			fmt.Fprintf(os.Stderr, "   photo-organizer rescan  (to resume %s)\n", name)
+		}
+		fmt.Fprintf(os.Stderr, "\n")
+	}
+}
+
+// MonitorDiskSpace checks available disk space and warns if low.
+func MonitorDiskSpace(path string) bool {
+	// Write a small test file to check writability and estimate space
+	testFile := filepath.Join(path, ".photo-organizer-space-check")
+	testData := make([]byte, 10*1024*1024) // 10MB test write
+
+	err := os.WriteFile(testFile, testData, 0600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠  Warning: Low disk space on %s\n", path)
+		fmt.Fprintf(os.Stderr, "   Cannot write 10MB test file\n")
+		return false
+	}
+	defer os.Remove(testFile)
+	return true
 }
