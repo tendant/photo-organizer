@@ -1569,6 +1569,40 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
+// provideSshErrorHelp analyzes SSH errors and provides helpful suggestions.
+func provideSshErrorHelp(errMsg, detail, sshHost string) {
+	lower := strings.ToLower(errMsg + " " + detail)
+
+	switch {
+	case strings.Contains(lower, "connection refused"):
+		fmt.Fprintf(os.Stderr, "   Error: Connection refused (host not reachable or SSH not running)\n")
+		fmt.Fprintf(os.Stderr, "   Try: ping %s  or  ssh -v %s\n", sshHost, sshHost)
+
+	case strings.Contains(lower, "connection timeout") || strings.Contains(lower, "timeout"):
+		fmt.Fprintf(os.Stderr, "   Error: Connection timeout (host unreachable or very slow network)\n")
+		fmt.Fprintf(os.Stderr, "   Try: ping %s  or  check your network connection\n", sshHost)
+
+	case strings.Contains(lower, "permission denied"):
+		fmt.Fprintf(os.Stderr, "   Error: Permission denied (authentication failed)\n")
+		fmt.Fprintf(os.Stderr, "   Try: ssh-keygen -t ed25519  or  ssh-copy-id %s\n", sshHost)
+		fmt.Fprintf(os.Stderr, "        Make sure SSH key is in ~/.ssh/\n")
+
+	case strings.Contains(lower, "no such file") || strings.Contains(lower, "not found"):
+		fmt.Fprintf(os.Stderr, "   Error: Remote path not found\n")
+		fmt.Fprintf(os.Stderr, "   Try: ssh %s ls -la ~/manifests/\n", sshHost)
+
+	case strings.Contains(lower, "command not found"):
+		fmt.Fprintf(os.Stderr, "   Error: Remote command not found\n")
+		fmt.Fprintf(os.Stderr, "   Make sure the remote host has a compatible shell\n")
+
+	default:
+		if detail != "" {
+			fmt.Fprintf(os.Stderr, "   Error: %s\n", detail)
+		}
+		fmt.Fprintf(os.Stderr, "   Try: ssh -v %s echo ok  (for verbose debugging)\n", sshHost)
+	}
+}
+
 // sshVerifyPaths checks whether each path exists on a remote host via a single
 // SSH connection. Returns a map of path → exists.
 func sshVerifyPaths(sshHost string, paths []string) map[string]bool {
@@ -1608,7 +1642,9 @@ done`
 		if detail == "" {
 			detail = err.Error()
 		}
-		fmt.Fprintf(os.Stderr, "Warning: SSH verification failed (%s) — marking all as unverified\n", detail)
+		fmt.Fprintf(os.Stderr, "⚠  SSH verification failed for %s\n", sshHost)
+		provideSshErrorHelp(err.Error(), detail, sshHost)
+		fmt.Fprintf(os.Stderr, "   Continuing with all paths marked unverified\n")
 		return result
 	}
 

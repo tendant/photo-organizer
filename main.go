@@ -1756,14 +1756,39 @@ func runCollect(args []string) {
 
 	for _, machine := range fromMachines {
 		target := sshTargetFor(machine, cfg)
+		if target == machine {
+			fmt.Fprintf(os.Stderr, "⚠  Machine %q not configured in machines.conf\n", machine)
+			fmt.Fprintf(os.Stderr, "   Add with: photo-organizer collect --add %s=user@host\n", machine)
+			continue
+		}
+
 		remoteDir := target + ":~/manifests/_Manifest/"
 		fmt.Printf("Collecting from %s (%s)...\n", machine, target)
 
+		var stderr bytes.Buffer
 		cmd := exec.Command("rsync", "-av", "--update", remoteDir, localDir)
 		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "collect: rsync from %s failed: %v\n", target, err)
+			errMsg := strings.ToLower(stderr.String() + err.Error())
+			fmt.Fprintf(os.Stderr, "⚠  Collect from %s failed\n", machine)
+
+			switch {
+			case strings.Contains(errMsg, "connection refused"):
+				fmt.Fprintf(os.Stderr, "   Error: Cannot connect to %s (host unreachable or SSH not running)\n", target)
+				fmt.Fprintf(os.Stderr, "   Try: ping %s  or  ssh %s echo ok\n", target, target)
+			case strings.Contains(errMsg, "permission denied"):
+				fmt.Fprintf(os.Stderr, "   Error: Permission denied when connecting to %s\n", target)
+				fmt.Fprintf(os.Stderr, "   Try: ssh-copy-id %s  or check SSH keys\n", target)
+			case strings.Contains(errMsg, "no such file"):
+				fmt.Fprintf(os.Stderr, "   Error: Remote path ~/manifests/_Manifest/ not found on %s\n", target)
+				fmt.Fprintf(os.Stderr, "   Try: ssh %s ls -la ~/manifests/\n", target)
+			case strings.Contains(errMsg, "timeout"):
+				fmt.Fprintf(os.Stderr, "   Error: Connection timeout to %s (network too slow)\n", target)
+				fmt.Fprintf(os.Stderr, "   Try: Check network or wait and retry\n")
+			default:
+				fmt.Fprintf(os.Stderr, "   %s\n", err)
+			}
 		} else {
 			fmt.Printf("Done: %s\n\n", machine)
 		}
