@@ -1,7 +1,7 @@
 # Photo Organizer – Current Status & Roadmap
 
-**Last Updated:** 2026-06-02  
-**Project Stage:** Phase 3 complete (Migration planning), Phase 4 started (Machines config)
+**Last Updated:** 2026-06-06  
+**Project Stage:** Phase 4 complete (Machines config, edge case robustness, documentation)
 
 ---
 
@@ -76,31 +76,34 @@
   - [x] Group by hash display
   - [x] CSV export
 
+### Edge Case Robustness (Phase 4)
+- [x] Checkpoint system for resuming interrupted scans
+- [x] SSH timeout handling with `PHOTO_ORGANIZER_SSH_TIMEOUT` config
+- [x] Comprehensive SSH error messages and help text
+- [x] Pre-flight validation (source readable, dest writable, disk space available)
+- [x] Disk space monitoring during scans and migrations
+- [x] Manifest validation with graceful handling of corrupted rows
+- [x] Migration resume via `.done` markers (skip completed groups)
+- [x] Comprehensive test suite (65 test cases)
+
+### Documentation (Phase 4)
+- [x] README.md — Quick start, features, performance metrics
+- [x] USAGE.md — 10 real-world workflow examples
+- [x] TROUBLESHOOTING.md — Solutions for common issues and recovery procedures
+- [x] API.md — Data structures, CSV format, algorithms, extension guidelines
+- [x] REMOVABLE_MEDIA.md — SD card workflows, multi-camera handling
+- [x] BACKUP_SD_CARD.md — Complete SD card backup workflow guide
+
 ---
 
 ## 🔄 In Progress / Known Gaps
 
-### Testing & Quality
-- [ ] Comprehensive test coverage for edge cases
-  - Large file handling (>10GB)
-  - Deep directory trees (1000+ levels)
-  - Special characters in filenames
-  - Concurrent manifest writes
-  - Manifest corruption recovery
-- [ ] Integration tests for end-to-end workflows
-- [ ] Performance benchmarking on real datasets
-
-### Documentation
-- [ ] Detailed API documentation for internals
-- [ ] Troubleshooting guide
-- [ ] Examples for common workflows
-- [ ] Video walkthrough
-
-### Edge Cases & Robustness
-- [ ] Better error messages for SSH connection failures
-- [ ] Validation of CSV manifest integrity
-- [ ] Recovery from corrupted manifest files
-- [ ] Handle disk space exhaustion during scanning
+### Future Enhancements
+- [ ] Video walkthrough for common workflows
+- [ ] Performance benchmarking on real datasets (100K+ files)
+- [ ] Integration tests for SSH-based backups
+- [ ] Face recognition and smart organization
+- [ ] Web UI dashboard for duplicate exploration
 
 ---
 
@@ -156,31 +159,18 @@
 
 ## 🚀 Recommended Next Steps (Short-term)
 
-### 1. Improve Test Coverage
-- Add test cases for manifest corruption scenarios
-- Test concurrent manifest writes
-- Test with real large datasets (100K+ files)
-- **Effort:** 2-3 days
-
-### 2. SQLite Migration (Optional but Recommended)
-- Design schema (machines, manifests, files, duplicates)
-- Implement CSV→SQLite import
-- Update analyze/plan to use SQLite
-- **Effort:** 3-5 days
-- **Payoff:** 10-100x faster queries on large datasets
-
-### 3. Web UI Prototype
-- Simple React dashboard
-- Duplicate group browser
-- Script preview before execution
+### Phase 5: Web UI (Future Enhancement)
+- Simple React dashboard for duplicate exploration
+- Duplicate group browser with preview
+- Script review interface before execution
 - **Effort:** 4-7 days
-- **Payoff:** Much safer user experience
+- **Payoff:** Much safer user experience for large libraries
 
-### 4. Edge Case Fixes
-- Handle partial manifest corruption
-- Better SSH error handling
-- Disk space checks before operations
-- **Effort:** 1-2 days
+### Phase 5: Advanced Features (Optional)
+- **SQLite backend** — For manifests >1M files (user chose CSV for now)
+- **Perceptual hashing** — Detect near-duplicate photos
+- **Face recognition** — Group photos by people
+- **Smart organization** — Auto-organize by date, event, camera, location
 
 ---
 
