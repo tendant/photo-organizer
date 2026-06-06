@@ -1205,7 +1205,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  scan [directory]              Scan a directory and write a manifest CSV\n")
 	fmt.Fprintf(os.Stderr, "  rescan                        Re-scan all folders previously scanned on this machine\n")
 	fmt.Fprintf(os.Stderr, "  collect [--from <machine>]    Pull manifests from remote machines via SSH (all if --from omitted)\n")
-	fmt.Fprintf(os.Stderr, "  machines                      List all machines in manifests with metadata\n")
+	fmt.Fprintf(os.Stderr, "  machines [--write-conf]       List all machines; --write-conf generates machines.conf from manifests\n")
 	fmt.Fprintf(os.Stderr, "  analyze                       Compare manifests, find cross-machine duplicates\n")
 	fmt.Fprintf(os.Stderr, "  risk-report                   Identify files at risk (only on one machine)\n")
 	fmt.Fprintf(os.Stderr, "  search [manifests...]         Search files by name, path, hash, size, date, machine\n")
@@ -1579,7 +1579,15 @@ func runRescan(args []string) {
 	}
 }
 
-func runMachines(_ []string) {
+func runMachines(args []string) {
+	// Parse flags
+	writeConf := false
+	for _, arg := range args {
+		if arg == "--write-conf" || arg == "--generate-conf" {
+			writeConf = true
+		}
+	}
+
 	// Load all manifests from the default manifest directory.
 	manifestRoot := defaultManifestRoot()
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
@@ -1638,6 +1646,32 @@ func runMachines(_ []string) {
 
 	if len(names) == 0 {
 		fmt.Println("No machines found in manifests.")
+		return
+	}
+
+	// If --write-conf flag, generate and write machines.conf
+	if writeConf {
+		confPath := machinesConfFile()
+		confContent := generateMachinesConf(names, cfg)
+
+		// Check if file exists
+		if _, err := os.Stat(confPath); err == nil {
+			fmt.Fprintf(os.Stderr, "⚠  %s already exists\n", confPath)
+			fmt.Fprintf(os.Stderr, "Backup: cp %s %s.backup\n", confPath, confPath)
+			fmt.Fprintf(os.Stderr, "Then overwrite with:\n")
+			fmt.Fprintf(os.Stderr, "  cat > %s << 'EOF'\n%sEOF\n", confPath, confContent)
+			return
+		}
+
+		if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", confPath, err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "✓ Generated machines.conf at %s\n", confPath)
+		fmt.Fprintf(os.Stderr, "\nEdit the file to add SSH targets for remote machines:\n")
+		fmt.Fprintf(os.Stderr, "  nano %s\n", confPath)
+		fmt.Fprintf(os.Stderr, "\nFormat: machine-name=user@host:/path\n")
+		fmt.Fprintf(os.Stderr, "Example: nas-backup=admin@192.168.1.100:/mnt/backup\n")
 		return
 	}
 
@@ -1702,6 +1736,33 @@ func machinesConfFile() string {
 // =============================================================================
 // Machines Config (~/manifests/machines.conf)
 // =============================================================================
+
+// generateMachinesConf creates a machines.conf content from discovered machines
+func generateMachinesConf(machineNames []string, existing map[string]string) string {
+	var buf strings.Builder
+
+	buf.WriteString("# Machine SSH Configuration\n")
+	buf.WriteString("# Format: machine-name=user@host:/path\n")
+	buf.WriteString("# Leave blank for local machines\n")
+	buf.WriteString("#\n")
+	buf.WriteString("# Examples:\n")
+	buf.WriteString("# nas-backup=admin@nas.local:/mnt/backup\n")
+	buf.WriteString("# cloud-storage=user@cloud.example.com:/home/user/backup\n")
+	buf.WriteString("#\n\n")
+
+	for _, name := range machineNames {
+		existing_target := existing[name]
+		if existing_target != "" {
+			// Preserve existing SSH target
+			buf.WriteString(fmt.Sprintf("%s=%s\n", name, existing_target))
+		} else {
+			// Add placeholder for new machines
+			buf.WriteString(fmt.Sprintf("# %s=\n", name))
+		}
+	}
+
+	return buf.String()
+}
 
 // loadMachinesConfig reads ~/manifests/machines.conf and returns a map of
 // machine_id → ssh_target. File format:
