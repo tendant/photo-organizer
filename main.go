@@ -1218,7 +1218,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  --full-hash      hash all files fully, not just colliding ones (rarely needed)\n")
 	fmt.Fprintf(os.Stderr, "  --no-cache       recompute all hashes, ignoring cached values\n")
 	fmt.Fprintf(os.Stderr, "  --prune          remove manifest entries for files no longer on disk\n")
-	fmt.Fprintf(os.Stderr, "  --report         show file type coverage before scanning (verify what will be captured)\n")
+	fmt.Fprintf(os.Stderr, "  --no-report      skip file type coverage report (report shown by default)\n")
 	fmt.Fprintf(os.Stderr, "  --auto-identify-folders  sample subdirectories and score by media ratio + path signals\n")
 	fmt.Fprintf(os.Stderr, "  --score-threshold N      minimum folder score (0-100) to qualify (default: 30)\n")
 	fmt.Fprintf(os.Stderr, "  --detect-only    with --auto-identify-folders: show results and exit without scanning\n\n")
@@ -1282,7 +1282,7 @@ func runScan(args []string) {
 	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those matching score threshold")
 	scoreThresholdFlag := fs.Int("score-threshold", 30, "minimum folder score (0-100) for --auto-identify-folders (default: 30)")
 	detectOnlyFlag := fs.Bool("detect-only", false, "with --auto-identify-folders: show detection results and exit without scanning")
-	reportFlag := fs.Bool("report", false, "show coverage report of file types before scanning")
+	noReportFlag := fs.Bool("no-report", false, "skip file type coverage report (usually shown before scanning)")
 	fs.Usage = printUsage
 	fs.Parse(flagArgs)
 
@@ -1328,10 +1328,10 @@ func runScan(args []string) {
 		os.Exit(1)
 	}
 
-	// If --report is set, show file type coverage and exit
-	if *reportFlag {
+	// Show file type coverage report by default (unless --no-report is set)
+	if !*noReportFlag {
 		analyzeDirectoryTypes(absScanDir)
-		return
+		fmt.Fprintf(os.Stderr, "Proceeding with scan...\n\n")
 	}
 
 	// If auto-identify-folders is set, sample subdirectories and scan only those matching score threshold.
