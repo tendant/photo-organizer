@@ -1376,42 +1376,39 @@ func runBackupStatus(args []string) {
 		os.Exit(1)
 	}
 
-	// Build hash index to find copies
+	// Build hash index to find copies across all machines
 	idx := buildHashIndex(sources)
 
-	// Count copies of each file
-	copyCount := make(map[string]int)     // hash -> count
-	machinesWith := make(map[string][]string) // hash -> machine names
-	filesByHash := make(map[string]int)   // hash -> count of files with this hash
+	// For each file on the source machine, count how many distinct machines have it
+	// key: indexKey (partialHash|size) → set of machine names
+	type fileStatus struct {
+		machines []string
+	}
+	fileStatuses := make(map[string]fileStatus)
 
 	for _, row := range sourceMachine.Rows {
-		hash := row.FullHash
-		if hash == "" {
-			hash = row.PartialHash
+		if row.PartialHash == "" {
+			continue
 		}
+		key := indexKey(row.PartialHash, row.SizeBytes)
+		locations := idx[key]
 
-		if hash != "" {
-			locations := idx[hash]
-			copyCount[hash] = len(locations)
-			filesByHash[hash] = 1
-
-			var machines []string
-			seen := make(map[string]bool)
-			for _, loc := range locations {
-				machine := sources[loc.sourceIdx].MachineName
-				if !seen[machine] {
-					machines = append(machines, machine)
-					seen[machine] = true
-				}
+		seen := make(map[string]bool)
+		var machines []string
+		for _, loc := range locations {
+			m := sources[loc.sourceIdx].MachineName
+			if !seen[m] {
+				seen[m] = true
+				machines = append(machines, m)
 			}
-			machinesWith[hash] = machines
 		}
+		fileStatuses[key] = fileStatus{machines: machines}
 	}
 
-	// Analyze copy distribution
-	copiesCount := make(map[int]int) // copy count -> file count
-	for _, count := range copyCount {
-		copiesCount[count]++
+	// Analyze copy distribution: count files by number of distinct machines
+	copiesCount := make(map[int]int) // machine count → file count
+	for _, fs := range fileStatuses {
+		copiesCount[len(fs.machines)]++
 	}
 
 	// Display report
@@ -1419,10 +1416,11 @@ func runBackupStatus(args []string) {
 	fmt.Printf("Backup Status: %s\n", fromMachine)
 	fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
 
+	totalAnalyzed := len(fileStatuses)
 	fmt.Printf("Total files:      %s (%s)\n", formatCount(sourceFileCount), formatSize(sourceSize))
-	fmt.Printf("Files analyzed:   %s\n\n", formatCount(len(copyCount)))
+	fmt.Printf("Files analyzed:   %s\n\n", formatCount(totalAnalyzed))
 
-	fmt.Printf("Copy Distribution:\n")
+	fmt.Printf("Copy Distribution (by number of machines):\n")
 	var sortedCounts []int
 	for count := range copiesCount {
 		sortedCounts = append(sortedCounts, count)
@@ -1431,35 +1429,40 @@ func runBackupStatus(args []string) {
 
 	for _, count := range sortedCounts {
 		fileCount := copiesCount[count]
-		pct := float64(fileCount) / float64(len(copyCount)) * 100
-		status := ""
-		if count == 1 {
-			status = " ⚠  AT RISK"
-		} else if count >= 3 {
-			status = " ✓ SAFE"
+		pct := 0.0
+		if totalAnalyzed > 0 {
+			pct = float64(fileCount) / float64(totalAnalyzed) * 100
 		}
-		fmt.Printf("  %d copy:    %6d files (%5.1f%%)%s\n", count, fileCount, pct, status)
+		status := ""
+		switch {
+		case count == 1:
+			status = "  ⚠  AT RISK (no backup)"
+		case count == 2:
+			status = "  ✓ backed up"
+		case count >= 3:
+			status = "  ✓ SAFE (3-2-1)"
+		}
+		fmt.Printf("  %d machine(s): %6d files (%5.1f%%)%s\n", count, fileCount, pct, status)
 	}
+	fmt.Println()
 
-	// Summary
-	fmt.Printf("\n")
 	atRisk := copiesCount[1]
-	safe := 0
-	for count, fileCount := range copiesCount {
+	safe3 := 0
+	for count, fc := range copiesCount {
 		if count >= 3 {
-			safe += fileCount
+			safe3 += fc
 		}
 	}
 
 	if atRisk > 0 {
-		fmt.Printf("⚠  WARNING: %d files only have 1 copy (not backed up)\n", atRisk)
-		fmt.Printf("   Recommend: photo-organizer migrate --from %s --dest <backup-location>\n\n", fromMachine)
-	} else if len(copiesCount) >= 3 || (len(copiesCount) == 2 && copiesCount[2] > 0) {
-		fmt.Printf("✓ GOOD: All files have multiple backups\n\n")
+		fmt.Printf("⚠  %d files exist on only 1 machine — not backed up yet\n", atRisk)
+		fmt.Printf("   Run: photo-organizer migrate --from %s --dest <backup>\n", fromMachine)
+		fmt.Printf("   Then rescan the backup machine to update its manifest.\n")
+	} else {
+		fmt.Printf("✓ All files backed up to at least 2 machines\n")
 	}
-
-	if atRisk == 0 {
-		fmt.Printf("Copy Safety: %s files have 3+ copies (3-2-1 rule satisfied)\n", formatCount(safe))
+	if safe3 > 0 {
+		fmt.Printf("✓ %s files satisfy the 3-2-1 rule (3+ machines)\n", formatCount(safe3))
 	}
 }
 
