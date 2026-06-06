@@ -78,16 +78,6 @@ var sidecarExts = map[string]bool{
 	".json": true,
 }
 
-// System/camera directories to skip during scanning.
-var skipFolders = map[string]bool{
-	".stfolder":       true,
-	".fseventsd":      true,
-	".Trashes":        true,
-	".Spotlight-V100": true,
-	"PRIVATE":         true,
-	"AVF_INFO":        true,
-	"THMBNL":          true,
-}
 
 // =============================================================================
 // Date Extraction
@@ -540,7 +530,8 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 			return nil
 		}
 		if info.IsDir() {
-			if path != dir && (strings.HasPrefix(info.Name(), ".") || skipFolders[info.Name()]) {
+			// Don't skip any directories — file extension filter catches non-media files
+			if path != dir && strings.HasPrefix(info.Name(), ".") {
 				return filepath.SkipDir
 			}
 			rel, _ := filepath.Rel(dir, path)
