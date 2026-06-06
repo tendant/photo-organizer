@@ -1215,6 +1215,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "scan flags:\n")
 	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ (default: ~/manifests)\n")
 	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n")
+	fmt.Fprintf(os.Stderr, "  --media-id id    stable ID for removable media (same across different machines)\n")
 	fmt.Fprintf(os.Stderr, "  --full-hash      hash all files fully, not just colliding ones (rarely needed)\n")
 	fmt.Fprintf(os.Stderr, "  --no-cache       recompute all hashes, ignoring cached values\n")
 	fmt.Fprintf(os.Stderr, "  --prune          remove manifest entries for files no longer on disk\n")
@@ -1263,7 +1264,7 @@ func runScan(args []string) {
 				// Only consume if this flag expects a value (not a bool flag).
 				// We check by whether the flag name is a known value-taking flag.
 				name := strings.TrimLeft(a, "-")
-				if name == "root" || name == "machine" || name == "score-threshold" { // value-taking flags only
+				if name == "root" || name == "machine" || name == "media-id" || name == "score-threshold" { // value-taking flags only
 					i++
 					flagArgs = append(flagArgs, args[i])
 				}
@@ -1276,6 +1277,7 @@ func runScan(args []string) {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	rootFlag := fs.String("root", "", "where to write the manifest (default: ~/manifests)")
 	machineFlag := fs.String("machine", "", "machine label embedded in manifest (default: stable machine ID)")
+	mediaIDFlag := fs.String("media-id", "", "stable identifier for removable media (same across different machines)")
 	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones (rarely needed)")
 	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values (use after hash algorithm change)")
 	pruneFlag := fs.Bool("prune", false, "remove manifest entries for files no longer on disk")
@@ -1290,6 +1292,11 @@ func runScan(args []string) {
 	machineName := *machineFlag
 	if machineName == "" {
 		machineName = machineID()
+	}
+
+	// If media-id is provided, use it as the machine name (for tracking removable media across machines)
+	if *mediaIDFlag != "" {
+		machineName = *mediaIDFlag
 	}
 
 	// Determine directory to scan
