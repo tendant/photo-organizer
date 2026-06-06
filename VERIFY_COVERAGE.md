@@ -1,9 +1,17 @@
 # Verifying Scan Coverage
 
-Before scanning a large directory or external drive, use the `--report` flag to verify that all important files will be captured:
+The file type coverage report is **shown by default** before every scan. This ensures you always see what will be captured before the scan starts.
 
+To see the report (default):
 ```bash
-photo-organizer scan /Volumes/MyCamera --report
+photo-organizer scan /Volumes/MyCamera
+# Report shows automatically before scanning starts
+```
+
+To skip the report (for automated/scripted scans):
+```bash
+photo-organizer scan /Volumes/MyCamera --no-report
+# Skips report and starts scanning immediately
 ```
 
 ## What You'll See
@@ -128,27 +136,25 @@ du -sh /Volumes/MyCamera  # Total disk usage
 
 ## Workflow: Safe Scan with Verification
 
-1. **Run the report first**
-   ```bash
-   photo-organizer scan /Volumes/MyDrive --report
-   ```
-
-2. **Review what will be captured**
-   - Check the SCANNED section matches your expectations
-   - Check if anything important is in IGNORED
-   - Note the total filesize for verification
-
-3. **Cross-check with filesystem**
-   ```bash
-   du -sh /Volumes/MyDrive
-   ```
-
-4. **Then run the actual scan**
+1. **Start the scan** (report shows automatically)
    ```bash
    photo-organizer scan /Volumes/MyDrive -machine "mydrive"
    ```
 
-5. **Verify results**
+2. **Review the report** before pressing Enter
+   - Check the SCANNED section matches your expectations
+   - Check if anything important is in IGNORED
+   - Note the total filesize for verification
+
+3. **Cross-check with filesystem** (while report is displayed)
+   ```bash
+   # In another terminal:
+   du -sh /Volumes/MyDrive
+   ```
+
+4. **The scan proceeds automatically** after you verify the report
+
+5. **Then verify results**
    ```bash
    photo-organizer analyze
    ```
