@@ -1165,6 +1165,9 @@ func main() {
 		case "analyze":
 			runAnalyze(os.Args[2:])
 			return
+		case "backup-status":
+			runBackupStatus(os.Args[2:])
+			return
 		case "plan":
 			runPlan(os.Args[2:])
 			return
@@ -1207,6 +1210,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  collect [--from <machine>]    Pull manifests from remote machines via SSH (all if --from omitted)\n")
 	fmt.Fprintf(os.Stderr, "  machines [--write-conf]       List all machines; --write-conf generates machines.conf from manifests\n")
 	fmt.Fprintf(os.Stderr, "  analyze                       Compare manifests, find cross-machine duplicates\n")
+	fmt.Fprintf(os.Stderr, "  backup-status --from <name>   Show copy count and coverage after migration\n")
 	fmt.Fprintf(os.Stderr, "  risk-report                   Identify files at risk (only on one machine)\n")
 	fmt.Fprintf(os.Stderr, "  search [manifests...]         Search files by name, path, hash, size, date, machine\n")
 	fmt.Fprintf(os.Stderr, "  plan --keep <machine>         Generate safe-delete script for duplicates\n")

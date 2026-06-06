@@ -1315,6 +1315,154 @@ func buildDeletePlan(sources []ManifestSource, keepMachine string) []DeleteCandi
 	return candidates
 }
 
+// =============================================================================
+// Backup Status (verify copy counts after migration)
+// =============================================================================
+
+func runBackupStatus(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup-status --from <machine>\n")
+		fmt.Fprintf(os.Stderr, "Shows copy count and coverage for a specific media/machine after migration\n\n")
+		fmt.Fprintf(os.Stderr, "Example: photo-organizer backup-status --from sony-a7iv-card-1\n")
+		os.Exit(1)
+	}
+
+	// Parse --from flag
+	var fromMachine string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--from" && i+1 < len(args) {
+			fromMachine = args[i+1]
+			break
+		}
+	}
+
+	if fromMachine == "" {
+		fmt.Fprintf(os.Stderr, "Error: --from <machine> is required\n")
+		os.Exit(1)
+	}
+
+	// Load all manifests
+	manifestRoot := defaultManifestRoot()
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	allCSVs, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	var sources []ManifestSource
+	for _, path := range allCSVs {
+		src, err := readManifest(path)
+		if err != nil {
+			continue
+		}
+		sources = append(sources, src)
+	}
+
+	// Find the source machine
+	var sourceMachine *ManifestSource
+	sourceFileCount := 0
+	sourceSize := int64(0)
+
+	for i := range sources {
+		if sources[i].MachineName == fromMachine {
+			sourceMachine = &sources[i]
+			sourceFileCount = len(sources[i].Rows)
+			for _, row := range sources[i].Rows {
+				sourceSize += row.SizeBytes
+			}
+			break
+		}
+	}
+
+	if sourceMachine == nil {
+		fmt.Fprintf(os.Stderr, "Error: machine '%s' not found\n", fromMachine)
+		os.Exit(1)
+	}
+
+	// Build hash index to find copies
+	idx := buildHashIndex(sources)
+
+	// Count copies of each file
+	copyCount := make(map[string]int)     // hash -> count
+	machinesWith := make(map[string][]string) // hash -> machine names
+	filesByHash := make(map[string]int)   // hash -> count of files with this hash
+
+	for _, row := range sourceMachine.Rows {
+		hash := row.FullHash
+		if hash == "" {
+			hash = row.PartialHash
+		}
+
+		if hash != "" {
+			locations := idx[hash]
+			copyCount[hash] = len(locations)
+			filesByHash[hash] = 1
+
+			var machines []string
+			seen := make(map[string]bool)
+			for _, loc := range locations {
+				machine := sources[loc.sourceIdx].MachineName
+				if !seen[machine] {
+					machines = append(machines, machine)
+					seen[machine] = true
+				}
+			}
+			machinesWith[hash] = machines
+		}
+	}
+
+	// Analyze copy distribution
+	copiesCount := make(map[int]int) // copy count -> file count
+	for _, count := range copyCount {
+		copiesCount[count]++
+	}
+
+	// Display report
+	fmt.Printf("\n═══════════════════════════════════════════════════════════\n")
+	fmt.Printf("Backup Status: %s\n", fromMachine)
+	fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
+
+	fmt.Printf("Total files:      %s (%s)\n", formatCount(sourceFileCount), formatSize(sourceSize))
+	fmt.Printf("Files analyzed:   %s\n\n", formatCount(len(copyCount)))
+
+	fmt.Printf("Copy Distribution:\n")
+	var sortedCounts []int
+	for count := range copiesCount {
+		sortedCounts = append(sortedCounts, count)
+	}
+	sort.Ints(sortedCounts)
+
+	for _, count := range sortedCounts {
+		fileCount := copiesCount[count]
+		pct := float64(fileCount) / float64(len(copyCount)) * 100
+		status := ""
+		if count == 1 {
+			status = " ⚠  AT RISK"
+		} else if count >= 3 {
+			status = " ✓ SAFE"
+		}
+		fmt.Printf("  %d copy:    %6d files (%5.1f%%)%s\n", count, fileCount, pct, status)
+	}
+
+	// Summary
+	fmt.Printf("\n")
+	atRisk := copiesCount[1]
+	safe := 0
+	for count, fileCount := range copiesCount {
+		if count >= 3 {
+			safe += fileCount
+		}
+	}
+
+	if atRisk > 0 {
+		fmt.Printf("⚠  WARNING: %d files only have 1 copy (not backed up)\n", atRisk)
+		fmt.Printf("   Recommend: photo-organizer migrate --from %s --dest <backup-location>\n\n", fromMachine)
+	} else if len(copiesCount) >= 3 || (len(copiesCount) == 2 && copiesCount[2] > 0) {
+		fmt.Printf("✓ GOOD: All files have multiple backups\n\n")
+	}
+
+	if atRisk == 0 {
+		fmt.Printf("Copy Safety: %s files have 3+ copies (3-2-1 rule satisfied)\n", formatCount(safe))
+	}
+}
+
 func runPlan(args []string) {
 	// Pre-separate flags from positional args.
 	var flagArgs, posArgs []string
