@@ -1329,6 +1329,24 @@ func runScan(args []string) {
 		manifestRoot = defaultManifestRoot()
 	}
 
+	// Warn if scanning removable media without --media-id (before pre-flight)
+	if *mediaIDFlag == "" && isRemovableMediaPath(absScanDir) {
+		fmt.Fprintf(os.Stderr, "⚠  Removable media detected: %s\n", absScanDir)
+		fmt.Fprintf(os.Stderr, "   Without --media-id, this scan is recorded under machine %q.\n", machineName)
+		fmt.Fprintf(os.Stderr, "   If this card is scanned on another machine, it will appear as a\n")
+		fmt.Fprintf(os.Stderr, "   separate machine and backup-status will show false copy counts.\n\n")
+		fmt.Fprintf(os.Stderr, "   Recommended:\n")
+		fmt.Fprintf(os.Stderr, "     photo-organizer scan %s --media-id \"<label-on-card>\"\n\n", absScanDir)
+		fmt.Fprintf(os.Stderr, "Proceed without --media-id? [y/N] ")
+		var answer string
+		fmt.Fscan(os.Stdin, &answer)
+		if answer != "y" && answer != "Y" {
+			fmt.Fprintln(os.Stderr, "Aborted. Re-run with --media-id.")
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr)
+	}
+
 	// Pre-flight checks
 	fmt.Fprintf(os.Stderr, "Pre-flight checks:\n")
 	checks := []PreflightCheck{
