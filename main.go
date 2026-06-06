@@ -1579,6 +1579,15 @@ func runRescan(args []string) {
 	}
 }
 
+// machineInfo holds metadata about a discovered machine
+type machineInfo struct {
+	name      string
+	scanPaths map[string]bool
+	lastScan  string
+	fileCount int
+	totalSize int64
+}
+
 func runMachines(args []string) {
 	// Parse flags
 	writeConf := false
@@ -1599,13 +1608,6 @@ func runMachines(args []string) {
 	}
 
 	// Collect all machines and their metadata.
-	type machineInfo struct {
-		name      string
-		scanPaths map[string]bool
-		lastScan  string
-		fileCount int
-		totalSize int64
-	}
 	machines := make(map[string]*machineInfo)
 
 	for _, csvPath := range allCSVs {
@@ -1652,7 +1654,7 @@ func runMachines(args []string) {
 	// If --write-conf flag, generate and write machines.conf
 	if writeConf {
 		confPath := machinesConfFile()
-		confContent := generateMachinesConf(names, cfg)
+		confContent := generateMachinesConfWithPaths(names, machines, cfg)
 
 		// Check if file exists
 		if _, err := os.Stat(confPath); err == nil {
@@ -1672,6 +1674,7 @@ func runMachines(args []string) {
 		fmt.Fprintf(os.Stderr, "  nano %s\n", confPath)
 		fmt.Fprintf(os.Stderr, "\nFormat: machine-name=user@host:/path\n")
 		fmt.Fprintf(os.Stderr, "Example: nas-backup=admin@192.168.1.100:/mnt/backup\n")
+		fmt.Fprintf(os.Stderr, "\nNote: Removable media (marked with [removable]) don't need SSH targets.\n")
 		return
 	}
 
@@ -1737,13 +1740,39 @@ func machinesConfFile() string {
 // Machines Config (~/manifests/machines.conf)
 // =============================================================================
 
-// generateMachinesConf creates a machines.conf content from discovered machines
-func generateMachinesConf(machineNames []string, existing map[string]string) string {
+// isRemovableMediaPath checks if a path looks like removable media (external drive, SD card, etc.)
+func isRemovableMediaPath(path string) bool {
+	path = strings.ToLower(path)
+	// Common patterns for removable media
+	removablePatterns := []string{
+		"/volumes/",     // macOS external drives and SD cards
+		"/mnt/",         // Linux mounted drives
+		"/media/",       // Linux media folders
+		"/run/media/",   // Linux automounted drives
+		"d:\\",          // Windows external drives
+		"e:\\",
+		"f:\\",
+		"g:\\",
+		"h:\\",
+	}
+	for _, pattern := range removablePatterns {
+		if strings.HasPrefix(path, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// generateMachinesConfWithPaths creates machines.conf from discovered machines and their paths
+func generateMachinesConfWithPaths(machineNames []string, machineInfo map[string]*machineInfo, existing map[string]string) string {
 	var buf strings.Builder
 
 	buf.WriteString("# Machine SSH Configuration\n")
 	buf.WriteString("# Format: machine-name=user@host:/path\n")
-	buf.WriteString("# Leave blank for local machines\n")
+	buf.WriteString("#\n")
+	buf.WriteString("# Machines marked [removable] are external drives/SD cards (no SSH needed)\n")
+	buf.WriteString("# Machines marked [local] are on this computer (no SSH needed)\n")
+	buf.WriteString("# For other machines, add SSH target in format: user@host:/path\n")
 	buf.WriteString("#\n")
 	buf.WriteString("# Examples:\n")
 	buf.WriteString("# nas-backup=admin@nas.local:/mnt/backup\n")
@@ -1752,17 +1781,44 @@ func generateMachinesConf(machineNames []string, existing map[string]string) str
 
 	for _, name := range machineNames {
 		existing_target := existing[name]
+		paths := machineInfo[name].scanPaths
+
+		// Determine if this is removable media
+		isRemovable := false
+		var scanPath string
+		for p := range paths {
+			scanPath = p
+			if isRemovableMediaPath(p) {
+				isRemovable = true
+				break
+			}
+		}
+
+		// Build comment with scan path
+		var comment string
+		if isRemovable {
+			comment = fmt.Sprintf(" [removable] scanned from: %s", scanPath)
+		} else if scanPath != "" {
+			comment = fmt.Sprintf(" [local] scanned from: %s", scanPath)
+		}
+
 		if existing_target != "" {
 			// Preserve existing SSH target
-			buf.WriteString(fmt.Sprintf("%s=%s\n", name, existing_target))
+			buf.WriteString(fmt.Sprintf("%s=%s  #%s\n", name, existing_target, comment))
 		} else {
 			// Add placeholder for new machines
-			buf.WriteString(fmt.Sprintf("# %s=\n", name))
+			if isRemovable {
+				// Don't need SSH for removable media
+				buf.WriteString(fmt.Sprintf("# %s=%s\n", name, comment))
+			} else {
+				buf.WriteString(fmt.Sprintf("# %s=%s\n", name, comment))
+			}
 		}
 	}
 
 	return buf.String()
 }
+
 
 // loadMachinesConfig reads ~/manifests/machines.conf and returns a map of
 // machine_id → ssh_target. File format:
