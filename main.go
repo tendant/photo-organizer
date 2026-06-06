@@ -282,6 +282,108 @@ func isMediaFile(ext string) bool {
 	return photoExts[ext] || videoExts[ext] || audioExts[ext] || sidecarExts[ext]
 }
 
+// FileTypeStat holds aggregated stats for one file extension.
+type FileTypeStat struct {
+	Ext       string
+	Count     int
+	TotalSize int64
+	IsScanned bool
+}
+
+// analyzeDirectoryTypes walks directory and shows what file types exist and which we'll scan.
+func analyzeDirectoryTypes(dir string) {
+	stats := make(map[string]*FileTypeStat)
+
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+
+		ext := strings.ToLower(filepath.Ext(info.Name()))
+		if ext == "" {
+			ext = "(no extension)"
+		}
+
+		if _, exists := stats[ext]; !exists {
+			stats[ext] = &FileTypeStat{Ext: ext, IsScanned: isMediaFile(ext)}
+		}
+		stats[ext].Count++
+		stats[ext].TotalSize += info.Size()
+		return nil
+	})
+
+	// Separate into scanned and ignored types
+	var scanned, ignored []FileTypeStat
+	var scannedBytes, ignoredBytes int64
+
+	for _, stat := range stats {
+		if stat.IsScanned {
+			scanned = append(scanned, *stat)
+			scannedBytes += stat.TotalSize
+		} else {
+			ignored = append(ignored, *stat)
+			ignoredBytes += stat.TotalSize
+		}
+	}
+
+	// Sort by size descending
+	sort.Slice(scanned, func(i, j int) bool {
+		return scanned[i].TotalSize > scanned[j].TotalSize
+	})
+	sort.Slice(ignored, func(i, j int) bool {
+		return ignored[i].TotalSize > ignored[j].TotalSize
+	})
+
+	// Print report
+	fmt.Printf("\n═════════════════════════════════════════════════════════\n")
+	fmt.Printf("File Type Coverage Report: %s\n", dir)
+	fmt.Printf("═════════════════════════════════════════════════════════\n\n")
+
+	fmt.Printf("Files to be SCANNED:\n")
+	fmt.Printf("  %-10s %10s %12s\n", "Type", "Count", "Size")
+	fmt.Printf("  %-10s %10s %12s\n", "────", "─────", "────")
+	for _, s := range scanned {
+		fmt.Printf("  %-10s %10d %12s\n", s.Ext, s.Count, formatBytes(s.TotalSize))
+	}
+	fmt.Printf("  %-10s %10d %12s\n", "TOTAL", sumCount(scanned), formatBytes(scannedBytes))
+
+	if len(ignored) > 0 {
+		fmt.Printf("\nFiles to be IGNORED (not media):\n")
+		fmt.Printf("  %-10s %10s %12s\n", "Type", "Count", "Size")
+		fmt.Printf("  %-10s %10s %12s\n", "────", "─────", "────")
+		for _, s := range ignored {
+			fmt.Printf("  %-10s %10d %12s\n", s.Ext, s.Count, formatBytes(s.TotalSize))
+		}
+		fmt.Printf("  %-10s %10d %12s\n", "TOTAL", sumCount(ignored), formatBytes(ignoredBytes))
+
+		fmt.Printf("\n⚠️  If any ignored types contain important media, add to:\n")
+		fmt.Printf("   /Users/lei/workspace/agents/photo-organizer/main.go (photoExts, videoExts, etc.)\n")
+	}
+
+	fmt.Printf("\n✓ Ready to scan %d files (%s)\n\n", sumCount(scanned), formatBytes(scannedBytes))
+}
+
+func sumCount(stats []FileTypeStat) int {
+	total := 0
+	for _, s := range stats {
+		total += s.Count
+	}
+	return total
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
 // sampleFolder recursively counts files and collects sample filenames for pattern detection.
 func sampleFolder(path string, maxDepth int) FolderSample {
 	var result FolderSample
@@ -1116,6 +1218,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  --full-hash      hash all files fully, not just colliding ones (rarely needed)\n")
 	fmt.Fprintf(os.Stderr, "  --no-cache       recompute all hashes, ignoring cached values\n")
 	fmt.Fprintf(os.Stderr, "  --prune          remove manifest entries for files no longer on disk\n")
+	fmt.Fprintf(os.Stderr, "  --report         show file type coverage before scanning (verify what will be captured)\n")
 	fmt.Fprintf(os.Stderr, "  --auto-identify-folders  sample subdirectories and score by media ratio + path signals\n")
 	fmt.Fprintf(os.Stderr, "  --score-threshold N      minimum folder score (0-100) to qualify (default: 30)\n")
 	fmt.Fprintf(os.Stderr, "  --detect-only    with --auto-identify-folders: show results and exit without scanning\n\n")
@@ -1179,6 +1282,7 @@ func runScan(args []string) {
 	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those matching score threshold")
 	scoreThresholdFlag := fs.Int("score-threshold", 30, "minimum folder score (0-100) for --auto-identify-folders (default: 30)")
 	detectOnlyFlag := fs.Bool("detect-only", false, "with --auto-identify-folders: show detection results and exit without scanning")
+	reportFlag := fs.Bool("report", false, "show coverage report of file types before scanning")
 	fs.Usage = printUsage
 	fs.Parse(flagArgs)
 
@@ -1222,6 +1326,12 @@ func runScan(args []string) {
 	}
 	if !RunPreflightChecks(checks) {
 		os.Exit(1)
+	}
+
+	// If --report is set, show file type coverage and exit
+	if *reportFlag {
+		analyzeDirectoryTypes(absScanDir)
+		return
 	}
 
 	// If auto-identify-folders is set, sample subdirectories and scan only those matching score threshold.
