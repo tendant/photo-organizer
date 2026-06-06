@@ -1330,7 +1330,7 @@ func runScan(args []string) {
 	}
 
 	// Warn if scanning removable media without --media-id (before pre-flight)
-	if *mediaIDFlag == "" && isRemovableMediaPath(absScanDir) {
+	if *mediaIDFlag == "" && isRemovableMedia(absScanDir) {
 		fmt.Fprintf(os.Stderr, "⚠  Removable media detected: %s\n", absScanDir)
 		fmt.Fprintf(os.Stderr, "   Without --media-id, this scan is recorded under machine %q.\n", machineName)
 		fmt.Fprintf(os.Stderr, "   If this card is scanned on another machine, it will appear as a\n")
@@ -1769,27 +1769,80 @@ func machinesConfFile() string {
 // Machines Config (~/manifests/machines.conf)
 // =============================================================================
 
-// isRemovableMediaPath checks if a path looks like removable media (external drive, SD card, etc.)
-func isRemovableMediaPath(path string) bool {
-	path = strings.ToLower(path)
-	// Common patterns for removable media
-	removablePatterns := []string{
-		"/volumes/",     // macOS external drives and SD cards
-		"/mnt/",         // Linux mounted drives
-		"/media/",       // Linux media folders
-		"/run/media/",   // Linux automounted drives
-		"d:\\",          // Windows external drives
-		"e:\\",
-		"f:\\",
-		"g:\\",
-		"h:\\",
+// isRemovableMedia asks the OS whether the filesystem at path is removable.
+// On macOS: uses diskutil info to check "Removable Media: Removable" or "Ejectable: Yes".
+// On Linux: resolves the mount device via /proc/mounts, then checks /sys/block/<dev>/removable.
+// Falls back to false (no warning) if detection fails — better a missed warning than a false one.
+func isRemovableMedia(path string) bool {
+	switch runtime.GOOS {
+	case "darwin":
+		return isMacOSRemovable(path)
+	case "linux":
+		return isLinuxRemovable(path)
 	}
-	for _, pattern := range removablePatterns {
-		if strings.HasPrefix(path, pattern) {
+	return false
+}
+
+func isMacOSRemovable(path string) bool {
+	out, err := exec.Command("diskutil", "info", path).Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.SplitN(line, ":", 2)
+		if len(fields) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(fields[0])
+		val := strings.TrimSpace(fields[1])
+		// "Removable Media: Removable" (not "Fixed")
+		if key == "Removable Media" && val == "Removable" {
+			return true
+		}
+		// "Ejectable: Yes"
+		if key == "Ejectable" && val == "Yes" {
 			return true
 		}
 	}
 	return false
+}
+
+func isLinuxRemovable(path string) bool {
+	// Find the mount device for the given path via /proc/mounts.
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return false
+	}
+
+	// Find the longest matching mount point for path.
+	bestMount, bestDev := "", ""
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		dev, mount := fields[0], fields[1]
+		if strings.HasPrefix(path, mount) && len(mount) > len(bestMount) {
+			bestMount = mount
+			bestDev = dev
+		}
+	}
+	if bestDev == "" {
+		return false
+	}
+
+	// Strip partition number to get block device (e.g., /dev/sdb1 → sdb).
+	devName := filepath.Base(bestDev)
+	for len(devName) > 0 && devName[len(devName)-1] >= '0' && devName[len(devName)-1] <= '9' {
+		devName = devName[:len(devName)-1]
+	}
+
+	// Check /sys/block/<dev>/removable: "1" means removable.
+	removable, err := os.ReadFile("/sys/block/" + devName + "/removable")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(removable)) == "1"
 }
 
 // generateMachinesConfWithPaths creates machines.conf from discovered machines and their paths
@@ -1817,7 +1870,7 @@ func generateMachinesConfWithPaths(machineNames []string, machineInfo map[string
 		var scanPath string
 		for p := range paths {
 			scanPath = p
-			if isRemovableMediaPath(p) {
+			if isRemovableMedia(p) {
 				isRemovable = true
 				break
 			}
