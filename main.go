@@ -1641,6 +1641,9 @@ func runMachines(_ []string) {
 		return
 	}
 
+	// Get current machine ID to mark it in the list
+	currentMachine := machineID()
+
 	fmt.Println("Machines in manifests:")
 	fmt.Println()
 	for _, name := range names {
@@ -1657,7 +1660,13 @@ func runMachines(_ []string) {
 		}
 		sort.Strings(paths)
 
-		fmt.Printf("  %s\n", name)
+		// Mark current machine
+		marker := ""
+		if name == currentMachine {
+			marker = " (this machine)"
+		}
+
+		fmt.Printf("  %s%s\n", name, marker)
 		fmt.Printf("    SSH: %s\n", sshTarget)
 		fmt.Printf("    Last scanned: %s\n", m.lastScan)
 		fmt.Printf("    Files: %s  (%s)\n", formatCount(m.fileCount), formatSize(m.totalSize))
