@@ -1216,6 +1216,12 @@ func main() {
 		case "check-backup":
 			runCheckBackup(os.Args[2:])
 			return
+		case "archive":
+			runArchive(os.Args[2:])
+			return
+		case "delete-folder":
+			runDeleteFolder(os.Args[2:])
+			return
 		case "search":
 			runSearch(os.Args[2:])
 			return
@@ -1244,6 +1250,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  risk-report                   Identify files at risk (only on one machine)\n")
 	fmt.Fprintf(os.Stderr, "  analyze-backup-compliance     Analyze 3-2-1 backup rule compliance (space impact)\n")
 	fmt.Fprintf(os.Stderr, "  check-backup <path>           Check if all files in a folder are backed up elsewhere\n")
+	fmt.Fprintf(os.Stderr, "  archive <path> --dest-dir <dir>  Archive folder to local archive directory\n")
+	fmt.Fprintf(os.Stderr, "  delete-folder <path>          Delete folder and clean up manifest\n")
 	fmt.Fprintf(os.Stderr, "  search [manifests...]         Search files by name, path, hash, size, date, machine\n")
 	fmt.Fprintf(os.Stderr, "  plan --keep <machine>         Generate safe-delete script for duplicates\n")
 	fmt.Fprintf(os.Stderr, "  migrate --from <machine> --dest <path>  Copy unique files preserving folder structure\n\n")
@@ -1649,6 +1657,162 @@ func runRescan(args []string) {
 
 		printScanSummary(scanStats, manifestStats)
 	}
+}
+
+// =============================================================================
+// Archive and Delete Commands
+// =============================================================================
+
+func runArchive(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder-path> --dest-dir <archive-dir>\n\n")
+		fmt.Fprintf(os.Stderr, "Move folder to local archive directory and update manifests.\n")
+		os.Exit(1)
+	}
+
+	sourceFolder := args[0]
+	var archiveDir string
+
+	// Parse --dest-dir flag
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--dest-dir" && i+1 < len(args) {
+			archiveDir = args[i+1]
+			break
+		}
+	}
+
+	if archiveDir == "" {
+		fmt.Fprintf(os.Stderr, "Error: --dest-dir is required\n")
+		os.Exit(1)
+	}
+
+	// Resolve paths to absolute
+	absSourceFolder, err := filepath.Abs(sourceFolder)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid source path %q\n", sourceFolder)
+		os.Exit(1)
+	}
+
+	absArchiveDir, err := filepath.Abs(archiveDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid archive directory %q\n", archiveDir)
+		os.Exit(1)
+	}
+
+	// Check source folder exists
+	if _, err := os.Stat(absSourceFolder); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: source folder not found: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Check archive directory exists or create it
+	if err := os.MkdirAll(absArchiveDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot create archive directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create timestamped archive folder name
+	folderName := filepath.Base(absSourceFolder)
+	timestamp := time.Now().Format("2006-01-02")
+	archiveFolder := filepath.Join(absArchiveDir, fmt.Sprintf("%s-%s", timestamp, folderName))
+
+	// Check if target already exists
+	if _, err := os.Stat(archiveFolder); err == nil {
+		fmt.Fprintf(os.Stderr, "Error: archive folder already exists: %s\n", archiveFolder)
+		os.Exit(1)
+	}
+
+	// Move the folder
+	fmt.Fprintf(os.Stderr, "Moving %s → %s\n", absSourceFolder, archiveFolder)
+	if err := os.Rename(absSourceFolder, archiveFolder); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to move folder: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Get machine name
+	machineName := resolveMachineID("")
+
+	// Rescan the parent of source folder to remove old entries (with --prune)
+	sourceParent := filepath.Dir(absSourceFolder)
+	fmt.Fprintf(os.Stderr, "\nUpdating manifest for %s (pruning removed files)...\n", sourceParent)
+	manifestFile := manifestFilename(machineName, sourceParent)
+
+	files, _, err := scanDirectory(sourceParent, make(map[string]CacheEntry), false)
+	if err == nil {
+		updateManifest(sourceParent, files, manifestFile, machineName, true) // prune=true
+	}
+
+	// Scan the archive folder to add new entries
+	fmt.Fprintf(os.Stderr, "Scanning archive folder...\n")
+	archiveParent := filepath.Dir(archiveFolder)
+	manifestFile = manifestFilename(machineName, archiveParent)
+
+	files, _, err = scanDirectory(archiveParent, make(map[string]CacheEntry), false)
+	if err == nil {
+		updateManifest(archiveParent, files, manifestFile, machineName, false)
+	}
+
+	fmt.Fprintf(os.Stderr, "\n✓ Folder archived to %s\n", archiveFolder)
+	fmt.Fprintf(os.Stderr, "  Files are still tracked in manifest at new location\n")
+}
+
+func runDeleteFolder(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer delete-folder <folder-path>\n\n")
+		fmt.Fprintf(os.Stderr, "Delete folder and remove entries from manifest.\n")
+		os.Exit(1)
+	}
+
+	folderPath := args[0]
+
+	// Resolve to absolute path
+	absFolderPath, err := filepath.Abs(folderPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid path %q\n", folderPath)
+		os.Exit(1)
+	}
+
+	// Check folder exists
+	info, err := os.Stat(absFolderPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: folder not found: %v\n", err)
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "Error: %q is not a directory\n", folderPath)
+		os.Exit(1)
+	}
+
+	// Confirm deletion
+	fmt.Fprintf(os.Stderr, "⚠  This will permanently delete: %s\n", absFolderPath)
+	fmt.Fprintf(os.Stderr, "Proceed? [y/N] ")
+	var answer string
+	fmt.Fscan(os.Stdin, &answer)
+	if answer != "y" && answer != "Y" {
+		fmt.Fprintf(os.Stderr, "Aborted.\n")
+		os.Exit(0)
+	}
+
+	// Delete the folder
+	fmt.Fprintf(os.Stderr, "Deleting folder...\n")
+	if err := os.RemoveAll(absFolderPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to delete folder: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Update manifest - rescan parent with prune
+	machineName := resolveMachineID("")
+	parentFolder := filepath.Dir(absFolderPath)
+	manifestFile := manifestFilename(machineName, parentFolder)
+
+	fmt.Fprintf(os.Stderr, "Updating manifest (removing deleted files)...\n")
+	files, _, err := scanDirectory(parentFolder, make(map[string]CacheEntry), false)
+	if err == nil {
+		updateManifest(parentFolder, files, manifestFile, machineName, true) // prune=true
+	}
+
+	fmt.Fprintf(os.Stderr, "\n✓ Folder deleted: %s\n", absFolderPath)
+	fmt.Fprintf(os.Stderr, "  Manifest entries removed\n")
 }
 
 // machineInfo holds metadata about a discovered machine
