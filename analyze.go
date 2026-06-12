@@ -3083,11 +3083,11 @@ type BackupComplianceReport struct {
 
 func runAnalyzeBackupCompliance(flagArgs []string) {
 	fs := flag.NewFlagSet("analyze-backup-compliance", flag.ExitOnError)
-	machine := fs.String("machine", "", "machine name to analyze")
+	machine := fs.String("machine", "", "machine name to analyze (default: current machine)")
 	path := fs.String("path", "", "specific path to analyze (optional, analyzes all if omitted)")
 	csvPrefix := fs.String("csv", "", "write CSV output with this prefix")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer analyze-backup-compliance --machine <name> [--path <path>] [--csv prefix]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer analyze-backup-compliance [--machine <name>] [--path <path>] [--csv prefix]\n\n")
 		fmt.Fprintf(os.Stderr, "Analyzes files on a machine using 3-2-1 backup rule:\n")
 		fmt.Fprintf(os.Stderr, "  Safe:     2+ copies on other machines (3+ total including original)\n")
 		fmt.Fprintf(os.Stderr, "  Risky:    1 copy on another machine (2 total) — violates 3-2-1\n")
@@ -3097,10 +3097,10 @@ func runAnalyzeBackupCompliance(flagArgs []string) {
 	}
 	fs.Parse(flagArgs)
 
-	if *machine == "" {
-		fmt.Fprintf(os.Stderr, "Error: --machine flag is required\n")
-		fs.Usage()
-		os.Exit(1)
+	// Auto-detect current machine if not specified
+	targetMachine := *machine
+	if targetMachine == "" {
+		targetMachine = machineID()
 	}
 
 	posArgs := fs.Args()
@@ -3120,8 +3120,8 @@ func runAnalyzeBackupCompliance(flagArgs []string) {
 
 	// Load manifests
 	var sources []ManifestSource
-	for _, path := range manifestPaths {
-		src, err := readManifest(path)
+	for _, manifestPath := range manifestPaths {
+		src, err := readManifest(manifestPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
 			continue
@@ -3138,7 +3138,7 @@ func runAnalyzeBackupCompliance(flagArgs []string) {
 	idx := buildHashIndex(sources)
 
 	// Generate compliance report
-	report := analyzeBackupCompliance(sources, idx, *machine, *path)
+	report := analyzeBackupCompliance(sources, idx, targetMachine, *path)
 
 	// Print report
 	printBackupComplianceReport(os.Stdout, report)
