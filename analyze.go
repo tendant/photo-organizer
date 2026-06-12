@@ -3054,6 +3054,318 @@ func DetectInterruptedOperations() {
 	}
 }
 
+// =============================================================================
+// Backup Compliance Analysis (3-2-1 Rule)
+// =============================================================================
+
+type BackupComplianceFile struct {
+	Path             string
+	SizeBytes        int64
+	Machine          string
+	CopiesElsewhere  int
+	CopyMachines     []string
+	ComplianceStatus string // "safe", "risky", "critical"
+}
+
+type BackupComplianceReport struct {
+	Machine           string
+	TargetPath        string
+	SafeFiles         []BackupComplianceFile
+	RiskyFiles        []BackupComplianceFile
+	CriticalFiles     []BackupComplianceFile
+	SafeSize          int64
+	RiskySize         int64
+	CriticalSize      int64
+	TotalSize         int64
+	TotalFiles        int
+	SafeableSpaceFreed int64
+}
+
+func runAnalyzeBackupCompliance(flagArgs []string) {
+	fs := flag.NewFlagSet("analyze-backup-compliance", flag.ExitOnError)
+	machine := fs.String("machine", "", "machine name to analyze")
+	path := fs.String("path", "", "specific path to analyze (optional, analyzes all if omitted)")
+	csvPrefix := fs.String("csv", "", "write CSV output with this prefix")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer analyze-backup-compliance --machine <name> [--path <path>] [--csv prefix]\n\n")
+		fmt.Fprintf(os.Stderr, "Analyzes files on a machine using 3-2-1 backup rule:\n")
+		fmt.Fprintf(os.Stderr, "  Safe:     2+ copies on other machines (3+ total including original)\n")
+		fmt.Fprintf(os.Stderr, "  Risky:    1 copy on another machine (2 total) — violates 3-2-1\n")
+		fmt.Fprintf(os.Stderr, "  Critical: 0 copies elsewhere (only on this machine) — data loss risk\n\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(flagArgs)
+
+	if *machine == "" {
+		fmt.Fprintf(os.Stderr, "Error: --machine flag is required\n")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	posArgs := fs.Args()
+	manifestPaths := posArgs
+	if len(manifestPaths) == 0 {
+		defaultDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
+		matches, _ := filepath.Glob(filepath.Join(defaultDir, "*.csv"))
+		if len(matches) > 0 {
+			manifestPaths = matches
+			fmt.Fprintf(os.Stderr, "Loading %d manifest(s)...\n\n", len(matches))
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: no manifests specified and none found in %s\n", defaultDir)
+			fs.Usage()
+			os.Exit(1)
+		}
+	}
+
+	// Load manifests
+	var sources []ManifestSource
+	for _, path := range manifestPaths {
+		src, err := readManifest(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			continue
+		}
+		sources = append(sources, src)
+	}
+
+	if len(sources) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests loaded.\n")
+		os.Exit(1)
+	}
+
+	// Build hash index
+	idx := buildHashIndex(sources)
+
+	// Generate compliance report
+	report := analyzeBackupCompliance(sources, idx, *machine, *path)
+
+	// Print report
+	printBackupComplianceReport(os.Stdout, report)
+
+	// Write CSV if requested
+	if *csvPrefix != "" {
+		if err := writeBackupComplianceCSV(*csvPrefix, report); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing CSV: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func analyzeBackupCompliance(sources []ManifestSource, idx map[string][]hashLocation, targetMachine, targetPath string) BackupComplianceReport {
+	report := BackupComplianceReport{
+		Machine:    targetMachine,
+		TargetPath: targetPath,
+	}
+
+	// Find source index for target machine
+	var targetSourceIdx []int
+	for si, src := range sources {
+		if src.MachineName != targetMachine {
+			continue
+		}
+		if targetPath != "" && !strings.HasPrefix(filepath.Clean(src.ScanPath), filepath.Clean(targetPath)) {
+			continue
+		}
+		targetSourceIdx = append(targetSourceIdx, si)
+	}
+
+	if len(targetSourceIdx) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found for machine %q\n", targetMachine)
+		return report
+	}
+
+	// Analyze each file in target machine
+	for _, si := range targetSourceIdx {
+		for _, row := range sources[si].Rows {
+			if targetPath != "" && !strings.Contains(row.RelativePath, targetPath) {
+				continue
+			}
+
+			if row.PartialHash == "" {
+				continue
+			}
+
+			// Count copies on OTHER machines
+			key := indexKey(row.PartialHash, row.SizeBytes)
+			locs, exists := idx[key]
+			if !exists {
+				locs = []hashLocation{}
+			}
+
+			copiesElsewhere := 0
+			copyMachines := make(map[string]bool)
+
+			for _, loc := range locs {
+				otherMachine := sources[loc.sourceIdx].MachineName
+				if otherMachine != targetMachine {
+					copiesElsewhere++
+					copyMachines[otherMachine] = true
+				}
+			}
+
+			// Determine compliance status (3-2-1 rule)
+			file := BackupComplianceFile{
+				Path:            row.RelativePath,
+				SizeBytes:       row.SizeBytes,
+				Machine:         targetMachine,
+				CopiesElsewhere: copiesElsewhere,
+			}
+
+			for m := range copyMachines {
+				file.CopyMachines = append(file.CopyMachines, m)
+			}
+			sort.Strings(file.CopyMachines)
+
+			// Apply 3-2-1 rule
+			if copiesElsewhere >= 2 {
+				file.ComplianceStatus = "safe"
+				report.SafeFiles = append(report.SafeFiles, file)
+				report.SafeSize += row.SizeBytes
+				report.SafeableSpaceFreed += row.SizeBytes
+			} else if copiesElsewhere == 1 {
+				file.ComplianceStatus = "risky"
+				report.RiskyFiles = append(report.RiskyFiles, file)
+				report.RiskySize += row.SizeBytes
+			} else {
+				file.ComplianceStatus = "critical"
+				report.CriticalFiles = append(report.CriticalFiles, file)
+				report.CriticalSize += row.SizeBytes
+			}
+
+			report.TotalSize += row.SizeBytes
+			report.TotalFiles++
+		}
+	}
+
+	return report
+}
+
+func printBackupComplianceReport(w io.Writer, r BackupComplianceReport) {
+	sep := "================================================================="
+
+	fmt.Fprintf(w, "\n%s\n", sep)
+	fmt.Fprintf(w, "3-2-1 BACKUP COMPLIANCE ANALYSIS\n")
+	fmt.Fprintf(w, "%s\n\n", sep)
+
+	fmt.Fprintf(w, "Machine:  %s\n", r.Machine)
+	if r.TargetPath != "" {
+		fmt.Fprintf(w, "Path:     %s\n", r.TargetPath)
+	}
+	fmt.Fprintf(w, "Total:    %d files (%.1f GB)\n\n", r.TotalFiles, float64(r.TotalSize)/(1024*1024*1024))
+
+	// Safe files
+	fmt.Fprintf(w, "✅ SAFE TO DELETE (2+ copies elsewhere)\n")
+	fmt.Fprintf(w, "   Count:  %d files\n", len(r.SafeFiles))
+	fmt.Fprintf(w, "   Size:   %.1f GB\n", float64(r.SafeSize)/(1024*1024*1024))
+	fmt.Fprintf(w, "   Can free: %.1f GB\n\n", float64(r.SafeableSpaceFreed)/(1024*1024*1024))
+
+	// Risky files
+	fmt.Fprintf(w, "⚠️  RISKY (1 copy elsewhere — violates 3-2-1)\n")
+	fmt.Fprintf(w, "   Count:  %d files\n", len(r.RiskyFiles))
+	fmt.Fprintf(w, "   Size:   %.1f GB\n", float64(r.RiskySize)/(1024*1024*1024))
+	fmt.Fprintf(w, "   Action: Avoid deleting unless you create another copy first\n\n")
+
+	// Critical files
+	fmt.Fprintf(w, "🚫 CRITICAL (no copies elsewhere — ONLY on this machine)\n")
+	fmt.Fprintf(w, "   Count:  %d files\n", len(r.CriticalFiles))
+	fmt.Fprintf(w, "   Size:   %.1f GB\n", float64(r.CriticalSize)/(1024*1024*1024))
+	fmt.Fprintf(w, "   Action: DO NOT DELETE — data loss risk!\n\n")
+
+	fmt.Fprintf(w, "%s\n", sep)
+
+	// Show sample files from each category
+	if len(r.SafeFiles) > 0 {
+		fmt.Fprintf(w, "\nSample SAFE files (showing first 5):\n")
+		for i, f := range r.SafeFiles {
+			if i >= 5 {
+				break
+			}
+			fmt.Fprintf(w, "  • %s (%.1f MB, copies on: %s)\n", f.Path, float64(f.SizeBytes)/(1024*1024), strings.Join(f.CopyMachines, ", "))
+		}
+		if len(r.SafeFiles) > 5 {
+			fmt.Fprintf(w, "  ... and %d more\n", len(r.SafeFiles)-5)
+		}
+	}
+
+	if len(r.RiskyFiles) > 0 {
+		fmt.Fprintf(w, "\nSample RISKY files (showing first 5):\n")
+		for i, f := range r.RiskyFiles {
+			if i >= 5 {
+				break
+			}
+			fmt.Fprintf(w, "  • %s (%.1f MB, copy on: %s)\n", f.Path, float64(f.SizeBytes)/(1024*1024), strings.Join(f.CopyMachines, ", "))
+		}
+		if len(r.RiskyFiles) > 5 {
+			fmt.Fprintf(w, "  ... and %d more\n", len(r.RiskyFiles)-5)
+		}
+	}
+
+	if len(r.CriticalFiles) > 0 {
+		fmt.Fprintf(w, "\nSample CRITICAL files (showing first 5):\n")
+		for i, f := range r.CriticalFiles {
+			if i >= 5 {
+				break
+			}
+			fmt.Fprintf(w, "  • %s (%.1f MB)\n", f.Path, float64(f.SizeBytes)/(1024*1024))
+		}
+		if len(r.CriticalFiles) > 5 {
+			fmt.Fprintf(w, "  ... and %d more\n", len(r.CriticalFiles)-5)
+		}
+	}
+
+	fmt.Fprintf(w, "\n")
+}
+
+func writeBackupComplianceCSV(prefix string, r BackupComplianceReport) error {
+	writeFile := func(filename string, files []BackupComplianceFile) error {
+		f, err := os.Create(filename)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		w := csv.NewWriter(f)
+		w.Write([]string{"path", "size_bytes", "size_mb", "copies_elsewhere", "copy_machines", "compliance_status"})
+
+		for _, file := range files {
+			w.Write([]string{
+				file.Path,
+				strconv.FormatInt(file.SizeBytes, 10),
+				fmt.Sprintf("%.1f", float64(file.SizeBytes)/(1024*1024)),
+				strconv.Itoa(file.CopiesElsewhere),
+				strings.Join(file.CopyMachines, ";"),
+				file.ComplianceStatus,
+			})
+		}
+		w.Flush()
+		return w.Error()
+	}
+
+	if len(r.SafeFiles) > 0 {
+		if err := writeFile(prefix+"_safe.csv", r.SafeFiles); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Wrote %s_safe.csv\n", prefix)
+	}
+
+	if len(r.RiskyFiles) > 0 {
+		if err := writeFile(prefix+"_risky.csv", r.RiskyFiles); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Wrote %s_risky.csv\n", prefix)
+	}
+
+	if len(r.CriticalFiles) > 0 {
+		if err := writeFile(prefix+"_critical.csv", r.CriticalFiles); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Wrote %s_critical.csv\n", prefix)
+	}
+
+	return nil
+}
+
 // MonitorDiskSpace checks available disk space and warns if low.
 func MonitorDiskSpace(path string) bool {
 	// Write a small test file to check writability and estimate space
