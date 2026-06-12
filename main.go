@@ -1213,6 +1213,9 @@ func main() {
 		case "analyze-backup-compliance":
 			runAnalyzeBackupCompliance(os.Args[2:])
 			return
+		case "check-backup":
+			runCheckBackup(os.Args[2:])
+			return
 		case "search":
 			runSearch(os.Args[2:])
 			return
@@ -1240,6 +1243,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  backup-status --from <name>   Show copy count and coverage after migration\n")
 	fmt.Fprintf(os.Stderr, "  risk-report                   Identify files at risk (only on one machine)\n")
 	fmt.Fprintf(os.Stderr, "  analyze-backup-compliance     Analyze 3-2-1 backup rule compliance (space impact)\n")
+	fmt.Fprintf(os.Stderr, "  check-backup <path>           Check if all files in a folder are backed up elsewhere\n")
 	fmt.Fprintf(os.Stderr, "  search [manifests...]         Search files by name, path, hash, size, date, machine\n")
 	fmt.Fprintf(os.Stderr, "  plan --keep <machine>         Generate safe-delete script for duplicates\n")
 	fmt.Fprintf(os.Stderr, "  migrate --from <machine> --dest <path>  Copy unique files preserving folder structure\n\n")

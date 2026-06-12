@@ -3363,6 +3363,186 @@ func writeBackupComplianceCSV(prefix string, r BackupComplianceReport) error {
 	return nil
 }
 
+// =============================================================================
+// Check Backup Command
+// =============================================================================
+
+type BackupCheckResult struct {
+	FolderPath     string
+	TotalFiles     int
+	BackedUpFiles  int
+	NotBackedUp    []FileBackupStatus
+	AllBackedUp    bool
+}
+
+type FileBackupStatus struct {
+	Path      string
+	SizeBytes int64
+	Locations int // number of machines that have this file
+}
+
+func runCheckBackup(flagArgs []string) {
+	if len(flagArgs) == 0 {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer check-backup <folder-path>\n\n")
+		fmt.Fprintf(os.Stderr, "Check if all files in a folder are backed up on other machines.\n")
+		os.Exit(1)
+	}
+
+	folderPath := flagArgs[0]
+
+	// Resolve to absolute path
+	absFolderPath, err := filepath.Abs(folderPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid path %q\n", folderPath)
+		os.Exit(1)
+	}
+
+	// Check folder exists
+	info, err := os.Stat(absFolderPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "Error: %q is not a directory\n", folderPath)
+		os.Exit(1)
+	}
+
+	// Load all manifests
+	defaultDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(defaultDir, "*.csv"))
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: no manifests found in %s\n", defaultDir)
+		os.Exit(1)
+	}
+
+	var sources []ManifestSource
+	for _, path := range matches {
+		src, err := readManifest(path)
+		if err != nil {
+			continue
+		}
+		sources = append(sources, src)
+	}
+
+	if len(sources) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: no manifests loaded\n")
+		os.Exit(1)
+	}
+
+	// Build hash index from all manifests
+	idx := buildHashIndex(sources)
+
+	// Scan the folder and check each file
+	result := checkFolderBackup(absFolderPath, sources, idx)
+
+	// Print results
+	printCheckBackupResult(result)
+}
+
+func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[string][]hashLocation) BackupCheckResult {
+	result := BackupCheckResult{
+		FolderPath: folderPath,
+	}
+
+	// Walk through all files in folder
+	filepath.WalkDir(folderPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() || path == folderPath {
+			return nil
+		}
+
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil
+		}
+
+		sizeBytes := info.Size()
+		result.TotalFiles++
+
+		// Compute partial hash (use processFile from main.go)
+		partialHash, _ := processFile(path)
+		if partialHash == "" {
+			return nil
+		}
+
+		// Check if this hash exists in other manifests
+		key := indexKey(partialHash, sizeBytes)
+		locs, exists := idx[key]
+
+		if !exists || len(locs) == 0 {
+			// File has no copies anywhere
+			relPath, _ := filepath.Rel(folderPath, path)
+			result.NotBackedUp = append(result.NotBackedUp, FileBackupStatus{
+				Path:      relPath,
+				SizeBytes: sizeBytes,
+				Locations: 0,
+			})
+			return nil
+		}
+
+		// Count how many machines have this file
+		machines := make(map[string]bool)
+		for _, loc := range locs {
+			machines[sources[loc.sourceIdx].MachineName] = true
+		}
+
+		if len(machines) > 0 {
+			result.BackedUpFiles++
+		} else {
+			// File exists in index but only on current machine
+			relPath, _ := filepath.Rel(folderPath, path)
+			result.NotBackedUp = append(result.NotBackedUp, FileBackupStatus{
+				Path:      relPath,
+				SizeBytes: sizeBytes,
+				Locations: len(machines),
+			})
+		}
+
+		return nil
+	})
+
+	result.AllBackedUp = (len(result.NotBackedUp) == 0) && (result.TotalFiles > 0)
+	return result
+}
+
+func printCheckBackupResult(r BackupCheckResult) {
+	sep := "================================================================="
+
+	fmt.Fprintf(os.Stdout, "\n%s\n", sep)
+	fmt.Fprintf(os.Stdout, "BACKUP CHECK\n")
+	fmt.Fprintf(os.Stdout, "%s\n\n", sep)
+
+	fmt.Fprintf(os.Stdout, "Folder: %s\n", r.FolderPath)
+	fmt.Fprintf(os.Stdout, "Total files: %d\n\n", r.TotalFiles)
+
+	if r.AllBackedUp {
+		fmt.Fprintf(os.Stdout, "✅ All %d files are backed up on other machines\n", r.TotalFiles)
+		fmt.Fprintf(os.Stdout, "   Safe to delete this folder\n\n")
+	} else {
+		notBackedUpSize := int64(0)
+		for _, f := range r.NotBackedUp {
+			notBackedUpSize += f.SizeBytes
+		}
+
+		fmt.Fprintf(os.Stdout, "❌ %d file(s) NOT backed up elsewhere:\n\n", len(r.NotBackedUp))
+		for i, f := range r.NotBackedUp {
+			if i >= 10 {
+				fmt.Fprintf(os.Stdout, "   ... and %d more files\n", len(r.NotBackedUp)-10)
+				break
+			}
+			fmt.Fprintf(os.Stdout, "   • %s (%.1f MB)\n", f.Path, float64(f.SizeBytes)/(1024*1024))
+		}
+
+		fmt.Fprintf(os.Stdout, "\n   Total unbacked-up: %.1f GB\n", float64(notBackedUpSize)/(1024*1024*1024))
+		fmt.Fprintf(os.Stdout, "   DO NOT delete this folder until these files are backed up\n\n")
+	}
+
+	fmt.Fprintf(os.Stdout, "%s\n", sep)
+}
+
 // MonitorDiskSpace checks available disk space and warns if low.
 func MonitorDiskSpace(path string) bool {
 	// Write a small test file to check writability and estimate space
