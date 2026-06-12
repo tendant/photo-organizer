@@ -3372,6 +3372,7 @@ type BackupCheckResult struct {
 	TotalFiles     int
 	BackedUpFiles  int
 	NotBackedUp    []FileBackupStatus
+	BackupLocations map[string]int // machine@path -> count of files
 	AllBackedUp    bool
 }
 
@@ -3442,7 +3443,8 @@ func runCheckBackup(flagArgs []string) {
 
 func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[string][]hashLocation) BackupCheckResult {
 	result := BackupCheckResult{
-		FolderPath: folderPath,
+		FolderPath:      folderPath,
+		BackupLocations: make(map[string]int),
 	}
 
 	// Walk through all files in folder
@@ -3483,10 +3485,13 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 			return nil
 		}
 
-		// Count how many machines have this file
+		// Count how many machines have this file and track locations
 		machines := make(map[string]bool)
 		for _, loc := range locs {
 			machines[sources[loc.sourceIdx].MachineName] = true
+			// Track backup location with label
+			label := sources[loc.sourceIdx].Label
+			result.BackupLocations[label]++
 		}
 
 		if len(machines) > 0 {
@@ -3521,6 +3526,23 @@ func printCheckBackupResult(r BackupCheckResult) {
 	if r.AllBackedUp {
 		fmt.Fprintf(os.Stdout, "✅ All %d files are backed up on other machines\n", r.TotalFiles)
 		fmt.Fprintf(os.Stdout, "   Safe to delete this folder\n\n")
+
+		// Show backup locations
+		if len(r.BackupLocations) > 0 {
+			fmt.Fprintf(os.Stdout, "Backup locations:\n")
+			// Sort locations for consistent output
+			var locations []string
+			for loc := range r.BackupLocations {
+				locations = append(locations, loc)
+			}
+			sort.Strings(locations)
+
+			for _, loc := range locations {
+				count := r.BackupLocations[loc]
+				fmt.Fprintf(os.Stdout, "   • %s (%d files)\n", loc, count)
+			}
+			fmt.Fprintf(os.Stdout, "\n")
+		}
 	} else {
 		notBackedUpSize := int64(0)
 		for _, f := range r.NotBackedUp {
