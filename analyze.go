@@ -3097,11 +3097,8 @@ func runAnalyzeBackupCompliance(flagArgs []string) {
 	}
 	fs.Parse(flagArgs)
 
-	// Auto-detect current machine if not specified
-	targetMachine := *machine
-	if targetMachine == "" {
-		targetMachine = machineID()
-	}
+	// Resolve machine name (priority: flag > ./machine-id > ~/manifests/machine-id)
+	targetMachine := resolveMachineID(*machine)
 
 	posArgs := fs.Args()
 	manifestPaths := posArgs

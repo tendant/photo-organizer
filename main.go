@@ -770,6 +770,30 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 // machineID returns a stable, unique machine identifier of the form
 // "Ls-MBP-a3f7c2". It is computed once and cached in ~/manifests/machine-id
 // so it never changes even if the hostname is later renamed.
+// resolveMachineID returns the machine ID with priority:
+// 1. Explicit flag value (if provided and non-empty)
+// 2. ./machine-id file in current working directory (if exists)
+// 3. ~/manifests/machine-id (via machineID())
+func resolveMachineID(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+
+	// Check for machine-id file in current directory
+	cwd, err := os.Getwd()
+	if err == nil {
+		localPath := filepath.Join(cwd, "machine-id")
+		if data, err := os.ReadFile(localPath); err == nil {
+			if id := strings.TrimSpace(string(data)); id != "" {
+				return id
+			}
+		}
+	}
+
+	// Fall back to global machine ID
+	return machineID()
+}
+
 func machineID() string {
 	newPath := machineIDFile()
 	oldPath := filepath.Join(os.Getenv("HOME"), ".photo-organizer-id")
@@ -1296,11 +1320,8 @@ func runScan(args []string) {
 	fs.Usage = printUsage
 	fs.Parse(flagArgs)
 
-	// Resolve machine name
-	machineName := *machineFlag
-	if machineName == "" {
-		machineName = machineID()
-	}
+	// Resolve machine name (priority: flag > ./machine-id > ~/manifests/machine-id)
+	machineName := resolveMachineID(*machineFlag)
 
 	// If media-id is provided, use it as the machine name (for tracking removable media across machines)
 	if *mediaIDFlag != "" {
@@ -1532,10 +1553,8 @@ func runRescan(args []string) {
 	fs.Parse(flagArgs)
 	_ = posArgs
 
-	machine := *machineFlag
-	if machine == "" {
-		machine = machineID()
-	}
+	// Resolve machine name (priority: flag > ./machine-id > ~/manifests/machine-id)
+	machine := resolveMachineID(*machineFlag)
 
 	manifestRoot := *rootFlag
 	if manifestRoot == "" {
