@@ -1310,6 +1310,7 @@ func runScan(args []string) {
 	rootFlag := fs.String("root", "", "where to write the manifest (default: ~/manifests)")
 	machineFlag := fs.String("machine", "", "machine label embedded in manifest (default: stable machine ID)")
 	mediaIDFlag := fs.String("media-id", "", "stable identifier for removable media (same across different machines)")
+	noWriteMediaIDFlag := fs.Bool("no-write-media-id", false, "skip writing machine-id file to card")
 	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones (rarely needed)")
 	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values (use after hash algorithm change)")
 	pruneFlag := fs.Bool("prune", false, "remove manifest entries for files no longer on disk")
@@ -1322,11 +1323,6 @@ func runScan(args []string) {
 
 	// Resolve machine name (priority: flag > ./machine-id > ~/manifests/machine-id)
 	machineName := resolveMachineID(*machineFlag)
-
-	// If media-id is provided, use it as the machine name (for tracking removable media across machines)
-	if *mediaIDFlag != "" {
-		machineName = *mediaIDFlag
-	}
 
 	// Determine directory to scan
 	scanDir := ""
@@ -1348,13 +1344,28 @@ func runScan(args []string) {
 		absScanDir = scanDir
 	}
 
+	// Auto-read media-id from card if not provided via flag
+	if *mediaIDFlag == "" {
+		cardIDPath := filepath.Join(absScanDir, "machine-id")
+		if data, err := os.ReadFile(cardIDPath); err == nil {
+			if id := strings.TrimSpace(string(data)); id != "" {
+				*mediaIDFlag = id
+			}
+		}
+	}
+
+	// Apply media-id to machine name after auto-read
+	if *mediaIDFlag != "" {
+		machineName = *mediaIDFlag
+	}
+
 	// Determine where manifest is written
 	manifestRoot := *rootFlag
 	if manifestRoot == "" {
 		manifestRoot = defaultManifestRoot()
 	}
 
-	// Exit if scanning removable media without --media-id (before pre-flight)
+	// Exit if scanning removable media without media-id (before pre-flight)
 	if *mediaIDFlag == "" && isRemovableMedia(absScanDir) {
 		fmt.Fprintf(os.Stderr, "⚠  Removable media detected: %s\n", absScanDir)
 		fmt.Fprintf(os.Stderr, "   This is removable media and requires --media-id to scan.\n")
@@ -1363,6 +1374,18 @@ func runScan(args []string) {
 		fmt.Fprintf(os.Stderr, "   Please provide a stable identifier:\n")
 		fmt.Fprintf(os.Stderr, "     photo-organizer scan %s --media-id \"<label-on-card>\"\n\n", absScanDir)
 		os.Exit(1)
+	}
+
+	// Write machine-id to card on first use (unless --no-write-media-id)
+	if *mediaIDFlag != "" && !*noWriteMediaIDFlag {
+		cardIDPath := filepath.Join(absScanDir, "machine-id")
+		if _, err := os.Stat(cardIDPath); os.IsNotExist(err) {
+			if err := os.WriteFile(cardIDPath, []byte(*mediaIDFlag+"\n"), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠  Could not write machine-id to card: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "✓  Media ID %q written to %s\n", *mediaIDFlag, cardIDPath)
+			}
+		}
 	}
 
 	// Pre-flight checks
