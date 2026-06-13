@@ -3370,16 +3370,19 @@ func writeBackupComplianceCSV(prefix string, r BackupComplianceReport) error {
 type BackupCheckResult struct {
 	FolderPath     string
 	TotalFiles     int
+	TotalSize      int64
 	BackedUpFiles  int
 	NotBackedUp    []FileBackupStatus
 	BackupLocations map[string]int // machine@path -> count of files
+	BackedUp       []FileBackupStatus // backed-up files with their locations
 	AllBackedUp    bool
 }
 
 type FileBackupStatus struct {
-	Path      string
-	SizeBytes int64
-	Locations int // number of machines that have this file
+	Path            string
+	SizeBytes       int64
+	Locations       int    // number of machines that have this file
+	LocationDetails []string // detailed list of locations where file exists
 }
 
 func runCheckBackup(flagArgs []string) {
@@ -3463,6 +3466,7 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 
 		sizeBytes := info.Size()
 		result.TotalFiles++
+		result.TotalSize += sizeBytes
 
 		// Compute partial hash (use processFile from main.go)
 		partialHash, _ := processFile(path)
@@ -3487,22 +3491,31 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 
 		// Count how many machines have this file and track locations
 		machines := make(map[string]bool)
+		var locationDetails []string
 		for _, loc := range locs {
 			machines[sources[loc.sourceIdx].MachineName] = true
 			// Track backup location with label
 			label := sources[loc.sourceIdx].Label
 			result.BackupLocations[label]++
+			locationDetails = append(locationDetails, label)
 		}
+
+		relPath, _ := filepath.Rel(folderPath, path)
 
 		if len(machines) > 0 {
 			result.BackedUpFiles++
+			result.BackedUp = append(result.BackedUp, FileBackupStatus{
+				Path:            relPath,
+				SizeBytes:       sizeBytes,
+				Locations:       len(machines),
+				LocationDetails: locationDetails,
+			})
 		} else {
 			// File exists in index but only on current machine
-			relPath, _ := filepath.Rel(folderPath, path)
 			result.NotBackedUp = append(result.NotBackedUp, FileBackupStatus{
 				Path:      relPath,
 				SizeBytes: sizeBytes,
-				Locations: len(machines),
+				Locations: 0,
 			})
 		}
 
@@ -3517,49 +3530,60 @@ func printCheckBackupResult(r BackupCheckResult) {
 	sep := "================================================================="
 
 	fmt.Fprintf(os.Stdout, "\n%s\n", sep)
-	fmt.Fprintf(os.Stdout, "BACKUP CHECK\n")
+	fmt.Fprintf(os.Stdout, "BACKUP STATUS\n")
 	fmt.Fprintf(os.Stdout, "%s\n\n", sep)
 
 	fmt.Fprintf(os.Stdout, "Folder: %s\n", r.FolderPath)
-	fmt.Fprintf(os.Stdout, "Total files: %d\n\n", r.TotalFiles)
+	fmt.Fprintf(os.Stdout, "Total files: %d\n", r.TotalFiles)
+	backedUpSize := r.TotalSize - int64(0)
+	for _, f := range r.NotBackedUp {
+		backedUpSize -= f.SizeBytes
+	}
+	notBackedUpSize := int64(0)
+	for _, f := range r.NotBackedUp {
+		notBackedUpSize += f.SizeBytes
+	}
+	fmt.Fprintf(os.Stdout, "Total size: %.1f GB\n\n", float64(r.TotalSize)/(1024*1024*1024))
 
-	if r.AllBackedUp {
-		fmt.Fprintf(os.Stdout, "✅ All %d files are backed up on other machines\n", r.TotalFiles)
-		fmt.Fprintf(os.Stdout, "   Safe to delete this folder\n\n")
+	// Summary counts
+	backedUpCount := r.TotalFiles - len(r.NotBackedUp)
+	fmt.Fprintf(os.Stdout, "✅ BACKED UP: %d files (%.1f GB)\n", backedUpCount, float64(backedUpSize)/(1024*1024*1024))
+	fmt.Fprintf(os.Stdout, "❌ NOT BACKED UP: %d files (%.1f GB)\n\n", len(r.NotBackedUp), float64(notBackedUpSize)/(1024*1024*1024))
 
-		// Show backup locations
-		if len(r.BackupLocations) > 0 {
-			fmt.Fprintf(os.Stdout, "Backup locations:\n")
-			// Sort locations for consistent output
-			var locations []string
-			for loc := range r.BackupLocations {
-				locations = append(locations, loc)
+	// Show sample backed-up files with their locations
+	if len(r.BackedUp) > 0 {
+		fmt.Fprintf(os.Stdout, "Sample backed-up files (showing first 5):\n")
+		for i, f := range r.BackedUp {
+			if i >= 5 {
+				fmt.Fprintf(os.Stdout, "   ... and %d more backed-up files\n\n", len(r.BackedUp)-5)
+				break
 			}
-			sort.Strings(locations)
-
-			for _, loc := range locations {
-				count := r.BackupLocations[loc]
-				fmt.Fprintf(os.Stdout, "   • %s (%d files)\n", loc, count)
+			fmt.Fprintf(os.Stdout, "   • %s (%.1f MB, %d copy/copies)\n", f.Path, float64(f.SizeBytes)/(1024*1024), f.Locations)
+			for _, loc := range f.LocationDetails {
+				fmt.Fprintf(os.Stdout, "     → %s\n", loc)
 			}
+		}
+		if len(r.BackedUp) <= 5 {
 			fmt.Fprintf(os.Stdout, "\n")
 		}
-	} else {
-		notBackedUpSize := int64(0)
-		for _, f := range r.NotBackedUp {
-			notBackedUpSize += f.SizeBytes
-		}
+	}
 
-		fmt.Fprintf(os.Stdout, "❌ %d file(s) NOT backed up elsewhere:\n\n", len(r.NotBackedUp))
+	// Show not backed up files
+	if len(r.NotBackedUp) > 0 {
+		fmt.Fprintf(os.Stdout, "Files NOT backed up (showing first 5):\n")
 		for i, f := range r.NotBackedUp {
-			if i >= 10 {
-				fmt.Fprintf(os.Stdout, "   ... and %d more files\n", len(r.NotBackedUp)-10)
+			if i >= 5 {
+				fmt.Fprintf(os.Stdout, "   ... and %d more files\n", len(r.NotBackedUp)-5)
 				break
 			}
 			fmt.Fprintf(os.Stdout, "   • %s (%.1f MB)\n", f.Path, float64(f.SizeBytes)/(1024*1024))
 		}
+		fmt.Fprintf(os.Stdout, "\n   ⚠️  Back these up before deleting folder\n\n")
+	}
 
-		fmt.Fprintf(os.Stdout, "\n   Total unbacked-up: %.1f GB\n", float64(notBackedUpSize)/(1024*1024*1024))
-		fmt.Fprintf(os.Stdout, "   DO NOT delete this folder until these files are backed up\n\n")
+	if r.AllBackedUp {
+		fmt.Fprintf(os.Stdout, "✓ All files are backed up elsewhere\n")
+		fmt.Fprintf(os.Stdout, "  Safe to archive or delete this folder\n\n")
 	}
 
 	fmt.Fprintf(os.Stdout, "%s\n", sep)
