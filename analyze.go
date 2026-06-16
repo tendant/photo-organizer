@@ -3520,28 +3520,43 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 		// Count how many machines have this file and track locations
 		// Deduplicate overlapping manifests on same machine
 		machines := make(map[string]bool)
-		locationLabels := make(map[string]bool) // track unique (machine, label) to avoid overlaps
+		locationLabels := make(map[string]bool) // track unique labels to avoid duplicates
 		var locationDetails []string
+
+		// Build a map of machine → locations for deduplication
+		machineLocations := make(map[string][]int) // machine → source indices
+		for _, loc := range locs {
+			machineLocations[sources[loc.sourceIdx].MachineName] = append(
+				machineLocations[sources[loc.sourceIdx].MachineName], loc.sourceIdx,
+			)
+		}
 
 		// Detect overlapping manifests
 		overlaps := overlappingPairs(sources)
 
 		for _, loc := range locs {
-			machines[sources[loc.sourceIdx].MachineName] = true
+			machine := sources[loc.sourceIdx].MachineName
+			machines[machine] = true
 			label := sources[loc.sourceIdx].Label
 
-			// Check if this is from a broader manifest with a more specific child
+			// For this machine, check if there's a more specific (child) manifest
+			// If yes, skip this location if it's the broader (parent) manifest
 			skip := false
 			for pair := range overlaps {
 				// pair[0] is broader, pair[1] is more specific
-				if pair[0] == loc.sourceIdx {
-					// This is from broader manifest, check if child has same file
-					childSrc := sources[pair[1]]
-					absPath := absFilePath(sources[loc.sourceIdx], sources[loc.sourceIdx].Rows[loc.rowIdx])
-					childAbsPath := filepath.Join(childSrc.ScanPath, filepath.FromSlash(sources[loc.sourceIdx].Rows[loc.rowIdx].RelativePath))
-					if filepath.Clean(childAbsPath) == filepath.Clean(absPath) {
-						// File exists in both, skip from broader manifest
-						skip = true
+				if pair[0] == loc.sourceIdx && sources[pair[0]].MachineName == machine {
+					// This location is from a broader manifest
+					// Check if the more specific (child) manifest also has a location
+					childIdx := pair[1]
+					for _, otherLoc := range locs {
+						if otherLoc.sourceIdx == childIdx && sources[otherLoc.sourceIdx].MachineName == machine {
+							// Found same file in more specific manifest on same machine
+							// Skip this broader location
+							skip = true
+							break
+						}
+					}
+					if skip {
 						break
 					}
 				}
