@@ -3518,59 +3518,79 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 		}
 
 		// Count how many machines have this file and track locations
-		// Deduplicate overlapping manifests on same machine
+		// Deduplicate overlapping manifests and same media at multiple mount points
 		machines := make(map[string]bool)
-		locationLabels := make(map[string]bool) // track unique labels to avoid duplicates
+		machineToLocations := make(map[string][]int) // machine → indices of its locations
+		locationLabels := make(map[string]bool)
 		var locationDetails []string
-
-		// Build a map of machine → locations for deduplication
-		machineLocations := make(map[string][]int) // machine → source indices
-		for _, loc := range locs {
-			machineLocations[sources[loc.sourceIdx].MachineName] = append(
-				machineLocations[sources[loc.sourceIdx].MachineName], loc.sourceIdx,
-			)
-		}
 
 		// Detect overlapping manifests
 		overlaps := overlappingPairs(sources)
 
-		for _, loc := range locs {
+		// First pass: collect locations and mark ones to skip
+		skipIndices := make(map[int]bool)
+
+		for i, loc := range locs {
 			machine := sources[loc.sourceIdx].MachineName
 			machines[machine] = true
-			label := sources[loc.sourceIdx].Label
+			machineToLocations[machine] = append(machineToLocations[machine], i)
 
-			// For this machine, check if there's a more specific (child) manifest
-			// If yes, skip this location if it's the broader (parent) manifest
-			skip := false
+			// Check if this is from a broader manifest with a more specific child
 			for pair := range overlaps {
-				// pair[0] is broader, pair[1] is more specific
 				if pair[0] == loc.sourceIdx && sources[pair[0]].MachineName == machine {
-					// This location is from a broader manifest
-					// Check if the more specific (child) manifest also has a location
+					// This is from a broader manifest, check if child has same file
 					childIdx := pair[1]
 					for _, otherLoc := range locs {
 						if otherLoc.sourceIdx == childIdx && sources[otherLoc.sourceIdx].MachineName == machine {
-							// Found same file in more specific manifest on same machine
-							// Skip this broader location
-							skip = true
+							// Found same file in more specific manifest
+							skipIndices[i] = true
 							break
 						}
 					}
-					if skip {
+					if skipIndices[i] {
 						break
 					}
 				}
 			}
+		}
 
-			if skip {
-				continue
+		// Second pass: for each machine, keep only the most specific/canonical location
+		for machine, indices := range machineToLocations {
+			// Find the best location for this machine (prefer paths with media-id or longest paths)
+			bestIdx := indices[0]
+			bestLabel := sources[locs[bestIdx].sourceIdx].Label
+			bestPath := sources[locs[bestIdx].sourceIdx].ScanPath
+
+			for _, idx := range indices[1:] {
+				if skipIndices[idx] {
+					continue
+				}
+				label := sources[locs[idx].sourceIdx].Label
+				path := sources[locs[idx].sourceIdx].ScanPath
+
+				// Prefer paths with media-id suffix (e.g., /tankm1/media/Photos/sd_samsung_512g_untitled)
+				hasMediaId := strings.Contains(path, machine)
+				bestHasMediaId := strings.Contains(bestPath, machine)
+
+				if hasMediaId && !bestHasMediaId {
+					bestIdx = idx
+					bestLabel = label
+					bestPath = path
+				} else if !hasMediaId && bestHasMediaId {
+					// keep best
+				} else if len(path) > len(bestPath) {
+					// prefer longer/more specific path
+					bestIdx = idx
+					bestLabel = label
+					bestPath = path
+				}
 			}
 
-			// Add location if not already added
-			if !locationLabels[label] {
-				locationLabels[label] = true
-				result.BackupLocations[label]++
-				locationDetails = append(locationDetails, label)
+			// Add only the best location for this machine
+			if !locationLabels[bestLabel] {
+				locationLabels[bestLabel] = true
+				result.BackupLocations[bestLabel]++
+				locationDetails = append(locationDetails, bestLabel)
 			}
 		}
 
@@ -3581,7 +3601,7 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 			result.BackedUp = append(result.BackedUp, FileBackupStatus{
 				Path:            relPath,
 				SizeBytes:       sizeBytes,
-				Locations:       len(machines),
+				Locations:       len(machines), // count unique machines, not mount points
 				LocationDetails: locationDetails,
 			})
 		} else {
