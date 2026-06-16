@@ -3391,6 +3391,48 @@ func writeBackupComplianceCSV(prefix string, r BackupComplianceReport) error {
 	return nil
 }
 
+// isRemovablePath checks if a path is a typical removable media mount point
+func isRemovablePath(path string) bool {
+	path = filepath.Clean(path)
+	lower := strings.ToLower(path)
+
+	// macOS removable mounts
+	if strings.HasPrefix(lower, "/volumes/") {
+		return true
+	}
+
+	// Linux removable mounts
+	if strings.HasPrefix(lower, "/mnt/") {
+		return true
+	}
+	if strings.HasPrefix(lower, "/media/") {
+		// /media/user/device is removable, but /media/Photos/archived might not be
+		parts := strings.Split(lower, "/")
+		// If it's /media/something/something (3+ parts), consider it removable
+		// But if it has archive/backup keywords, it's permanent
+		pathStr := strings.Join(parts, "/")
+		if strings.Contains(pathStr, "archive") || strings.Contains(pathStr, "backup") ||
+			strings.Contains(pathStr, "tank") {
+			return false
+		}
+		if len(parts) <= 3 {
+			return true
+		}
+	}
+
+	// Windows removable drives (D:, E:, etc - typically not C:)
+	if len(lower) == 2 && lower[1] == ':' && lower[0] != 'c' {
+		return true
+	}
+
+	// Other patterns
+	if strings.Contains(lower, "/usb") || strings.Contains(lower, "/sd") {
+		return true
+	}
+
+	return false
+}
+
 // =============================================================================
 // Check Backup Command
 // =============================================================================
@@ -3556,10 +3598,11 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 
 		// Second pass: for each machine, keep only the most specific/canonical location
 		for machine, indices := range machineToLocations {
-			// Find the best location for this machine (prefer paths with media-id or longest paths)
+			// Find the best location for this machine
 			bestIdx := indices[0]
 			bestLabel := sources[locs[bestIdx].sourceIdx].Label
 			bestPath := sources[locs[bestIdx].sourceIdx].ScanPath
+			bestIsRemovable := isRemovablePath(bestPath)
 
 			for _, idx := range indices[1:] {
 				if skipIndices[idx] {
@@ -3567,8 +3610,22 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 				}
 				label := sources[locs[idx].sourceIdx].Label
 				path := sources[locs[idx].sourceIdx].ScanPath
+				isRemovable := isRemovablePath(path)
 
-				// Prefer paths with media-id suffix (e.g., /tankm1/media/Photos/sd_samsung_512g_untitled)
+				// Priority 1: Prefer permanent locations over removable
+				if isRemovable && !bestIsRemovable {
+					// keep best (permanent)
+					continue
+				} else if !isRemovable && bestIsRemovable {
+					// switch to permanent
+					bestIdx = idx
+					bestLabel = label
+					bestPath = path
+					bestIsRemovable = false
+					continue
+				}
+
+				// Priority 2: Prefer paths with media-id suffix (e.g., /tankm1/media/Photos/sd_samsung_512g_untitled)
 				hasMediaId := strings.Contains(path, machine)
 				bestHasMediaId := strings.Contains(bestPath, machine)
 
@@ -3579,7 +3636,7 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 				} else if !hasMediaId && bestHasMediaId {
 					// keep best
 				} else if len(path) > len(bestPath) {
-					// prefer longer/more specific path
+					// Priority 3: prefer longer/more specific path
 					bestIdx = idx
 					bestLabel = label
 					bestPath = path
