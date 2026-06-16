@@ -337,11 +337,39 @@ func indexKey(partialHash string, sizeBytes int64) string {
 
 func buildHashIndex(sources []ManifestSource) map[string][]hashLocation {
 	idx := make(map[string][]hashLocation)
+
+	// Detect overlapping manifests (same machine, nested paths)
+	overlaps := overlappingPairs(sources)
+
 	for si, src := range sources {
 		for ri, row := range src.Rows {
 			if row.PartialHash == "" {
 				continue
 			}
+
+			// Check if this entry should be skipped due to overlap
+			// Skip if there's a more specific (child) manifest with the same file
+			skip := false
+			absPath := absFilePath(src, row)
+
+			for pair := range overlaps {
+				// pair[0] is broader, pair[1] is more specific
+				if pair[0] == si {
+					// This is the broader manifest, check if child has this file
+					childSrc := sources[pair[1]]
+					childAbsPath := filepath.Join(childSrc.ScanPath, filepath.FromSlash(row.RelativePath))
+					if filepath.Clean(childAbsPath) == filepath.Clean(absPath) {
+						// File exists in both, skip from broader manifest
+						skip = true
+						break
+					}
+				}
+			}
+
+			if skip {
+				continue
+			}
+
 			key := indexKey(row.PartialHash, row.SizeBytes)
 			idx[key] = append(idx[key], hashLocation{si, ri})
 		}
