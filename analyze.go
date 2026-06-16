@@ -3518,14 +3518,45 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 		}
 
 		// Count how many machines have this file and track locations
+		// Deduplicate overlapping manifests on same machine
 		machines := make(map[string]bool)
+		locationLabels := make(map[string]bool) // track unique (machine, label) to avoid overlaps
 		var locationDetails []string
+
+		// Detect overlapping manifests
+		overlaps := overlappingPairs(sources)
+
 		for _, loc := range locs {
 			machines[sources[loc.sourceIdx].MachineName] = true
-			// Track backup location with label
 			label := sources[loc.sourceIdx].Label
-			result.BackupLocations[label]++
-			locationDetails = append(locationDetails, label)
+
+			// Check if this is from a broader manifest with a more specific child
+			skip := false
+			for pair := range overlaps {
+				// pair[0] is broader, pair[1] is more specific
+				if pair[0] == loc.sourceIdx {
+					// This is from broader manifest, check if child has same file
+					childSrc := sources[pair[1]]
+					absPath := absFilePath(sources[loc.sourceIdx], sources[loc.sourceIdx].Rows[loc.rowIdx])
+					childAbsPath := filepath.Join(childSrc.ScanPath, filepath.FromSlash(sources[loc.sourceIdx].Rows[loc.rowIdx].RelativePath))
+					if filepath.Clean(childAbsPath) == filepath.Clean(absPath) {
+						// File exists in both, skip from broader manifest
+						skip = true
+						break
+					}
+				}
+			}
+
+			if skip {
+				continue
+			}
+
+			// Add location if not already added
+			if !locationLabels[label] {
+				locationLabels[label] = true
+				result.BackupLocations[label]++
+				locationDetails = append(locationDetails, label)
+			}
 		}
 
 		relPath, _ := filepath.Rel(folderPath, path)
