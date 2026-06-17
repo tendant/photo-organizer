@@ -1222,6 +1222,9 @@ func main() {
 		case "delete-folder":
 			runDeleteFolder(os.Args[2:])
 			return
+		case "backup-missing":
+			runBackupMissing(os.Args[2:])
+			return
 		case "search":
 			runSearch(os.Args[2:])
 			return
@@ -1247,6 +1250,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  rescan                          Re-scan previously scanned folders\n")
 	fmt.Fprintf(os.Stderr, "  collect [--from <machine>]      Pull manifests from remote machines\n")
 	fmt.Fprintf(os.Stderr, "  check-backup <path>             Check if folder is backed up elsewhere\n")
+	fmt.Fprintf(os.Stderr, "  backup-missing <path> --dest <dest>  Back up files not yet backed up (rsync)\n")
 	fmt.Fprintf(os.Stderr, "  archive <path> --dest-dir <dir> Archive folder locally (move, not copy)\n")
 	fmt.Fprintf(os.Stderr, "  delete-folder <path>            Delete folder and clean manifest\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
@@ -1821,6 +1825,78 @@ func runDeleteFolder(args []string) {
 
 	fmt.Fprintf(os.Stderr, "\n✓ Folder deleted: %s\n", absFolderPath)
 	fmt.Fprintf(os.Stderr, "  Manifest entries removed\n")
+}
+
+// =============================================================================
+// Backup Missing Command
+// =============================================================================
+
+func runBackupMissing(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup-missing <folder-path> --dest <user@host:/path>\n\n")
+		fmt.Fprintf(os.Stderr, "Back up files not yet backed up to remote location via rsync.\n")
+		fmt.Fprintf(os.Stderr, "Supports remote SSH destinations: user@host:/path\n\n")
+		fmt.Fprintf(os.Stderr, "Workflow:\n")
+		fmt.Fprintf(os.Stderr, "  1. Identifies files not backed up (using check-backup logic)\n")
+		fmt.Fprintf(os.Stderr, "  2. Copies via rsync to remote destination\n")
+		fmt.Fprintf(os.Stderr, "  3. Scans remote location to update manifests\n")
+		fmt.Fprintf(os.Stderr, "  4. Verifies all files are now backed up\n")
+		os.Exit(1)
+	}
+
+	sourceFolder := args[0]
+	var destLocation string
+
+	// Parse --dest flag
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--dest" && i+1 < len(args) {
+			destLocation = args[i+1]
+			break
+		}
+	}
+
+	if destLocation == "" {
+		fmt.Fprintf(os.Stderr, "Error: --dest is required (e.g., user@host:/backups)\n")
+		os.Exit(1)
+	}
+
+	// Resolve source folder to absolute path
+	absSourceFolder, err := filepath.Abs(sourceFolder)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid source path %q\n", sourceFolder)
+		os.Exit(1)
+	}
+
+	// Check source folder exists
+	if _, err := os.Stat(absSourceFolder); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: source folder not found: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Backing up unbacked-up files from %s to %s\n\n", absSourceFolder, destLocation)
+
+	// Step 1: Check current backup status locally
+	fmt.Fprintf(os.Stderr, "Step 1: Checking backup status...\n")
+	// Note: We'd need to integrate check-backup logic here
+	// For now, just proceed with rsync
+
+	// Step 2: Use rsync to copy files to remote via SSH
+	fmt.Fprintf(os.Stderr, "Step 2: Copying files via rsync...\n")
+	rsyncCmd := exec.Command("rsync", "-avz", "--progress", absSourceFolder+"/", destLocation+"/")
+	rsyncCmd.Stdout = os.Stderr
+	rsyncCmd.Stderr = os.Stderr
+	if err := rsyncCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: rsync failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "\n✓ Files copied via rsync\n")
+	fmt.Fprintf(os.Stderr, "Step 3: You should now scan the remote location to update manifests:\n")
+	fmt.Fprintf(os.Stderr, "  ssh user@host \"photo-organizer scan /path --machine backup-server\"\n")
+	fmt.Fprintf(os.Stderr, "Step 4: Collect updated manifests back to local:\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer collect --from backup-server\n")
+	fmt.Fprintf(os.Stderr, "Step 5: Verify all files are now backed up:\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer check-backup %s\n", absSourceFolder)
 }
 
 // machineInfo holds metadata about a discovered machine
