@@ -3559,9 +3559,8 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 			return nil
 		}
 
-		// Count how many machines have this file and track locations
-		// Deduplicate overlapping manifests and same media at multiple mount points
-		machines := make(map[string]bool)
+		// Count backups: only count non-removable locations
+		// Removable media (SD cards, USB) don't count as backups
 		machineToLocations := make(map[string][]int) // machine → indices of its locations
 		locationLabels := make(map[string]bool)
 		var locationDetails []string
@@ -3569,12 +3568,22 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 		// Detect overlapping manifests
 		overlaps := overlappingPairs(sources)
 
-		// First pass: collect locations and mark ones to skip
+		// First pass: collect non-removable locations and mark ones to skip
 		skipIndices := make(map[int]bool)
+		var backupLocations []int // indices of non-removable locations
 
 		for i, loc := range locs {
+			path := sources[loc.sourceIdx].ScanPath
+
+			// Skip removable media entirely - they don't count as backups
+			if isRemovablePath(path) {
+				skipIndices[i] = true
+				continue
+			}
+
+			// This is a non-removable (permanent) location
 			machine := sources[loc.sourceIdx].MachineName
-			machines[machine] = true
+			backupLocations = append(backupLocations, i)
 			machineToLocations[machine] = append(machineToLocations[machine], i)
 
 			// Check if this is from a broader manifest with a more specific child
@@ -3582,11 +3591,14 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 				if pair[0] == loc.sourceIdx && sources[pair[0]].MachineName == machine {
 					// This is from a broader manifest, check if child has same file
 					childIdx := pair[1]
-					for _, otherLoc := range locs {
-						if otherLoc.sourceIdx == childIdx && sources[otherLoc.sourceIdx].MachineName == machine {
-							// Found same file in more specific manifest
-							skipIndices[i] = true
-							break
+					childPath := sources[childIdx].ScanPath
+					if !isRemovablePath(childPath) {
+						for _, otherLoc := range locs {
+							if otherLoc.sourceIdx == childIdx && sources[otherLoc.sourceIdx].MachineName == machine {
+								// Found same file in more specific manifest
+								skipIndices[i] = true
+								break
+							}
 						}
 					}
 					if skipIndices[i] {
@@ -3602,7 +3614,6 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 			bestIdx := indices[0]
 			bestLabel := sources[locs[bestIdx].sourceIdx].Label
 			bestPath := sources[locs[bestIdx].sourceIdx].ScanPath
-			bestIsRemovable := isRemovablePath(bestPath)
 
 			for _, idx := range indices[1:] {
 				if skipIndices[idx] {
@@ -3610,22 +3621,8 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 				}
 				label := sources[locs[idx].sourceIdx].Label
 				path := sources[locs[idx].sourceIdx].ScanPath
-				isRemovable := isRemovablePath(path)
 
-				// Priority 1: Prefer permanent locations over removable
-				if isRemovable && !bestIsRemovable {
-					// keep best (permanent)
-					continue
-				} else if !isRemovable && bestIsRemovable {
-					// switch to permanent
-					bestIdx = idx
-					bestLabel = label
-					bestPath = path
-					bestIsRemovable = false
-					continue
-				}
-
-				// Priority 2: Prefer paths with media-id suffix (e.g., /tankm1/media/Photos/sd_samsung_512g_untitled)
+				// Prefer paths with media-id suffix (e.g., /tankm1/media/Photos/sd_samsung_512g_untitled)
 				hasMediaId := strings.Contains(path, machine)
 				bestHasMediaId := strings.Contains(bestPath, machine)
 
@@ -3636,7 +3633,7 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 				} else if !hasMediaId && bestHasMediaId {
 					// keep best
 				} else if len(path) > len(bestPath) {
-					// Priority 3: prefer longer/more specific path
+					// Prefer longer/more specific path
 					bestIdx = idx
 					bestLabel = label
 					bestPath = path
@@ -3653,12 +3650,22 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 
 		relPath, _ := filepath.Rel(folderPath, path)
 
-		if len(machines) > 0 {
+		// Only count as backed up if it has non-removable locations
+		if len(locationDetails) > 0 {
 			result.BackedUpFiles++
+			// Count unique machines from non-removable locations only
+			backupMachines := make(map[string]bool)
+			for _, label := range locationDetails {
+				// Extract machine name from label (format: "machine @ path")
+				parts := strings.Split(label, " @ ")
+				if len(parts) > 0 {
+					backupMachines[parts[0]] = true
+				}
+			}
 			result.BackedUp = append(result.BackedUp, FileBackupStatus{
 				Path:            relPath,
 				SizeBytes:       sizeBytes,
-				Locations:       len(machines), // count unique machines, not mount points
+				Locations:       len(backupMachines), // count unique machines from backups only
 				LocationDetails: locationDetails,
 			})
 		} else {
