@@ -2257,9 +2257,55 @@ func runCleanupManifests(args []string) {
 	// Detect stale manifests
 	stale := detectStaleManifests(sources)
 
-	if stale.StaleCount == 0 {
-		fmt.Fprintf(os.Stderr, "✓ No stale manifests found\n")
+	// Detect overlapping manifests
+	overlaps := overlappingPairs(sources)
+	overlapCount := 0
+	for pair := range overlaps {
+		i, j := pair[0], pair[1]
+		if i < j { // Count each pair once
+			if sources[i].MachineName == sources[j].MachineName {
+				overlapCount++
+			}
+		}
+	}
+
+	if stale.StaleCount == 0 && overlapCount == 0 {
+		fmt.Fprintf(os.Stderr, "✓ No stale or overlapping manifests found\n")
 		return
+	}
+
+	// Show overlapping manifests first
+	if overlapCount > 0 {
+		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
+		fmt.Fprintf(os.Stderr, "OVERLAPPING MANIFESTS\n")
+		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
+
+		shown := make(map[[2]int]bool)
+		for pair := range overlaps {
+			i, j := pair[0], pair[1]
+			if shown[pair] || shown[[2]int{j, i}] {
+				continue
+			}
+			shown[pair] = true
+
+			if sources[i].MachineName == sources[j].MachineName {
+				pi := filepath.Clean(sources[i].ScanPath)
+				pj := filepath.Clean(sources[j].ScanPath)
+				var parent, child int
+				if strings.HasPrefix(pi, pj) {
+					parent, child = j, i
+				} else {
+					parent, child = i, j
+				}
+				fmt.Fprintf(os.Stderr, "⚠  Same machine, nested paths:\n")
+				fmt.Fprintf(os.Stderr, "   Parent: %s @ %s\n", sources[parent].MachineName, sources[parent].ScanPath)
+				fmt.Fprintf(os.Stderr, "           (File: %s)\n", filepath.Base(sources[parent].FilePath))
+				fmt.Fprintf(os.Stderr, "   Child:  %s @ %s\n", sources[child].MachineName, sources[child].ScanPath)
+				fmt.Fprintf(os.Stderr, "           (File: %s)\n", filepath.Base(sources[child].FilePath))
+				fmt.Fprintf(os.Stderr, "\n   Consider removing the parent manifest if you only need the child.\n\n")
+			}
+		}
+		fmt.Fprintf(os.Stderr, "\n")
 	}
 
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
@@ -2299,7 +2345,7 @@ func runCleanupManifests(args []string) {
 		fmt.Fprintf(os.Stderr, "  (these will be skipped - manual verification required)\n\n")
 	}
 
-	if len(localStale) == 0 {
+	if len(localStale) == 0 && overlapCount == 0 {
 		fmt.Fprintf(os.Stderr, "No manifests verified as stale (100%% certain).\n")
 		if len(remoteStale) > 0 {
 			fmt.Fprintf(os.Stderr, "Remote manifests cannot be auto-verified. Manual review needed.\n")
