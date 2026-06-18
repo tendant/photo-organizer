@@ -301,7 +301,7 @@ func shouldSkipFile(path string) bool {
 	// Skip Claude Code workspace metadata (exact folder match)
 	parts := strings.Split(path, string(filepath.Separator))
 	for _, part := range parts {
-		if part == ".claude" {
+		if part == ".claude" || part == "_Manifest" {
 			return true
 		}
 	}
