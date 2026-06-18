@@ -2896,30 +2896,28 @@ func runManifests(args []string) {
 		return sources[i].ScanPath < sources[j].ScanPath
 	})
 
+	// Separate normal manifests from empty ones
+	var normalSources, emptySources []ManifestSource
+	for _, src := range sources {
+		if len(src.Rows) == 0 {
+			emptySources = append(emptySources, src)
+		} else {
+			normalSources = append(normalSources, src)
+		}
+	}
+
+	// Display normal manifests
 	fmt.Fprintf(os.Stderr, "Origin      Machine              Scan Path                          Files  Last Scanned\n")
 	fmt.Fprintf(os.Stderr, "─────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
 
-	for _, src := range sources {
+	for _, src := range normalSources {
 		originMark := "🔴 remote"
 		if src.IsLocal {
 			originMark = "🟢 local "
 		}
 
-		// Extract path from filename if ScanPath is empty
-		scanPath := src.ScanPath
-		if scanPath == "" && len(src.Rows) == 0 {
-			// Parse filename: photo_manifest_<machine>_<path>.csv
-			filename := filepath.Base(src.FilePath)
-			pathEncoded := strings.TrimSuffix(filename, ".csv")
-			pathEncoded = strings.TrimPrefix(pathEncoded, "photo_manifest_")
-			if idx := strings.Index(pathEncoded, src.MachineName); idx == 0 {
-				pathEncoded = pathEncoded[len(src.MachineName)+1:]
-				scanPath = "/" + strings.ReplaceAll(pathEncoded, "_", "/")
-				scanPath += " [EMPTY]"
-			}
-		}
-
 		// Truncate long paths
+		scanPath := src.ScanPath
 		if len(scanPath) > 33 {
 			scanPath = "..." + scanPath[len(scanPath)-30:]
 		}
@@ -2933,17 +2931,49 @@ func runManifests(args []string) {
 		)
 	}
 
+	// Display empty manifests separately
+	if len(emptySources) > 0 {
+		fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
+		fmt.Fprintf(os.Stderr, "EMPTY MANIFESTS (0 files - need investigation)\n")
+		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
+
+		for i, src := range emptySources {
+			// Extract path from filename
+			scanPath := src.ScanPath
+			if scanPath == "" {
+				filename := filepath.Base(src.FilePath)
+				pathEncoded := strings.TrimSuffix(filename, ".csv")
+				pathEncoded = strings.TrimPrefix(pathEncoded, "photo_manifest_")
+				if idx := strings.Index(pathEncoded, src.MachineName); idx == 0 {
+					pathEncoded = pathEncoded[len(src.MachineName)+1:]
+					scanPath = "/" + strings.ReplaceAll(pathEncoded, "_", "/")
+				}
+			}
+
+			originMark := "🔴 remote"
+			if src.IsLocal {
+				originMark = "🟢 local "
+			}
+
+			fmt.Fprintf(os.Stderr, "%d. %s %s @ %s\n", i+1, originMark, src.MachineName, scanPath)
+			fmt.Fprintf(os.Stderr, "   File: %s\n\n", src.FilePath)
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "\n")
 	localCount := 0
 	remoteCount := 0
+	emptyCount := 0
 	for _, src := range sources {
-		if src.IsLocal {
+		if len(src.Rows) == 0 {
+			emptyCount++
+		} else if src.IsLocal {
 			localCount++
 		} else {
 			remoteCount++
 		}
 	}
-	fmt.Fprintf(os.Stderr, "Summary: %d local, %d remote\n", localCount, remoteCount)
+	fmt.Fprintf(os.Stderr, "Summary: %d local, %d remote, %d empty\n", localCount, remoteCount, emptyCount)
 	fmt.Fprintf(os.Stderr, "🟢 = Manifests from this machine\n")
 	fmt.Fprintf(os.Stderr, "🔴 = Manifests collected from remote machines\n")
 }
