@@ -2905,8 +2905,21 @@ func runManifests(args []string) {
 			originMark = "🟢 local "
 		}
 
-		// Truncate long paths
+		// Extract path from filename if ScanPath is empty
 		scanPath := src.ScanPath
+		if scanPath == "" && len(src.Rows) == 0 {
+			// Parse filename: photo_manifest_<machine>_<path>.csv
+			filename := filepath.Base(src.FilePath)
+			pathEncoded := strings.TrimSuffix(filename, ".csv")
+			pathEncoded = strings.TrimPrefix(pathEncoded, "photo_manifest_")
+			if idx := strings.Index(pathEncoded, src.MachineName); idx == 0 {
+				pathEncoded = pathEncoded[len(src.MachineName)+1:]
+				scanPath = "/" + strings.ReplaceAll(pathEncoded, "_", "/")
+				scanPath += " [EMPTY]"
+			}
+		}
+
+		// Truncate long paths
 		if len(scanPath) > 33 {
 			scanPath = "..." + scanPath[len(scanPath)-30:]
 		}
