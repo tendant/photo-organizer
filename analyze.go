@@ -433,7 +433,7 @@ func reportOverlapDeduplication(sources []ManifestSource) DeduplicationReport {
 		return report
 	}
 
-	// Track which pairs we've already reported
+	// Track which pairs we've already reported (using canonical form)
 	reportedPairs := make(map[[2]int]bool)
 
 	// For each overlapping pair, count how many files would be excluded
@@ -444,11 +444,14 @@ func reportOverlapDeduplication(sources []ManifestSource) DeduplicationReport {
 			canonical = [2]int{pair[1], pair[0]}
 		}
 
-		// Skip if we've already reported this pair
+		// Skip if we've already reported this canonical pair
 		if reportedPairs[canonical] {
 			continue
 		}
 		reportedPairs[canonical] = true
+
+		// Use the normalized canonical pair for all lookups below
+		pair = canonical
 
 		broaderIdx := canonical[0]
 		if strings.HasPrefix(
