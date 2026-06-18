@@ -3314,23 +3314,18 @@ func runCollectConfig(args []string) {
 			}
 		}
 
-		// Merge: local overrides, remote-only preserved
-		var added, updated, preserved int
+		// Merge: mergeMachinesConfig(remote, local) to count remote-originated changes
+		// "added" = new entries from remote, "updated" = conflicting entries
+		_, found, conflicts, _ := mergeMachinesConfig(remoteConfig, merged)
+
+		// Now merge remote into merged with local precedence
 		for k, v := range remoteConfig {
-			if localV, exists := merged[k]; exists {
-				if localV != v {
-					updated++
-				}
-			} else {
-				added++
+			if _, exists := merged[k]; !exists {
 				merged[k] = v
-			}
-			if _, inLocal := cfg[k]; !inLocal {
-				preserved++
 			}
 		}
 
-		fmt.Printf("  Added: %d, Updated: %d, Preserved remote-only: %d\n", added, updated, preserved)
+		fmt.Printf("  Found: %d new, Conflicts: %d (local kept)\n", found, conflicts)
 	}
 
 	// Save merged config
