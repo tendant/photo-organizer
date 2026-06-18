@@ -3858,6 +3858,7 @@ func runFindDuplicates(args []string) {
 }
 
 // selectDuplicatesToDelete returns a boolean slice indicating which duplicates should be deleted
+// Uses deterministic tiebreakers (path order) when comparison values are equal
 func selectDuplicatesToDelete(files []FileMeta, keepStrategy string) []bool {
 	toDelete := make([]bool, len(files))
 	if len(files) == 0 {
@@ -3871,25 +3872,53 @@ func selectDuplicatesToDelete(files []FileMeta, keepStrategy string) []bool {
 
 	switch keepStrategy {
 	case "first":
-		toDelete[0] = false // Keep first file
+		// Deterministic "first": use path order
+		firstIdx := 0
+		for i := 1; i < len(files); i++ {
+			if files[i].Path < files[firstIdx].Path {
+				firstIdx = i
+			}
+		}
+		toDelete[firstIdx] = false
 	case "newest":
-		newest := 0
-		for i, f := range files {
-			if f.ModTime.After(files[newest].ModTime) {
-				newest = i
+		// Keep newest, use path as tiebreaker for deterministic behavior
+		newestIdx := 0
+		for i := 1; i < len(files); i++ {
+			// If newer, keep this one
+			if files[i].ModTime.After(files[newestIdx].ModTime) {
+				newestIdx = i
+			} else if files[i].ModTime.Equal(files[newestIdx].ModTime) {
+				// Tie: use path order (alphabetically first)
+				if files[i].Path < files[newestIdx].Path {
+					newestIdx = i
+				}
 			}
 		}
-		toDelete[newest] = false // Keep newest
+		toDelete[newestIdx] = false
 	case "largest":
-		largest := 0
-		for i, f := range files {
-			if f.Size > files[largest].Size {
-				largest = i
+		// Keep largest, use path as tiebreaker for deterministic behavior
+		largestIdx := 0
+		for i := 1; i < len(files); i++ {
+			// If larger, keep this one
+			if files[i].Size > files[largestIdx].Size {
+				largestIdx = i
+			} else if files[i].Size == files[largestIdx].Size {
+				// Tie: use path order (alphabetically first)
+				if files[i].Path < files[largestIdx].Path {
+					largestIdx = i
+				}
 			}
 		}
-		toDelete[largest] = false // Keep largest
+		toDelete[largestIdx] = false
 	default:
-		toDelete[0] = false // Default to first
+		// Default to first (deterministic)
+		firstIdx := 0
+		for i := 1; i < len(files); i++ {
+			if files[i].Path < files[firstIdx].Path {
+				firstIdx = i
+			}
+		}
+		toDelete[firstIdx] = false
 	}
 
 	return toDelete
