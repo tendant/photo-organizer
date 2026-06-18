@@ -1275,6 +1275,9 @@ func main() {
 		case "push-config":
 			runPushConfig(os.Args[2:])
 			return
+		case "sync-config":
+			runSyncConfig(os.Args[2:])
+			return
 		case "rescan":
 			runRescan(os.Args[2:])
 			return
@@ -3437,6 +3440,122 @@ func runPushConfig(args []string) {
 		fmt.Printf("  Added: %d, Updated: %d, Preserved remote-only: %d\n", added, updated, preserved)
 		fmt.Printf("Done: %s\n\n", machine)
 	}
+}
+
+func runSyncConfig(args []string) {
+	fs := flag.NewFlagSet("sync-config", flag.ExitOnError)
+	dryRunFlag := fs.Bool("dry-run", false, "show what would be added without modifying machines.conf")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer sync-config [--dry-run]\n\n")
+		fmt.Fprintf(os.Stderr, "Auto-register machines found in manifests to machines.conf.\n")
+		fmt.Fprintf(os.Stderr, "Reads all manifest files and adds any machines not yet in machines.conf.\n")
+		fmt.Fprintf(os.Stderr, "Machines are tagged as [local], [removable], or plain SSH targets.\n\n")
+		fmt.Fprintf(os.Stderr, "Dry-run preview:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer sync-config --dry-run\n\n")
+		fmt.Fprintf(os.Stderr, "Actually sync:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer sync-config\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	// Load all manifests
+	manifestRoot := defaultManifestRoot()
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found in %s\n", manifestDir)
+		return
+	}
+
+	// Read all manifests and extract unique machines
+	var sources []ManifestSource
+	machineMap := make(map[string]ManifestSource) // machine name -> best source
+
+	for _, path := range matches {
+		src, err := readManifest(path)
+		if err != nil || len(src.Rows) == 0 {
+			continue
+		}
+		// Keep the first (or best) source for each machine
+		if _, exists := machineMap[src.MachineName]; !exists {
+			sources = append(sources, src)
+			machineMap[src.MachineName] = src
+		}
+	}
+
+	if len(sources) == 0 {
+		fmt.Fprintf(os.Stderr, "No valid manifests with data found\n")
+		return
+	}
+
+	// Load current machines.conf
+	cfg := loadMachinesConfig()
+
+	// Determine which machines need to be added
+	type NewMachine struct {
+		ID     string
+		Target string
+		Kind   string // "local", "removable", or "unknown"
+	}
+	var newMachines []NewMachine
+
+	for _, src := range sources {
+		if _, exists := cfg[src.MachineName]; exists {
+			// Already configured
+			continue
+		}
+
+		kind := "unknown"
+		target := ""
+
+		if isRemovablePath(src.ScanPath) {
+			// Removable media (USB, SD card, etc.)
+			kind = "removable"
+			target = "[removable] scanned from: " + src.ScanPath
+		} else if src.IsLocal {
+			// Local machine
+			kind = "local"
+			target = "[local] scanned from: " + src.ScanPath
+		}
+		// For remote machines, we can't auto-configure (need SSH target)
+
+		if kind != "unknown" {
+			newMachines = append(newMachines, NewMachine{
+				ID:     src.MachineName,
+				Target: target,
+				Kind:   kind,
+			})
+		}
+	}
+
+	if len(newMachines) == 0 {
+		fmt.Printf("All machines in manifests are already configured in machines.conf\n")
+		return
+	}
+
+	// Display what will be added
+	fmt.Printf("Found %d new machines to add to machines.conf:\n\n", len(newMachines))
+	for _, m := range newMachines {
+		fmt.Printf("  %-30s → %s (%s)\n", m.ID, m.Target, m.Kind)
+	}
+
+	if *dryRunFlag {
+		fmt.Printf("\nDry-run mode: no changes made\n")
+		return
+	}
+
+	// Add to machines.conf
+	for _, m := range newMachines {
+		cfg[m.ID] = m.Target
+	}
+
+	if err := saveMachinesConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving machines.conf: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n✓ Added %d machines to %s\n", len(newMachines), machinesConfFile())
 }
 
 func runSearch(args []string) {
