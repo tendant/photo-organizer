@@ -29,6 +29,7 @@ type ManifestRow struct {
 	PartialHash  string
 	FullHash     string // empty if full hash not yet computed
 	Extension    string
+	FileModified string // file's modification time
 	ScanDate     string // when this file was last scanned
 	ScanPath     string
 	MachineName  string // empty on old 12-column manifests
@@ -179,6 +180,7 @@ func readManifest(csvPath string) (ManifestSource, error) {
 			PartialHash:  partialHash,
 			FullHash:     col(row, "full_hash"),
 			Extension:    col(row, "extension"),
+			FileModified: col(row, "file_modified"),
 			ScanDate:     scanDate,
 			ScanPath:     col(row, "scan_path"),
 			MachineName:  col(row, "machine_name"),

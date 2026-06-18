@@ -3683,9 +3683,17 @@ func runFindDuplicatesFromManifest(machineFilter, keepStrategy string, summaryOn
 			// Construct full file path
 			filePath := filepath.Join(row.ScanPath, row.RelativePath)
 
-			// Parse file size and time from manifest row
+			// Use file's actual modification time (not scan time)
+			// Format: "2025-12-24 12:18:24"
 			size := row.SizeBytes
-			modTime, _ := time.Parse("2006-01-02", row.ScanDate)
+			var modTime time.Time
+			if row.FileModified != "" {
+				modTime, _ = time.Parse("2006-01-02 15:04:05", row.FileModified)
+			}
+			// Fallback to scan time if file modified not available
+			if modTime.IsZero() && row.ScanDate != "" {
+				modTime, _ = time.Parse("2006-01-02 15:04:05", row.ScanDate)
+			}
 
 			hashToFiles[hash] = append(hashToFiles[hash], FileMeta{
 				Path:    filePath,
