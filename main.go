@@ -310,9 +310,11 @@ type FileTypeStat struct {
 	IsScanned bool
 }
 
-// analyzeDirectoryTypes walks directory and shows what file types exist and which we'll scan.
+// analyzeDirectoryTypes walks directory and shows what file types exist.
 func analyzeDirectoryTypes(dir string) {
 	stats := make(map[string]*FileTypeStat)
+	var totalCount int
+	var totalBytes int64
 
 	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
@@ -325,70 +327,42 @@ func analyzeDirectoryTypes(dir string) {
 		}
 
 		if _, exists := stats[ext]; !exists {
-			stats[ext] = &FileTypeStat{Ext: ext, IsScanned: isMediaFile(ext)}
+			stats[ext] = &FileTypeStat{Ext: ext}
 		}
 		stats[ext].Count++
 		stats[ext].TotalSize += info.Size()
+		totalCount++
+		totalBytes += info.Size()
 		return nil
 	})
 
-	// Separate into scanned and ignored types
-	var scanned, ignored []FileTypeStat
-	var scannedBytes, ignoredBytes int64
-
-	for _, stat := range stats {
-		if stat.IsScanned {
-			scanned = append(scanned, *stat)
-			scannedBytes += stat.TotalSize
-		} else {
-			ignored = append(ignored, *stat)
-			ignoredBytes += stat.TotalSize
-		}
-	}
-
 	// Sort by size descending
-	sort.Slice(scanned, func(i, j int) bool {
-		return scanned[i].TotalSize > scanned[j].TotalSize
-	})
-	sort.Slice(ignored, func(i, j int) bool {
-		return ignored[i].TotalSize > ignored[j].TotalSize
+	var fileTypes []FileTypeStat
+	for _, stat := range stats {
+		fileTypes = append(fileTypes, *stat)
+	}
+	sort.Slice(fileTypes, func(i, j int) bool {
+		return fileTypes[i].TotalSize > fileTypes[j].TotalSize
 	})
 
 	// Print report
 	fmt.Printf("\n═════════════════════════════════════════════════════════\n")
-	fmt.Printf("File Type Coverage Report: %s\n", dir)
+	fmt.Printf("File Type Summary: %s\n", dir)
 	fmt.Printf("═════════════════════════════════════════════════════════\n\n")
 
-	fmt.Printf("Files to be SCANNED:\n")
+	fmt.Printf("All files will be scanned (except .DS_Store and .stfolder):\n")
 	fmt.Printf("  %-10s %10s %12s\n", "Type", "Count", "Size")
 	fmt.Printf("  %-10s %10s %12s\n", "────", "─────", "────")
-	for _, s := range scanned {
+	for _, s := range fileTypes {
 		fmt.Printf("  %-10s %10d %12s\n", s.Ext, s.Count, formatBytes(s.TotalSize))
 	}
-	fmt.Printf("  %-10s %10d %12s\n", "TOTAL", sumCount(scanned), formatBytes(scannedBytes))
+	fmt.Printf("  %-10s %10d %12s\n", "TOTAL", totalCount, formatBytes(totalBytes))
 
-	if len(ignored) > 0 {
-		fmt.Printf("\nFiles to be IGNORED (not media):\n")
-		fmt.Printf("  %-10s %10s %12s\n", "Type", "Count", "Size")
-		fmt.Printf("  %-10s %10s %12s\n", "────", "─────", "────")
-		for _, s := range ignored {
-			fmt.Printf("  %-10s %10d %12s\n", s.Ext, s.Count, formatBytes(s.TotalSize))
-		}
-		fmt.Printf("  %-10s %10d %12s\n", "TOTAL", sumCount(ignored), formatBytes(ignoredBytes))
+	fmt.Printf("\n💡 To exclude file types, create .photoignore in this directory:\n")
+	fmt.Printf("   echo '*.tmp' >> .photoignore\n")
+	fmt.Printf("   echo 'cache/' >> .photoignore\n\n")
 
-		fmt.Printf("\n⚠️  If any ignored types contain important media, add to:\n")
-		fmt.Printf("   /Users/lei/workspace/agents/photo-organizer/main.go (photoExts, videoExts, etc.)\n")
-	}
-
-	fmt.Printf("\n✓ Ready to scan %d files (%s)\n\n", sumCount(scanned), formatBytes(scannedBytes))
-}
-
-func sumCount(stats []FileTypeStat) int {
-	total := 0
-	for _, s := range stats {
-		total += s.Count
-	}
-	return total
+	fmt.Printf("✓ Ready to scan %d files (%s)\n\n", totalCount, formatBytes(totalBytes))
 }
 
 func formatBytes(b int64) string {
@@ -665,11 +639,15 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 			fmt.Fprintf(os.Stderr, "\r  %-78s", label)
 			return nil
 		}
-		// Always include .photoignore, but skip other dotfiles
-		if (strings.HasPrefix(info.Name(), ".") && info.Name() != ".photoignore") || (!isMediaFile(filepath.Ext(path)) && info.Name() != ".photoignore") || shouldSkipFile(path) {
+		// Skip OS junk (hardcoded)
+		if shouldSkipFile(path) {
 			return nil
 		}
-		// Apply .photoignore patterns
+		// Skip other dotfiles, but always include .photoignore
+		if strings.HasPrefix(info.Name(), ".") && info.Name() != ".photoignore" {
+			return nil
+		}
+		// Apply .photoignore patterns (user-defined exclusions)
 		if photoIgnore != nil && photoIgnore.ShouldSkip(path) {
 			return nil
 		}
