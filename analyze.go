@@ -438,14 +438,15 @@ func reportOverlapDeduplication(sources []ManifestSource) DeduplicationReport {
 
 	// For each overlapping pair, count how many files would be excluded
 	for pair := range overlaps {
-		if reportedPairs[pair] {
-			continue
-		}
-
-		// Normalize pair so broader is first
+		// Normalize pair so smaller index is first
 		canonical := pair
 		if pair[0] > pair[1] {
 			canonical = [2]int{pair[1], pair[0]}
+		}
+
+		// Skip if we've already reported this pair
+		if reportedPairs[canonical] {
+			continue
 		}
 		reportedPairs[canonical] = true
 
