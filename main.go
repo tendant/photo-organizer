@@ -1356,7 +1356,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  check-backup <path>             Check if folder is backed up elsewhere\n")
 	fmt.Fprintf(os.Stderr, "  cleanup-plan <path>             Show cleanup plan & space impact\n")
 	fmt.Fprintf(os.Stderr, "  backup-missing <path> --dest <dest>  Back up files not backed up (auto pipeline)\n")
-	fmt.Fprintf(os.Stderr, "  archive <path> --dest-dir <dir> Archive folder locally (move, not copy)\n")
+	fmt.Fprintf(os.Stderr, "  archive <path> --dest <dir>        Archive folder locally (move, not copy)\n")
 	fmt.Fprintf(os.Stderr, "  delete-folder <path>            Delete folder and clean manifest\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "ANALYSIS & VERIFICATION\n")
@@ -1782,7 +1782,7 @@ func runRescan(args []string) {
 
 func runArchive(args []string) {
 	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder-path> --dest-dir <archive-dir>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder-path> --dest <archive-dir>\n\n")
 		fmt.Fprintf(os.Stderr, "Move folder to local archive directory and update manifests.\n")
 		os.Exit(1)
 	}
@@ -1790,16 +1790,16 @@ func runArchive(args []string) {
 	sourceFolder := args[0]
 	var archiveDir string
 
-	// Parse --dest-dir flag
+	// Parse --dest flag
 	for i := 1; i < len(args); i++ {
-		if args[i] == "--dest-dir" && i+1 < len(args) {
+		if args[i] == "--dest" && i+1 < len(args) {
 			archiveDir = args[i+1]
 			break
 		}
 	}
 
 	if archiveDir == "" {
-		fmt.Fprintf(os.Stderr, "Error: --dest-dir is required\n")
+		fmt.Fprintf(os.Stderr, "Error: --dest is required\n")
 		os.Exit(1)
 	}
 
@@ -2209,7 +2209,7 @@ func runCleanupPlan(args []string) {
 	fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing %s --dest user@host:/backups\n\n", absFolderPath)
 
 	fmt.Fprintf(os.Stderr, "Step 3: Archive and delete\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer archive %s --dest-dir /Archive\n", absFolderPath)
+	fmt.Fprintf(os.Stderr, "  photo-organizer archive %s --dest /Archive\n", absFolderPath)
 	fmt.Fprintf(os.Stderr, "  photo-organizer delete-folder /Archive/2026-06-18-<foldername>\n\n")
 
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
