@@ -1247,6 +1247,9 @@ func main() {
 		case "cleanup-plan":
 			runCleanupPlan(os.Args[2:])
 			return
+		case "cleanup-manifests":
+			runCleanupManifests(os.Args[2:])
+			return
 		case "search":
 			runSearch(os.Args[2:])
 			return
@@ -1932,6 +1935,10 @@ func runBackupMissing(args []string) {
 		sources = append(sources, src)
 	}
 
+	// Detect stale manifests before building index
+	stale := detectStaleManifests(sources)
+	printStaleManifestReport(stale)
+
 	// Report overlapping manifests before building index
 	dedup := reportOverlapDeduplication(sources)
 	printDeduplicationReport(dedup)
@@ -2121,6 +2128,73 @@ func runCleanupPlan(args []string) {
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "Next: Run 'photo-organizer check-backup %s' to see details\n", absFolderPath)
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
+}
+
+func runCleanupManifests(args []string) {
+	fmt.Fprintf(os.Stderr, "Scanning for stale manifests...\n\n")
+
+	// Load all manifests
+	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found in %s\n", manifestDir)
+		return
+	}
+
+	var sources []ManifestSource
+	for _, path := range matches {
+		src, err := readManifest(path)
+		if err != nil {
+			continue
+		}
+		sources = append(sources, src)
+	}
+
+	// Detect stale manifests
+	stale := detectStaleManifests(sources)
+
+	if stale.StaleCount == 0 {
+		fmt.Fprintf(os.Stderr, "✓ No stale manifests found\n")
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
+	fmt.Fprintf(os.Stderr, "STALE MANIFESTS\n")
+	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
+
+	for i, detail := range stale.Details {
+		fmt.Fprintf(os.Stderr, "%s\n\n", detail)
+		if i < len(stale.Details)-1 {
+			fmt.Fprintf(os.Stderr, "───────────────────────────────────────────────────────────────────\n\n")
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
+	fmt.Fprintf(os.Stderr, "Remove stale manifests? [y/N] ")
+	var answer string
+	fmt.Fscan(os.Stdin, &answer)
+
+	if answer != "y" && answer != "Y" {
+		fmt.Fprintf(os.Stderr, "Aborted.\n")
+		return
+	}
+
+	// Remove stale manifests
+	removedCount := 0
+	for i := range sources {
+		if sources[i].IsStale {
+			if err := os.Remove(sources[i].FilePath); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠  Failed to remove %s: %v\n", sources[i].FilePath, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "✓ Removed: %s\n", filepath.Base(sources[i].FilePath))
+				removedCount++
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "\n✓ Cleaned up %d stale manifest(s)\n", removedCount)
 }
 
 // machineInfo holds metadata about a discovered machine

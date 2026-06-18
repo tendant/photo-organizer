@@ -42,6 +42,12 @@ type ManifestSource struct {
 	Label       string // "machineName @ scanPath"
 	LastScanned string // most recent scan_date value in this manifest
 	Rows        []ManifestRow
+	IsStale     bool   // true if ScanPath no longer exists on this machine
+}
+
+type StaleManifestReport struct {
+	StaleCount int
+	Details    []string // Human-readable details
 }
 
 type DuplicateGroup struct {
@@ -333,6 +339,53 @@ type hashLocation struct {
 
 func indexKey(partialHash string, sizeBytes int64) string {
 	return fmt.Sprintf("%s|%d", partialHash, sizeBytes)
+}
+
+// detectStaleManifests checks which manifests reference paths that no longer exist (locally)
+func detectStaleManifests(sources []ManifestSource) StaleManifestReport {
+	report := StaleManifestReport{
+		Details: []string{},
+	}
+
+	for i := range sources {
+		// Only check local paths — we can't verify remote paths
+		// Remote manifests may reference archived paths that are stale
+		// but we can only know this from the manifest's scan_path
+		if _, err := os.Stat(sources[i].ScanPath); os.IsNotExist(err) {
+			sources[i].IsStale = true
+			report.StaleCount++
+			detail := fmt.Sprintf(
+				"⚠  Stale manifest: %q @ %q (path no longer exists)\n"+
+					"   Last scanned: %s\n"+
+					"   Contains: %d file(s)\n"+
+					"   This likely means the folder was moved, archived, or deleted.",
+				sources[i].MachineName, sources[i].ScanPath, sources[i].LastScanned, len(sources[i].Rows),
+			)
+			report.Details = append(report.Details, detail)
+		}
+	}
+
+	return report
+}
+
+// printStaleManifestReport shows stale manifest info to user if found
+func printStaleManifestReport(report StaleManifestReport) {
+	if report.StaleCount == 0 {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
+	fmt.Fprintf(os.Stderr, "STALE MANIFESTS DETECTED\n")
+	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
+
+	for _, detail := range report.Details {
+		fmt.Fprintf(os.Stderr, "%s\n\n", detail)
+	}
+
+	fmt.Fprintf(os.Stderr, "⚠️  Found %d stale manifest(s). Files from these manifests are still included\n", report.StaleCount)
+	fmt.Fprintf(os.Stderr, "in the analysis, but may reference archived or deleted folders.\n\n")
+	fmt.Fprintf(os.Stderr, "To clean up stale manifests, see:\n")
+	fmt.Fprintf(os.Stderr, "   photo-organizer cleanup-manifests\n\n")
 }
 
 // DeduplicationReport tracks files excluded due to overlapping scans
@@ -3606,6 +3659,10 @@ func runCheckBackup(flagArgs []string) {
 		fmt.Fprintf(os.Stderr, "Error: no manifests loaded\n")
 		os.Exit(1)
 	}
+
+	// Detect stale manifests before building index
+	stale := detectStaleManifests(sources)
+	printStaleManifestReport(stale)
 
 	// Report overlapping manifests before building index
 	dedup := reportOverlapDeduplication(sources)
