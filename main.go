@@ -299,12 +299,92 @@ func shouldSkipFile(path string) bool {
 	if strings.Contains(path, "/.stfolder/") || strings.HasPrefix(name, ".stfolder") {
 		return true
 	}
-	// Skip Claude Code workspace metadata (exact folder match)
-	parts := strings.Split(path, string(filepath.Separator))
-	for _, part := range parts {
-		if part == ".claude" || part == "_Manifest" {
-			return true
+	return false
+}
+
+// PhotoIgnore loads and applies .photoignore patterns from scan root and subdirectories
+type PhotoIgnore struct {
+	root  string
+	cache map[string][]string // dir → patterns loaded from that dir's .photoignore
+}
+
+func newPhotoIgnore(scanRoot string) *PhotoIgnore {
+	return &PhotoIgnore{
+		root:  filepath.Clean(scanRoot),
+		cache: make(map[string][]string),
+	}
+}
+
+func (ig *PhotoIgnore) loadDir(dir string) []string {
+	if patterns, ok := ig.cache[dir]; ok {
+		return patterns
+	}
+	var patterns []string
+	data, err := os.ReadFile(filepath.Join(dir, ".photoignore"))
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				patterns = append(patterns, line)
+			}
 		}
+	}
+	ig.cache[dir] = patterns
+	return patterns
+}
+
+// ShouldSkip walks from file's directory up to scan root, checking all .photoignore patterns
+func (ig *PhotoIgnore) ShouldSkip(path string) bool {
+	name := filepath.Base(path)
+	relPath, _ := filepath.Rel(ig.root, path)
+	pathParts := strings.Split(filepath.ToSlash(relPath), "/")
+
+	// Load patterns from root .photoignore
+	for _, pattern := range ig.loadDir(ig.root) {
+		isDir := strings.HasSuffix(pattern, "/")
+		p := strings.TrimSuffix(pattern, "/")
+
+		if isDir {
+			// Directory pattern: check if any path component matches
+			for _, part := range pathParts[:len(pathParts)-1] { // exclude filename
+				if matched, _ := filepath.Match(p, part); matched {
+					return true
+				}
+			}
+		} else {
+			// File pattern: match against filename
+			if matched, _ := filepath.Match(p, name); matched {
+				return true
+			}
+		}
+	}
+
+	// Check subdirectory .photoignore files (cascade)
+	dir := filepath.Dir(path)
+	for {
+		if dir == ig.root || dir == filepath.Dir(dir) {
+			break
+		}
+		for _, pattern := range ig.loadDir(dir) {
+			isDir := strings.HasSuffix(pattern, "/")
+			p := strings.TrimSuffix(pattern, "/")
+
+			if isDir {
+				// Match against any path component from this dir downward
+				relFromHere, _ := filepath.Rel(dir, path)
+				hereParts := strings.Split(filepath.ToSlash(relFromHere), "/")
+				for _, part := range hereParts[:len(hereParts)-1] { // exclude filename
+					if matched, _ := filepath.Match(p, part); matched {
+						return true
+					}
+				}
+			} else {
+				if matched, _ := filepath.Match(p, name); matched {
+					return true
+				}
+			}
+		}
+		dir = filepath.Dir(dir)
 	}
 	return false
 }
@@ -639,7 +719,7 @@ type ScanStats struct {
 	TotalBytes int64
 }
 
-func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]FileInfo, ScanStats, error) {
+func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photoIgnore *PhotoIgnore) ([]FileInfo, ScanStats, error) {
 	var stats ScanStats
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, stats, fmt.Errorf("directory not found: %s", dir)
@@ -673,6 +753,10 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 			return nil
 		}
 		if strings.HasPrefix(info.Name(), ".") || !isMediaFile(filepath.Ext(path)) || shouldSkipFile(path) {
+			return nil
+		}
+		// Apply .photoignore patterns
+		if photoIgnore != nil && photoIgnore.ShouldSkip(path) {
 			return nil
 		}
 		raw = append(raw, rawFile{path, info.Size(), info.ModTime()})
@@ -1602,7 +1686,8 @@ func runScan(args []string) {
 			if *noCacheFlag {
 				cache = make(map[string]CacheEntry)
 			}
-			files, scanStats, err := scanDirectory(qualifyingAbsDir, cache, *fullHashFlag)
+			photoIgnore := newPhotoIgnore(qualifyingAbsDir)
+			files, scanStats, err := scanDirectory(qualifyingAbsDir, cache, *fullHashFlag, photoIgnore)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", scored.Path, err)
 				continue
@@ -1635,7 +1720,8 @@ func runScan(args []string) {
 		if *noCacheFlag {
 			cache = make(map[string]CacheEntry) // discard cache — force full recompute
 		}
-		files, scanStats, err := scanDirectory(absScanDir, cache, *fullHashFlag)
+		photoIgnore := newPhotoIgnore(absScanDir)
+		files, scanStats, err := scanDirectory(absScanDir, cache, *fullHashFlag, photoIgnore)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
@@ -1768,7 +1854,7 @@ func runRescan(args []string) {
 		if *noCacheFlag {
 			cache = make(map[string]CacheEntry)
 		}
-		files, scanStats, err := scanDirectory(scanDir, cache, *fullHashFlag)
+		files, scanStats, err := scanDirectory(scanDir, cache, *fullHashFlag, newPhotoIgnore(scanDir))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", scanDir, err)
 			continue
@@ -1863,7 +1949,7 @@ func runArchive(args []string) {
 	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
 	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, sourceParent))
 
-	files, _, err := scanDirectory(sourceParent, make(map[string]CacheEntry), false)
+	files, _, err := scanDirectory(sourceParent, make(map[string]CacheEntry), false, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠  Warning: Could not rescan parent folder: %v\n", err)
 		fmt.Fprintf(os.Stderr, "   Stale entries may remain. Run 'photo-organizer cleanup-manifests' to clean them up.\n")
@@ -1897,7 +1983,7 @@ func runArchive(args []string) {
 	archiveParent := filepath.Dir(archiveFolder)
 	manifestFile = filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, archiveParent))
 
-	files, _, err = scanDirectory(archiveParent, make(map[string]CacheEntry), false)
+	files, _, err = scanDirectory(archiveParent, make(map[string]CacheEntry), false, nil)
 	if err == nil {
 		updateManifest(archiveParent, files, manifestFile, machineName, false)
 	}
@@ -1956,7 +2042,7 @@ func runDeleteFolder(args []string) {
 	manifestFile := manifestFilename(machineName, parentFolder)
 
 	fmt.Fprintf(os.Stderr, "Updating manifest (removing deleted files)...\n")
-	files, _, err := scanDirectory(parentFolder, make(map[string]CacheEntry), false)
+	files, _, err := scanDirectory(parentFolder, make(map[string]CacheEntry), false, nil)
 	if err == nil {
 		updateManifest(parentFolder, files, manifestFile, machineName, true) // prune=true
 	}
