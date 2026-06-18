@@ -2148,12 +2148,21 @@ func runBackupMissing(args []string) {
 	remotePath := parts[1]
 
 	// Look up remote machine ID from machines.conf
+	// machines map is machine-id -> ssh-host, so we need to reverse-lookup
 	machines := loadMachinesConfig()
 
-	remoteMachineID := machines[remoteUserHost]
+	remoteMachineID := ""
+	for machID, sshHost := range machines {
+		if sshHost == remoteUserHost {
+			remoteMachineID = machID
+			break
+		}
+	}
+
 	if remoteMachineID == "" {
-		fmt.Fprintf(os.Stderr, "Error: Remote machine '%s' not found in machines.conf\n", remoteUserHost)
+		fmt.Fprintf(os.Stderr, "Error: Remote host '%s' not found in machines.conf\n", remoteUserHost)
 		fmt.Fprintf(os.Stderr, "Add it with: photo-organizer collect --add <machine-id>=%s\n", remoteUserHost)
+		fmt.Fprintf(os.Stderr, "Example: photo-organizer collect --add ubuntu-backup=ubuntu-max\n")
 		os.Exit(1)
 	}
 
