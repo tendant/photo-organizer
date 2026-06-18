@@ -505,11 +505,10 @@ func printDeduplicationReportFiltered(report DeduplicationReport, localMachineID
 		return
 	}
 
-	// If filtering to local machine, rebuild details to exclude remote overlaps
-	filteredDetails := report.Details
+	// Build filtered details (always try to filter to local machine)
+	filteredDetails := []string{}
 	if localMachineID != "" && sources != nil {
-		filteredDetails = []string{}
-		filteredCount := 0
+		// Explicit filtering: show only local machine overlaps
 		for pair, count := range report.OverlapGroups {
 			// Check if both manifests are from the local machine
 			if sources[pair[0]].MachineName == localMachineID && sources[pair[1]].MachineName == localMachineID {
@@ -532,13 +531,16 @@ func printDeduplicationReportFiltered(report DeduplicationReport, localMachineID
 					broaderSrc.ScanPath, specificSrc.ScanPath, broaderSrc.MachineName, count,
 				)
 				filteredDetails = append(filteredDetails, detail)
-				filteredCount += count
 			}
 		}
-		if len(filteredDetails) == 0 {
-			// No local overlaps to report
-			return
-		}
+	} else {
+		// No filtering requested, use all details (this shouldn't normally happen)
+		filteredDetails = report.Details
+	}
+
+	if len(filteredDetails) == 0 {
+		// No overlaps to report (all were remote)
+		return
 	}
 
 	fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
