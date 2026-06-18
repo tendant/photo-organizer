@@ -76,6 +76,12 @@ var sidecarExts = map[string]bool{
 	".xmp": true,
 	".aae": true,
 	".json": true,
+	".bnp": true,
+	".inp": true,
+	".int": true,
+	".xml": true,
+	".bin": true,
+	".txt": true,
 }
 
 
@@ -280,6 +286,19 @@ type ScoredFolder struct {
 func isMediaFile(ext string) bool {
 	ext = strings.ToLower(ext)
 	return photoExts[ext] || videoExts[ext] || audioExts[ext] || sidecarExts[ext]
+}
+
+func shouldSkipFile(path string) bool {
+	name := filepath.Base(path)
+	// Skip macOS system files
+	if name == ".DS_Store" {
+		return true
+	}
+	// Skip Syncthing sync metadata
+	if strings.Contains(path, "/.stfolder/") || strings.HasPrefix(name, ".stfolder") {
+		return true
+	}
+	return false
 }
 
 // FileTypeStat holds aggregated stats for one file extension.
@@ -645,7 +664,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool) ([]Fi
 			fmt.Fprintf(os.Stderr, "\r  %-78s", label)
 			return nil
 		}
-		if strings.HasPrefix(info.Name(), ".") || !isMediaFile(filepath.Ext(path)) {
+		if strings.HasPrefix(info.Name(), ".") || !isMediaFile(filepath.Ext(path)) || shouldSkipFile(path) {
 			return nil
 		}
 		raw = append(raw, rawFile{path, info.Size(), info.ModTime()})
@@ -1838,13 +1857,14 @@ func runDeleteFolder(args []string) {
 func runBackupMissing(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup-missing <folder-path> --dest <user@host:/path>\n\n")
-		fmt.Fprintf(os.Stderr, "Back up files not yet backed up to remote location via rsync.\n")
+		fmt.Fprintf(os.Stderr, "Back up ONLY files not yet backed up to remote location via rsync.\n")
 		fmt.Fprintf(os.Stderr, "Supports remote SSH destinations: user@host:/path\n\n")
 		fmt.Fprintf(os.Stderr, "Workflow:\n")
-		fmt.Fprintf(os.Stderr, "  1. Identifies files not backed up (using check-backup logic)\n")
-		fmt.Fprintf(os.Stderr, "  2. Copies via rsync to remote destination\n")
+		fmt.Fprintf(os.Stderr, "  1. Finds files NOT backed up (checks manifests)\n")
+		fmt.Fprintf(os.Stderr, "  2. Copies ONLY missing files via rsync to remote\n")
 		fmt.Fprintf(os.Stderr, "  3. Scans remote location to update manifests\n")
-		fmt.Fprintf(os.Stderr, "  4. Verifies all files are now backed up\n")
+		fmt.Fprintf(os.Stderr, "  4. Collects updated manifests back to local\n")
+		fmt.Fprintf(os.Stderr, "  5. Verifies all files are now backed up\n")
 		os.Exit(1)
 	}
 
@@ -1877,16 +1897,103 @@ func runBackupMissing(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "Backing up unbacked-up files from %s to %s\n\n", absSourceFolder, destLocation)
+	fmt.Fprintf(os.Stderr, "Backing up missing files from %s to %s\n\n", absSourceFolder, destLocation)
 
-	// Step 1: Check current backup status locally
-	fmt.Fprintf(os.Stderr, "Step 1: Checking backup status...\n")
-	// Note: We'd need to integrate check-backup logic here
-	// For now, just proceed with rsync
+	// Step 1: Find which files need backing up
+	fmt.Fprintf(os.Stderr, "Step 1: Finding files not backed up...\n")
 
-	// Step 2: Use rsync to copy files to remote via SSH
-	fmt.Fprintf(os.Stderr, "Step 2: Copying files via rsync...\n")
-	rsyncCmd := exec.Command("rsync", "-avz", "--progress", absSourceFolder+"/", destLocation+"/")
+	// Load all manifests
+	defaultDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(defaultDir, "*.csv"))
+
+	var sources []ManifestSource
+	for _, path := range matches {
+		src, err := readManifest(path)
+		if err != nil {
+			continue
+		}
+		sources = append(sources, src)
+	}
+
+	// Build hash index
+	idx := buildHashIndex(sources)
+
+	// Find missing files (files without non-removable backups)
+	var missingFiles []string
+	var missingCount int
+	var missingSize int64
+
+	filepath.WalkDir(absSourceFolder, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path == absSourceFolder {
+			return nil
+		}
+
+		info, _ := os.Stat(path)
+		if info == nil {
+			return nil
+		}
+
+		// Skip unwanted system/sync files
+		if shouldSkipFile(path) {
+			return nil
+		}
+
+		// Compute partial hash
+		partialHash, _ := processFile(path)
+		if partialHash == "" {
+			return nil
+		}
+
+		// Check if this file has non-removable backups
+		key := indexKey(partialHash, info.Size())
+		locs, exists := idx[key]
+
+		hasBackup := false
+		if exists && len(locs) > 0 {
+			// Check if any location is non-removable
+			for _, loc := range locs {
+				if !isRemovablePath(sources[loc.sourceIdx].ScanPath) {
+					hasBackup = true
+					break
+				}
+			}
+		}
+
+		if !hasBackup {
+			// This file needs backing up
+			relPath, _ := filepath.Rel(absSourceFolder, path)
+			missingFiles = append(missingFiles, relPath)
+			missingCount++
+			missingSize += info.Size()
+		}
+
+		return nil
+	})
+
+	if missingCount == 0 {
+		fmt.Fprintf(os.Stderr, "✓ No files need backing up - all files have non-removable backups\n")
+		fmt.Fprintf(os.Stderr, "\nYou're all set! Run 'photo-organizer archive' to free up space.\n")
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "Found %d files to backup (%.1f GB)\n\n", missingCount, float64(missingSize)/(1024*1024*1024))
+
+	// Step 2: Create temporary file list for rsync
+	tmpFile, err := os.CreateTemp("", "backup-missing-*.txt")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot create temp file: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	for _, f := range missingFiles {
+		fmt.Fprintln(tmpFile, f)
+	}
+	tmpFile.Close()
+
+	// Step 3: Use rsync with --files-from to copy only missing files
+	fmt.Fprintf(os.Stderr, "Step 2: Copying missing files via rsync...\n")
+	rsyncCmd := exec.Command("rsync", "-avz", "--progress", "--files-from="+tmpFile.Name(), absSourceFolder+"/", destLocation+"/")
 	rsyncCmd.Stdout = os.Stderr
 	rsyncCmd.Stderr = os.Stderr
 	if err := rsyncCmd.Run(); err != nil {
@@ -1894,7 +2001,7 @@ func runBackupMissing(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "\n✓ Files copied via rsync\n")
+	fmt.Fprintf(os.Stderr, "\n✓ Missing files copied via rsync\n")
 
 	// Parse remote destination (user@host:/path)
 	parts := strings.Split(destLocation, ":")
@@ -1906,7 +2013,7 @@ func runBackupMissing(args []string) {
 	remoteUserHost := parts[0]
 	remotePath := parts[1]
 
-	// Step 3: SSH to remote and scan
+	// Step 4: SSH to remote and scan
 	fmt.Fprintf(os.Stderr, "\nStep 3: Scanning remote location...\n")
 	scanCmd := fmt.Sprintf("cd %s && photo-organizer scan . --machine backup-remote", remotePath)
 	sshCmd := exec.Command("ssh", remoteUserHost, scanCmd)
@@ -1919,7 +2026,7 @@ func runBackupMissing(args []string) {
 		fmt.Fprintf(os.Stderr, "✓ Remote location scanned\n")
 	}
 
-	// Step 4: Collect updated manifests
+	// Step 5: Collect updated manifests
 	fmt.Fprintf(os.Stderr, "\nStep 4: Collecting manifests from remote...\n")
 	collectCmd := exec.Command("photo-organizer", "collect", "--from", "backup-remote")
 	collectCmd.Stdout = os.Stderr
@@ -1930,7 +2037,7 @@ func runBackupMissing(args []string) {
 		fmt.Fprintf(os.Stderr, "✓ Manifests collected\n")
 	}
 
-	// Step 5: Verify all files are now backed up
+	// Step 6: Verify all files are now backed up
 	fmt.Fprintf(os.Stderr, "\nStep 5: Verifying backup status...\n")
 	verifyCmd := exec.Command("photo-organizer", "check-backup", absSourceFolder)
 	verifyCmd.Stdout = os.Stderr
@@ -1939,7 +2046,7 @@ func runBackupMissing(args []string) {
 		fmt.Fprintf(os.Stderr, "Verification check complete\n")
 	}
 
-	fmt.Fprintf(os.Stderr, "\n✓ Backup process complete!\n")
+	fmt.Fprintf(os.Stderr, "\n✓ Backup process complete! All files are now backed up.\n")
 }
 
 // =============================================================================
