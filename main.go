@@ -3806,10 +3806,7 @@ func runFindDuplicates(args []string) {
 	var processedArgs []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "-p" && i+1 < len(args) {
-			processedArgs = append(processedArgs, "--path", args[i+1])
-			i++
-		} else if arg == "-m" && i+1 < len(args) {
+		if arg == "-m" && i+1 < len(args) {
 			processedArgs = append(processedArgs, "--machine", args[i+1])
 			i++
 		} else if arg == "-k" && i+1 < len(args) {
@@ -3828,197 +3825,28 @@ func runFindDuplicates(args []string) {
 	}
 
 	fs := flag.NewFlagSet("find-duplicates", flag.ExitOnError)
-	pathFlag := fs.String("path", "", "directory to scan (use manifest if not specified)")
 	machineFlag := fs.String("machine", "", "find duplicates in manifest from specific machine")
 	keepFlag := fs.String("keep", "first", "keep strategy: first, newest, largest (default: first)")
 	summaryFlag := fs.Bool("summary", false, "show summary only, not individual files")
 	dryRunFlag := fs.Bool("dry-run", false, "preview what would be deleted without actually deleting")
 	excludeFlag := fs.String("exclude", "", "exclude pattern (e.g., .DS_Store, *.tmp)")
-	rescanFlag := fs.Bool("rescan", false, "rescan files instead of using manifest data")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer find-duplicates [options]\n\n")
-		fmt.Fprintf(os.Stderr, "Find duplicate files by content hash.\n")
-		fmt.Fprintf(os.Stderr, "Uses manifest data if available, otherwise rescans files.\n\n")
-		fmt.Fprintf(os.Stderr, "Find duplicates from manifests (fast):\n")
+		fmt.Fprintf(os.Stderr, "Find duplicate files using manifest data (no scanning).\n\n")
+		fmt.Fprintf(os.Stderr, "Find all duplicates across manifests:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates\n\n")
+		fmt.Fprintf(os.Stderr, "Summary view (top duplicates):\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -s\n\n")
 		fmt.Fprintf(os.Stderr, "Find duplicates for specific machine:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -m ubuntu-max\n\n")
-		fmt.Fprintf(os.Stderr, "Rescan directory (slow, but finds files not in manifest):\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -p /path/to/photos --rescan\n\n")
-		fmt.Fprintf(os.Stderr, "Preview deletion of duplicates:\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -m ubuntu-max -k newest -d\n\n")
+		fmt.Fprintf(os.Stderr, "Preview deletion (keep newest):\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -k newest -d\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(processedArgs)
 
-	// Decide whether to use manifests or rescan
-	useManifest := !*rescanFlag && *pathFlag == ""
-
-	if useManifest {
-		// Use manifest data - much faster
-		runFindDuplicatesFromManifest(*machineFlag, *keepFlag, *summaryFlag, *dryRunFlag, *excludeFlag)
-		return
-	}
-
-	// Rescan mode - scan files on disk
-	scanPath := *pathFlag
-	if scanPath == "" {
-		scanPath = "."
-	}
-
-	scanPath, err := filepath.Abs(scanPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: invalid path: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Check if path exists
-	if _, err := os.Stat(scanPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: path not found: %s\n", scanPath)
-		os.Exit(1)
-	}
-
-	fmt.Fprintf(os.Stderr, "Scanning %s for duplicate files...\n\n", scanPath)
-
-	// Map hash -> list of files
-	hashToFiles := make(map[string][]FileMeta)
-	var totalFiles int
-
-	// Walk directory and hash files
-	err = filepath.Walk(scanPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-
-		totalFiles++
-
-		// Skip based on exclude pattern
-		if *excludeFlag != "" {
-			if matched, _ := filepath.Match(*excludeFlag, filepath.Base(path)); matched {
-				return nil
-			}
-		}
-
-		// Calculate full hash for accurate duplicate detection
-		hash := computeFullHash(path)
-		if hash == "" {
-			return nil
-		}
-
-		hashToFiles[hash] = append(hashToFiles[hash], FileMeta{
-			Path:    path,
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
-		})
-
-		return nil
-	})
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error scanning directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	// DuplicateGroup represents a set of duplicate files
-	type DuplicateGroup struct {
-		Hash   string
-		Files  []FileMeta
-		Size   int64
-		Wasted int64
-	}
-	var duplicates []DuplicateGroup
-	var totalWasted int64
-
-	for hash, files := range hashToFiles {
-		if len(files) > 1 {
-			group := DuplicateGroup{
-				Hash:   hash,
-				Files:  files,
-				Size:   files[0].Size * int64(len(files)),
-				Wasted: files[0].Size * int64(len(files)-1),
-			}
-			duplicates = append(duplicates, group)
-			totalWasted += group.Wasted
-		}
-	}
-
-	if len(duplicates) == 0 {
-		fmt.Printf("✓ No duplicates found in %d files\n", totalFiles)
-		return
-	}
-
-	// Sort by wasted space (descending)
-	sort.Slice(duplicates, func(i, j int) bool {
-		return duplicates[i].Wasted > duplicates[j].Wasted
-	})
-
-	if *summaryFlag {
-		fmt.Printf("Found %d duplicate groups affecting %d files\n", len(duplicates), totalFiles)
-		fmt.Printf("Total wasted space: %s\n\n", formatBytes(totalWasted))
-		for i, dup := range duplicates {
-			fmt.Printf("  %d. %d copies of %s file → %s wasted\n",
-				i+1, len(dup.Files), formatBytes(dup.Size/int64(len(dup.Files))), formatBytes(dup.Wasted))
-		}
-		return
-	}
-
-	// Full output: show each duplicate group
-	fmt.Printf("Found %d duplicate groups affecting %d files:\n", len(duplicates), totalFiles)
-	fmt.Printf("Total wasted space: %s\n\n", formatBytes(totalWasted))
-
-	for i, dup := range duplicates {
-		fmt.Printf("Duplicate Group %d: %d copies of %s file (wasted: %s)\n",
-			i+1, len(dup.Files), formatBytes(dup.Size/int64(len(dup.Files))), formatBytes(dup.Wasted))
-		fmt.Printf("  Hash: %s\n", dup.Hash[:16]+"...")
-
-		// Select which copies to keep/delete based on strategy
-		toDelete := selectDuplicatesToDelete(dup.Files, *keepFlag)
-
-		for j, f := range dup.Files {
-			action := "keep"
-			if toDelete[j] {
-				action = "DELETE"
-			}
-			fmt.Printf("  [%s] %s (%.1f MB, modified %s)\n",
-				action, f.Path, float64(f.Size)/1024/1024,
-				f.ModTime.Format("2006-01-02 15:04"))
-		}
-
-		if *dryRunFlag {
-			// In dry-run mode, just show what would be deleted
-			for j, f := range dup.Files {
-				if toDelete[j] {
-					fmt.Printf("    Would delete: %s\n", f.Path)
-				}
-			}
-		}
-		fmt.Printf("\n")
-	}
-
-	if *dryRunFlag {
-		fmt.Printf("Dry-run mode: no files deleted\n")
-		return
-	}
-
-	// Actually delete files if not dry-run
-	var deletedCount int
-	var deletedSize int64
-	for _, dup := range duplicates {
-		toDelete := selectDuplicatesToDelete(dup.Files, *keepFlag)
-		for j, f := range dup.Files {
-			if toDelete[j] {
-				if err := os.Remove(f.Path); err != nil {
-					fmt.Fprintf(os.Stderr, "Error deleting %s: %v\n", f.Path, err)
-				} else {
-					deletedCount++
-					deletedSize += f.Size
-					fmt.Printf("Deleted: %s\n", f.Path)
-				}
-			}
-		}
-	}
-
-	fmt.Printf("\n✓ Deleted %d files, freed %s\n", deletedCount, formatBytes(deletedSize))
+	// Use manifest data only
+	runFindDuplicatesFromManifest(*machineFlag, *keepFlag, *summaryFlag, *dryRunFlag, *excludeFlag)
 }
 
 // selectDuplicatesToDelete returns a boolean slice indicating which duplicates should be deleted
