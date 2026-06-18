@@ -2168,7 +2168,8 @@ func runBackupMissing(args []string) {
 
 	// Step 3: SSH to remote and scan
 	fmt.Fprintf(os.Stderr, "\nStep 3: Scanning remote location...\n")
-	scanCmd := fmt.Sprintf("cd %s && photo-organizer scan . --machine %s", remotePath, remoteMachineID)
+	// Try to find photo-organizer in common locations
+	scanCmd := fmt.Sprintf("cd %s && for path in photo-organizer ~/bin/photo-organizer /usr/local/bin/photo-organizer; do if command -v $path &>/dev/null || [ -f $path ]; then $path scan . --machine %s; exit $?; fi; done; echo 'photo-organizer not found in PATH'; exit 1", remotePath, remoteMachineID)
 	sshCmd := exec.Command("ssh", remoteUserHost, scanCmd)
 	sshCmd.Stdout = os.Stderr
 	sshCmd.Stderr = os.Stderr
