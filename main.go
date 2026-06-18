@@ -2932,26 +2932,43 @@ func runManifests(args []string) {
 	}
 
 	// Display normal manifests
-	fmt.Fprintf(os.Stderr, "Origin      Machine              Scan Path                          Files  Last Scanned\n")
-	fmt.Fprintf(os.Stderr, "─────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
+	fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files  Status              Last Scanned\n")
+	fmt.Fprintf(os.Stderr, "──────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
 
 	for _, src := range normalSources {
-		originMark := "🔴 remote"
+		// Origin indicator
+		originMark := "📦 rmt"
 		if src.IsLocal {
-			originMark = "🟢 local "
+			originMark = "💻 lcl"
 		}
 
 		// Truncate long paths
 		scanPath := src.ScanPath
-		if len(scanPath) > 33 {
-			scanPath = "..." + scanPath[len(scanPath)-30:]
+		if len(scanPath) > 28 {
+			scanPath = "..." + scanPath[len(scanPath)-25:]
 		}
 
-		fmt.Fprintf(os.Stderr, "%s  %-20s %-33s %6d  %s\n",
+		// Calculate freshness status
+		lastScanDate, _ := time.Parse("2006-01-02 15:04:05", src.LastScanned)
+		daysSince := time.Since(lastScanDate).Hours() / 24
+
+		var freshStatus string
+		if daysSince < 1 {
+			freshStatus = "✓ Fresh"
+		} else if daysSince < 7 {
+			freshStatus = fmt.Sprintf("⚡ %d day%s", int(daysSince), map[bool]string{true: "s", false: ""}[daysSince != 1])
+		} else if daysSince < 30 {
+			freshStatus = fmt.Sprintf("⚠  %d wks", int(daysSince/7))
+		} else {
+			freshStatus = fmt.Sprintf("🔴 %d mo", int(daysSince/30))
+		}
+
+		fmt.Fprintf(os.Stderr, "%s  %-20s %-28s %6d  %-17s %s\n",
 			originMark,
 			src.MachineName,
 			scanPath,
 			len(src.Rows),
+			freshStatus,
 			src.LastScanned,
 		)
 	}
