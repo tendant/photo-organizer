@@ -3984,10 +3984,17 @@ func printCheckBackupResult(r BackupCheckResult) {
 	}
 	fmt.Fprintf(os.Stdout, "Total size: %.1f GB\n\n", float64(r.TotalSize)/(1024*1024*1024))
 
-	// Summary counts - categorized by safety
-	fmt.Fprintf(os.Stdout, "✅ SAFELY BACKED UP (2+ copies): %d files (%.1f GB)\n", len(r.SafelyBackedUp), float64(safelyBackedUpSize)/(1024*1024*1024))
-	fmt.Fprintf(os.Stdout, "⚠️  AT RISK (only 1 copy): %d files (%.1f GB)\n", len(r.AtRisk), float64(atRiskSize)/(1024*1024*1024))
-	fmt.Fprintf(os.Stdout, "❌ NOT BACKED UP (0 copies): %d files (%.1f GB)\n\n", len(r.NotBackedUp), float64(notBackedUpSize)/(1024*1024*1024))
+	// Summary counts - categorized by safety (only show icon if there are files)
+	if len(r.SafelyBackedUp) > 0 {
+		fmt.Fprintf(os.Stdout, "✅ SAFELY BACKED UP (2+ copies): %d files (%.1f GB)\n", len(r.SafelyBackedUp), float64(safelyBackedUpSize)/(1024*1024*1024))
+	}
+	if len(r.AtRisk) > 0 {
+		fmt.Fprintf(os.Stdout, "⚠️  AT RISK (only 1 copy): %d files (%.1f GB)\n", len(r.AtRisk), float64(atRiskSize)/(1024*1024*1024))
+	}
+	if len(r.NotBackedUp) > 0 {
+		fmt.Fprintf(os.Stdout, "❌ NOT BACKED UP (0 copies): %d files (%.1f GB)\n", len(r.NotBackedUp), float64(notBackedUpSize)/(1024*1024*1024))
+	}
+	fmt.Fprintf(os.Stdout, "\n")
 
 	// Show sample safely backed-up files
 	if len(r.SafelyBackedUp) > 0 {
