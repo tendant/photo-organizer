@@ -1275,6 +1275,9 @@ func main() {
 		case "machines":
 			runMachines(os.Args[2:])
 			return
+		case "manifests":
+			runManifests(os.Args[2:])
+			return
 		case "risk-report":
 			runRiskReport(os.Args[2:])
 			return
@@ -1336,6 +1339,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  scan [directory]                Scan folder and create manifest\n")
 	fmt.Fprintf(os.Stderr, "  rescan                          Re-scan previously scanned folders\n")
 	fmt.Fprintf(os.Stderr, "  collect [--from <machine>]      Pull manifests from remote machines\n")
+	fmt.Fprintf(os.Stderr, "  manifests                       List all manifests and show origin (local/remote)\n")
 	fmt.Fprintf(os.Stderr, "  check-backup <path>             Check if folder is backed up elsewhere\n")
 	fmt.Fprintf(os.Stderr, "  cleanup-plan <path>             Show cleanup plan & space impact\n")
 	fmt.Fprintf(os.Stderr, "  backup-missing <path> --dest <dest>  Back up files not backed up (auto pipeline)\n")
@@ -2720,6 +2724,86 @@ func saveMachinesConfig(cfg map[string]string) error {
 		fmt.Fprintf(&sb, "%-30s = %s\n", id, cfg[id])
 	}
 	return os.WriteFile(path, []byte(sb.String()), 0644)
+}
+
+// =============================================================================
+// Manifests (show manifest metadata and origin)
+// =============================================================================
+
+func runManifests(args []string) {
+	fmt.Fprintf(os.Stderr, "Listing all manifests and their origin...\n\n")
+
+	// Load all manifests
+	manifestRoot := defaultManifestRoot()
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found in %s\n", manifestDir)
+		return
+	}
+
+	var sources []ManifestSource
+	currentMachineID := machineID()
+
+	for _, path := range matches {
+		src, err := readManifest(path)
+		if err != nil {
+			continue
+		}
+		// Mark as local or remote
+		markManifestOrigin(&src, currentMachineID)
+		sources = append(sources, src)
+	}
+
+	// Sort by origin (local first), then by machine name, then scan path
+	sort.Slice(sources, func(i, j int) bool {
+		if sources[i].IsLocal != sources[j].IsLocal {
+			return sources[i].IsLocal // local first
+		}
+		if sources[i].MachineName != sources[j].MachineName {
+			return sources[i].MachineName < sources[j].MachineName
+		}
+		return sources[i].ScanPath < sources[j].ScanPath
+	})
+
+	fmt.Fprintf(os.Stderr, "Origin      Machine              Scan Path                          Files  Last Scanned\n")
+	fmt.Fprintf(os.Stderr, "─────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
+
+	for _, src := range sources {
+		originMark := "🔴 remote"
+		if src.IsLocal {
+			originMark = "🟢 local "
+		}
+
+		// Truncate long paths
+		scanPath := src.ScanPath
+		if len(scanPath) > 33 {
+			scanPath = "..." + scanPath[len(scanPath)-30:]
+		}
+
+		fmt.Fprintf(os.Stderr, "%s  %-20s %-33s %6d  %s\n",
+			originMark,
+			src.MachineName,
+			scanPath,
+			len(src.Rows),
+			src.LastScanned,
+		)
+	}
+
+	fmt.Fprintf(os.Stderr, "\n")
+	localCount := 0
+	remoteCount := 0
+	for _, src := range sources {
+		if src.IsLocal {
+			localCount++
+		} else {
+			remoteCount++
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Summary: %d local, %d remote\n", localCount, remoteCount)
+	fmt.Fprintf(os.Stderr, "🟢 = Manifests from this machine\n")
+	fmt.Fprintf(os.Stderr, "🔴 = Manifests collected from remote machines\n")
 }
 
 // =============================================================================

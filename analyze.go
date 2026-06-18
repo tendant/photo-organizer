@@ -43,6 +43,8 @@ type ManifestSource struct {
 	LastScanned string // most recent scan_date value in this manifest
 	Rows        []ManifestRow
 	IsStale     bool   // true if ScanPath no longer exists on this machine
+	IsLocal     bool   // true if this manifest is from the current machine
+	Origin      string // "local" or "remote" for display
 }
 
 type StaleManifestReport struct {
@@ -259,6 +261,17 @@ func readManifest(csvPath string) (ManifestSource, error) {
 		LastScanned: lastScanned,
 		Rows:        rows,
 	}, nil
+}
+
+// markManifestOrigin determines if a manifest is from the local machine or remote
+func markManifestOrigin(src *ManifestSource, currentMachineID string) {
+	// A manifest is local if its machine name matches the current machine
+	src.IsLocal = src.MachineName == currentMachineID
+	if src.IsLocal {
+		src.Origin = "local"
+	} else {
+		src.Origin = "remote"
+	}
 }
 
 // =============================================================================
