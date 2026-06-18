@@ -2065,9 +2065,14 @@ func runBackupMissing(args []string) {
 
 		hasBackup := false
 		if exists && len(locs) > 0 {
-			// Check if any location is non-removable
+			// Check if any location is non-removable (and not the source folder itself)
 			for _, loc := range locs {
-				if !isRemovablePath(sources[loc.sourceIdx].ScanPath) {
+				scanPath := sources[loc.sourceIdx].ScanPath
+				// Don't count the source folder as a backup
+				if scanPath == absSourceFolder || strings.HasPrefix(scanPath, absSourceFolder+string(filepath.Separator)) {
+					continue
+				}
+				if !isRemovablePath(scanPath) {
 					hasBackup = true
 					break
 				}
