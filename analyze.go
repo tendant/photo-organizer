@@ -375,12 +375,14 @@ func detectStaleManifests(sources []ManifestSource) StaleManifestReport {
 			if _, err := os.Stat(sources[i].ScanPath); os.IsNotExist(err) {
 				sources[i].IsStale = true
 				report.StaleCount++
+				manifestFile := filepath.Base(sources[i].FilePath)
 				detail := fmt.Sprintf(
 					"⚠  Stale manifest: %q @ %q (path no longer exists)\n"+
+						"   File: %s\n"+
 						"   Last scanned: %s\n"+
 						"   Contains: %d file(s)\n"+
 						"   This likely means the folder was moved, archived, or deleted.",
-					sources[i].MachineName, sources[i].ScanPath, sources[i].LastScanned, len(sources[i].Rows),
+					sources[i].MachineName, sources[i].ScanPath, manifestFile, sources[i].LastScanned, len(sources[i].Rows),
 				)
 				report.Details = append(report.Details, detail)
 			}
