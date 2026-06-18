@@ -316,6 +316,8 @@ func analyzeDirectoryTypes(dir string) {
 	var totalCount int
 	var totalBytes int64
 
+	fmt.Fprintf(os.Stderr, "Analyzing file types...\n")
+
 	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
@@ -333,6 +335,11 @@ func analyzeDirectoryTypes(dir string) {
 		stats[ext].TotalSize += info.Size()
 		totalCount++
 		totalBytes += info.Size()
+
+		// Show progress every 10,000 files
+		if totalCount%10000 == 0 {
+			fmt.Fprintf(os.Stderr, "  %d files analyzed...\n", totalCount)
+		}
 		return nil
 	})
 
