@@ -3660,16 +3660,17 @@ func isRemovablePath(path string) bool {
 // =============================================================================
 
 type BackupCheckResult struct {
-	FolderPath     string
-	TotalFiles     int
-	TotalSize      int64
-	BackedUpFiles  int
-	NotBackedUp    []FileBackupStatus
-	BackupLocations map[string]int // machine@path -> count of files
-	BackedUp       []FileBackupStatus // backed-up files with their locations
-	AllBackedUp    bool
-	IgnoredFiles   int // number of system/sync files skipped
-	IgnoredSize    int64 // total size of ignored files
+	FolderPath      string
+	TotalFiles      int
+	TotalSize       int64
+	BackedUpFiles   int
+	SafelyBackedUp  []FileBackupStatus // 2+ copies (meets 3-2-1 rule)
+	AtRisk          []FileBackupStatus // only 1 copy (risky)
+	NotBackedUp     []FileBackupStatus // 0 copies
+	BackupLocations map[string]int     // machine@path -> count of files
+	AllBackedUp     bool
+	IgnoredFiles    int // number of system/sync files skipped
+	IgnoredSize     int64 // total size of ignored files
 }
 
 type FileBackupStatus struct {
@@ -3926,12 +3927,19 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 					backupMachines[parts[0]] = true
 				}
 			}
-			result.BackedUp = append(result.BackedUp, FileBackupStatus{
+			numCopies := len(backupMachines)
+			status := FileBackupStatus{
 				Path:            relPath,
 				SizeBytes:       sizeBytes,
-				Locations:       len(backupMachines), // count unique machines from backups only
+				Locations:       numCopies,
 				LocationDetails: locationDetails,
-			})
+			}
+			// Categorize by safety: 2+ copies is safe, 1 copy is at risk
+			if numCopies >= 2 {
+				result.SafelyBackedUp = append(result.SafelyBackedUp, status)
+			} else {
+				result.AtRisk = append(result.AtRisk, status)
+			}
 		} else {
 			// File exists in index but only on current machine
 			result.NotBackedUp = append(result.NotBackedUp, FileBackupStatus{
@@ -3944,7 +3952,7 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 		return nil
 	})
 
-	result.AllBackedUp = (len(result.NotBackedUp) == 0) && (result.TotalFiles > 0)
+	result.AllBackedUp = (len(result.NotBackedUp) == 0 && len(result.AtRisk) == 0) && (result.TotalFiles > 0)
 	return result
 }
 
@@ -3960,9 +3968,15 @@ func printCheckBackupResult(r BackupCheckResult) {
 	if r.IgnoredFiles > 0 {
 		fmt.Fprintf(os.Stdout, "Ignored (system/sync files): %d\n", r.IgnoredFiles)
 	}
-	backedUpSize := r.TotalSize - int64(0)
-	for _, f := range r.NotBackedUp {
-		backedUpSize -= f.SizeBytes
+
+	// Calculate sizes for each category
+	safelyBackedUpSize := int64(0)
+	for _, f := range r.SafelyBackedUp {
+		safelyBackedUpSize += f.SizeBytes
+	}
+	atRiskSize := int64(0)
+	for _, f := range r.AtRisk {
+		atRiskSize += f.SizeBytes
 	}
 	notBackedUpSize := int64(0)
 	for _, f := range r.NotBackedUp {
@@ -3970,27 +3984,43 @@ func printCheckBackupResult(r BackupCheckResult) {
 	}
 	fmt.Fprintf(os.Stdout, "Total size: %.1f GB\n\n", float64(r.TotalSize)/(1024*1024*1024))
 
-	// Summary counts
-	backedUpCount := r.TotalFiles - len(r.NotBackedUp)
-	fmt.Fprintf(os.Stdout, "✅ BACKED UP: %d files (%.1f GB)\n", backedUpCount, float64(backedUpSize)/(1024*1024*1024))
-	fmt.Fprintf(os.Stdout, "❌ NOT BACKED UP: %d files (%.1f GB)\n\n", len(r.NotBackedUp), float64(notBackedUpSize)/(1024*1024*1024))
+	// Summary counts - categorized by safety
+	fmt.Fprintf(os.Stdout, "✅ SAFELY BACKED UP (2+ copies): %d files (%.1f GB)\n", len(r.SafelyBackedUp), float64(safelyBackedUpSize)/(1024*1024*1024))
+	fmt.Fprintf(os.Stdout, "⚠️  AT RISK (only 1 copy): %d files (%.1f GB)\n", len(r.AtRisk), float64(atRiskSize)/(1024*1024*1024))
+	fmt.Fprintf(os.Stdout, "❌ NOT BACKED UP (0 copies): %d files (%.1f GB)\n\n", len(r.NotBackedUp), float64(notBackedUpSize)/(1024*1024*1024))
 
-	// Show sample backed-up files with their locations
-	if len(r.BackedUp) > 0 {
-		fmt.Fprintf(os.Stdout, "Sample backed-up files (showing first 5):\n")
-		for i, f := range r.BackedUp {
+	// Show sample safely backed-up files
+	if len(r.SafelyBackedUp) > 0 {
+		fmt.Fprintf(os.Stdout, "Sample safely backed-up files (showing first 5):\n")
+		for i, f := range r.SafelyBackedUp {
 			if i >= 5 {
-				fmt.Fprintf(os.Stdout, "   ... and %d more backed-up files\n\n", len(r.BackedUp)-5)
+				fmt.Fprintf(os.Stdout, "   ... and %d more safely backed-up files\n\n", len(r.SafelyBackedUp)-5)
 				break
 			}
-			fmt.Fprintf(os.Stdout, "   • %s (%.1f MB, %d copy/copies)\n", f.Path, float64(f.SizeBytes)/(1024*1024), f.Locations)
+			fmt.Fprintf(os.Stdout, "   • %s (%.1f MB, %d copies)\n", f.Path, float64(f.SizeBytes)/(1024*1024), f.Locations)
 			for _, loc := range f.LocationDetails {
 				fmt.Fprintf(os.Stdout, "     → %s\n", loc)
 			}
 		}
-		if len(r.BackedUp) <= 5 {
+		if len(r.SafelyBackedUp) <= 5 {
 			fmt.Fprintf(os.Stdout, "\n")
 		}
+	}
+
+	// Show at-risk files
+	if len(r.AtRisk) > 0 {
+		fmt.Fprintf(os.Stdout, "Files AT RISK (only 1 copy - showing first 5):\n")
+		for i, f := range r.AtRisk {
+			if i >= 5 {
+				fmt.Fprintf(os.Stdout, "   ... and %d more at-risk files\n\n", len(r.AtRisk)-5)
+				break
+			}
+			fmt.Fprintf(os.Stdout, "   • %s (%.1f MB)\n", f.Path, float64(f.SizeBytes)/(1024*1024))
+			for _, loc := range f.LocationDetails {
+				fmt.Fprintf(os.Stdout, "     → %s\n", loc)
+			}
+		}
+		fmt.Fprintf(os.Stdout, "\n   ⚠️  These files have only 1 backup copy. Create another copy to be safe.\n\n")
 	}
 
 	// Show not backed up files
@@ -3998,17 +4028,20 @@ func printCheckBackupResult(r BackupCheckResult) {
 		fmt.Fprintf(os.Stdout, "Files NOT backed up (showing first 5):\n")
 		for i, f := range r.NotBackedUp {
 			if i >= 5 {
-				fmt.Fprintf(os.Stdout, "   ... and %d more files\n", len(r.NotBackedUp)-5)
+				fmt.Fprintf(os.Stdout, "   ... and %d more files\n\n", len(r.NotBackedUp)-5)
 				break
 			}
 			fmt.Fprintf(os.Stdout, "   • %s (%.1f MB)\n", f.Path, float64(f.SizeBytes)/(1024*1024))
 		}
-		fmt.Fprintf(os.Stdout, "\n   ⚠️  Back these up before deleting folder\n\n")
+		fmt.Fprintf(os.Stdout, "\n   ❌ Back these up before deleting folder\n\n")
 	}
 
-	if r.AllBackedUp {
-		fmt.Fprintf(os.Stdout, "✓ All files are backed up elsewhere\n")
+	if len(r.NotBackedUp) == 0 && len(r.AtRisk) == 0 {
+		fmt.Fprintf(os.Stdout, "✓ All files are safely backed up (2+ copies)\n")
 		fmt.Fprintf(os.Stdout, "  Safe to archive or delete this folder\n\n")
+	} else if len(r.NotBackedUp) == 0 && len(r.AtRisk) > 0 {
+		fmt.Fprintf(os.Stdout, "⚠️  Some files have only 1 backup copy\n")
+		fmt.Fprintf(os.Stdout, "  Create additional copies before deleting\n\n")
 	}
 
 	fmt.Fprintf(os.Stdout, "%s\n", sep)
