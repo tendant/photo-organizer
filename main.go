@@ -2926,13 +2926,14 @@ func runManifests(args []string) {
 	for _, src := range sources {
 		if len(src.Rows) == 0 {
 			emptySources = append(emptySources, src)
+		} else if isRemovablePath(src.ScanPath) {
+			// Check removable path first (USB, SD cards, external drives)
+			removableSources = append(removableSources, src)
 		} else if src.IsLocal {
-			if isRemovablePath(src.ScanPath) {
-				removableSources = append(removableSources, src)
-			} else {
-				localSources = append(localSources, src)
-			}
+			// Local permanent storage
+			localSources = append(localSources, src)
 		} else {
+			// Remote SSH machines
 			remoteSources = append(remoteSources, src)
 		}
 	}
@@ -3007,12 +3008,10 @@ func runManifests(args []string) {
 	for _, src := range sources {
 		if len(src.Rows) == 0 {
 			emptyCount++
+		} else if isRemovablePath(src.ScanPath) {
+			removableCount++
 		} else if src.IsLocal {
-			if isRemovablePath(src.ScanPath) {
-				removableCount++
-			} else {
-				localCount++
-			}
+			localCount++
 		} else {
 			remoteCount++
 		}
