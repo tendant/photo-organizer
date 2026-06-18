@@ -1070,25 +1070,16 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 	}
 doneLoading:
 
-	// Build final manifest with ONLY files found in current scan.
-	// Existing entries are used for caching metadata only.
-	// Stale entries (files no longer on disk) are automatically excluded.
-	finalManifest := make(map[string][]string)
-
 	newCount, updatedCount := 0, 0
 	for _, fi := range files {
 		relPath, _ := filepath.Rel(scanDir, fi.Path)
-		var row []string
-
-		if oldRow, exists := existing[relPath]; exists {
-			// File exists in old manifest — use it as base for caching metadata
-			row = oldRow
+		if row, exists := existing[relPath]; exists {
 			storedSize, _ := strconv.ParseInt(row[headerIdx["file_size_bytes"]], 10, 64)
 			sizeChanged := storedSize != fi.Size
 			hashChanged := row[headerIdx["partial_hash"]] != fi.PartialHash ||
 				row[headerIdx["full_hash"]] != fi.FullHash
 
-			if sizeChanged || hashChanged {
+			if sizeChanged {
 				row[headerIdx["file_size_bytes"]] = fmt.Sprintf("%d", fi.Size)
 				row[headerIdx["file_size_mb"]] = fmt.Sprintf("%.2f", float64(fi.Size)/(1024*1024))
 				row[headerIdx["file_modified"]] = fi.ModTime.Format("2006-01-02 15:04:05")
@@ -1096,47 +1087,65 @@ doneLoading:
 				row[headerIdx["partial_hash"]] = fi.PartialHash
 				row[headerIdx["full_hash"]] = fi.FullHash
 				row[headerIdx["scan_date"]] = time.Now().Format("2006-01-02 15:04:05")
+				existing[relPath] = row
+				updatedCount++
+			} else if hashChanged {
+				row[headerIdx["partial_hash"]] = fi.PartialHash
+				row[headerIdx["full_hash"]] = fi.FullHash
+				existing[relPath] = row
 				updatedCount++
 			}
-		} else {
-			// New file not in old manifest
-			row = []string{
-				filepath.Base(fi.Path),
-				relPath,
-				fmt.Sprintf("%d", fi.Size),
-				fmt.Sprintf("%.2f", float64(fi.Size)/(1024*1024)),
-				fi.ModTime.Format("2006-01-02 15:04:05"),
-				fi.CaptureDate.Format("2006:01:02 15:04:05"),
-				"", "", // camera make/model (not yet extracted)
-				fi.PartialHash,
-				fi.FullHash,
-				strings.ToLower(filepath.Ext(fi.Path)),
-				time.Now().Format("2006-01-02 15:04:05"),
-				scanDir,
-				machineName,
-			}
-			newCount++
+			continue
 		}
-
-		finalManifest[relPath] = row
+		existing[relPath] = []string{
+			filepath.Base(fi.Path),
+			relPath,
+			fmt.Sprintf("%d", fi.Size),
+			fmt.Sprintf("%.2f", float64(fi.Size)/(1024*1024)),
+			fi.ModTime.Format("2006-01-02 15:04:05"),
+			fi.CaptureDate.Format("2006:01:02 15:04:05"),
+			"", "", // camera make/model (not yet extracted)
+			fi.PartialHash,
+			fi.FullHash,
+			strings.ToLower(filepath.Ext(fi.Path)),
+			time.Now().Format("2006-01-02 15:04:05"),
+			scanDir,
+			machineName,
+		}
+		newCount++
 	}
 
-	// Count stale entries (in old manifest but not in current scan)
-	stalePruned := 0
+	// Apply pruning before write (so we write the final state).
 	if prune {
+		scanned := make(map[string]bool, len(files))
+		for _, fi := range files {
+			relPath, _ := filepath.Rel(scanDir, fi.Path)
+			scanned[relPath] = true
+		}
+		wouldPrune := 0
 		for relPath := range existing {
-			if _, found := finalManifest[relPath]; !found {
-				stalePruned++
+			if !scanned[relPath] {
+				wouldPrune++
 			}
 		}
-		mstats.Pruned = stalePruned
+		// Safety: if pruning would remove more than 50% of existing entries,
+		// the volume is likely unmounted or empty — skip pruning and warn.
+		if len(existing) > 0 && wouldPrune*100/len(existing) > 50 {
+			fmt.Fprintf(os.Stderr, "⚠  Skipping prune: would remove %s of %s entries (>50%%).\n",
+				formatCount(wouldPrune), formatCount(len(existing)))
+			fmt.Fprintf(os.Stderr, "   Is the volume mounted? Re-run with --prune after verifying.\n")
+		} else {
+			for relPath := range existing {
+				if !scanned[relPath] {
+					delete(existing, relPath)
+					mstats.Pruned++
+				}
+			}
+		}
 	}
 
 	mstats.New = newCount
 	mstats.Updated = updatedCount
-
-	// Replace existing with final manifest (only files currently on disk)
-	existing = finalManifest
 
 	// Back up the existing manifest before overwriting.
 	if err := backupManifest(manifestFile); err != nil {
