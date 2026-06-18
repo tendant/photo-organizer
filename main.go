@@ -665,7 +665,8 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 			fmt.Fprintf(os.Stderr, "\r  %-78s", label)
 			return nil
 		}
-		if strings.HasPrefix(info.Name(), ".") || !isMediaFile(filepath.Ext(path)) || shouldSkipFile(path) {
+		// Always include .photoignore, but skip other dotfiles
+		if (strings.HasPrefix(info.Name(), ".") && info.Name() != ".photoignore") || (!isMediaFile(filepath.Ext(path)) && info.Name() != ".photoignore") || shouldSkipFile(path) {
 			return nil
 		}
 		// Apply .photoignore patterns
