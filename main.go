@@ -2006,6 +2006,9 @@ func runBackupMissing(args []string) {
 
 	fmt.Fprintf(os.Stderr, "Backing up missing files from %s to %s\n\n", absSourceFolder, destLocation)
 
+	// Get local machine ID to distinguish local from remote backups
+	localMachineID := resolveMachineID("")
+
 	// Step 1: Find which files need backing up
 	fmt.Fprintf(os.Stderr, "Step 1: Finding files not backed up...\n")
 
@@ -2019,6 +2022,8 @@ func runBackupMissing(args []string) {
 		if err != nil {
 			continue
 		}
+		// Mark whether this manifest is local or remote
+		markManifestOrigin(&src, localMachineID)
 		sources = append(sources, src)
 	}
 
@@ -2065,11 +2070,12 @@ func runBackupMissing(args []string) {
 
 		hasBackup := false
 		if exists && len(locs) > 0 {
-			// Check if any location is non-removable (and not the source folder itself)
+			// Check if any location is non-removable and not the local source folder
 			for _, loc := range locs {
 				scanPath := sources[loc.sourceIdx].ScanPath
-				// Don't count the source folder as a backup
-				if scanPath == absSourceFolder || strings.HasPrefix(scanPath, absSourceFolder+string(filepath.Separator)) {
+				isLocalManifest := sources[loc.sourceIdx].MachineName == localMachineID
+				// Only skip if it's a local manifest at the source folder (file we're backing up from)
+				if isLocalManifest && scanPath == absSourceFolder {
 					continue
 				}
 				if !isRemovablePath(scanPath) {
