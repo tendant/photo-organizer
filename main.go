@@ -1843,8 +1843,16 @@ func runArchive(args []string) {
 	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, sourceParent))
 
 	files, _, err := scanDirectory(sourceParent, make(map[string]CacheEntry), false)
-	if err == nil {
-		updateManifest(sourceParent, files, manifestFile, machineName, true) // prune=true
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠  Warning: Could not rescan parent folder: %v\n", err)
+		fmt.Fprintf(os.Stderr, "   Stale entries may remain. Run 'photo-organizer cleanup-manifests' to clean them up.\n")
+	} else {
+		stats, err := updateManifest(sourceParent, files, manifestFile, machineName, true) // prune=true
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠  Warning: Could not update manifest: %v\n", err)
+		} else if stats.Pruned > 0 {
+			fmt.Fprintf(os.Stderr, "✓ Removed %d stale entries from parent manifest\n", stats.Pruned)
+		}
 	}
 
 	// Remove old manifests for the archived folder and its subdirectories
