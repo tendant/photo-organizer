@@ -2274,15 +2274,13 @@ func runCleanupManifests(args []string) {
 		return
 	}
 
-	// Show overlapping manifests and collect parent manifests for removal
-	var overlapParents []ManifestSource
+	// Show overlapping manifests (informational only, don't remove)
 	if overlapCount > 0 {
 		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
-		fmt.Fprintf(os.Stderr, "OVERLAPPING MANIFESTS\n")
+		fmt.Fprintf(os.Stderr, "OVERLAPPING MANIFESTS (informational)\n")
 		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
 
 		shown := make(map[[2]int]bool)
-		parentSet := make(map[int]bool)
 		for pair := range overlaps {
 			i, j := pair[0], pair[1]
 			if shown[pair] || shown[[2]int{j, i}] {
@@ -2299,18 +2297,13 @@ func runCleanupManifests(args []string) {
 				} else {
 					parent, child = i, j
 				}
-				parentSet[parent] = true
-				fmt.Fprintf(os.Stderr, "⚠  Same machine, nested paths:\n")
+				fmt.Fprintf(os.Stderr, "ℹ  Same machine, nested paths:\n")
 				fmt.Fprintf(os.Stderr, "   Parent: %s @ %s\n", sources[parent].MachineName, sources[parent].ScanPath)
 				fmt.Fprintf(os.Stderr, "           (File: %s)\n", filepath.Base(sources[parent].FilePath))
 				fmt.Fprintf(os.Stderr, "   Child:  %s @ %s\n", sources[child].MachineName, sources[child].ScanPath)
 				fmt.Fprintf(os.Stderr, "           (File: %s)\n", filepath.Base(sources[child].FilePath))
-				fmt.Fprintf(os.Stderr, "\n   Parent manifest can be removed if you only need the child.\n\n")
+				fmt.Fprintf(os.Stderr, "\n   Both manifests are kept. Analysis deduplicates them automatically.\n\n")
 			}
-		}
-		// Collect unique parent manifests
-		for idx := range parentSet {
-			overlapParents = append(overlapParents, sources[idx])
 		}
 		fmt.Fprintf(os.Stderr, "\n")
 	}
@@ -2419,62 +2412,8 @@ func runCleanupManifests(args []string) {
 		}
 	}
 
-	// Remove overlapping parents if requested
-	overlapRemovedCount := 0
-	if len(overlapParents) > 0 {
-		fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
-		fmt.Fprintf(os.Stderr, "OVERLAPPING PARENT MANIFESTS\n")
-		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
-		fmt.Fprintf(os.Stderr, "Found %d parent manifest(s) with child scans on same machine.\n\n", len(overlapParents))
-
-		// Reset confirmation mode for parent removal
-		fmt.Fprintf(os.Stderr, "Remove parents? [o]ne-by-one or [A]ll or [S]kip? [o/A/S] ")
-		var parentMode string
-		fmt.Fscan(os.Stdin, &parentMode)
-		parentMode = strings.TrimSpace(parentMode)
-
-		if parentMode == "o" || parentMode == "A" {
-			confirmAllParents := parentMode == "A"
-			for _, parent := range overlapParents {
-				if !confirmAllParents {
-					fmt.Fprintf(os.Stderr, "\nRemove parent: %s @ %s\n", parent.MachineName, parent.ScanPath)
-					fmt.Fprintf(os.Stderr, "               (File: %s)\n", filepath.Base(parent.FilePath))
-					fmt.Fprintf(os.Stderr, "  Remove? [y/n/A-all/q-quit] ")
-					var answer string
-					fmt.Fscan(os.Stdin, &answer)
-					answer = strings.TrimSpace(answer)
-
-					switch answer {
-					case "A":
-						confirmAllParents = true
-						fallthrough
-					case "y":
-						// Remove this one
-					case "q":
-						fmt.Fprintf(os.Stderr, "Quit. Aborted.\n")
-						return
-					case "n", "":
-						skippedCount++
-						continue
-					default:
-						fmt.Fprintf(os.Stderr, "Invalid choice. Skipping.\n")
-						skippedCount++
-						continue
-					}
-				}
-
-				if err := os.Remove(parent.FilePath); err != nil {
-					fmt.Fprintf(os.Stderr, "⚠  Failed to remove %s: %v\n", filepath.Base(parent.FilePath), err)
-				} else {
-					fmt.Fprintf(os.Stderr, "✓ Removed parent: %s\n", filepath.Base(parent.FilePath))
-					overlapRemovedCount++
-				}
-			}
-		}
-	}
-
 	fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
-	fmt.Fprintf(os.Stderr, "Summary: Removed %d stale, %d overlapping parents, Skipped %d\n", removedCount, overlapRemovedCount, skippedCount)
+	fmt.Fprintf(os.Stderr, "Summary: Removed %d stale, Skipped %d\n", removedCount, skippedCount)
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 
 	if len(remoteStale) > 0 {
