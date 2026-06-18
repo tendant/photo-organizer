@@ -3728,6 +3728,11 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 			return nil
 		}
 
+		// Skip system and sync files
+		if shouldSkipFile(path) {
+			return nil
+		}
+
 		sizeBytes := info.Size()
 		result.TotalFiles++
 		result.TotalSize += sizeBytes
