@@ -2164,14 +2164,33 @@ func runCleanupManifests(args []string) {
 	fmt.Fprintf(os.Stderr, "STALE MANIFESTS\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
 
+	// Categorize stale manifests by machine
+	localStale := make([]ManifestSource, 0)
+	remoteStale := make([]ManifestSource, 0)
+
 	for i, detail := range stale.Details {
-		fmt.Fprintf(os.Stderr, "%s\n\n", detail)
+		fmt.Fprintf(os.Stderr, "%s\n", detail)
+		if sources[i].IsStale {
+			if isRemoteMachine(sources[i].MachineName) {
+				remoteStale = append(remoteStale, sources[i])
+			} else {
+				localStale = append(localStale, sources[i])
+			}
+		}
 		if i < len(stale.Details)-1 {
 			fmt.Fprintf(os.Stderr, "───────────────────────────────────────────────────────────────────\n\n")
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
+	fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
+	if len(localStale) > 0 {
+		fmt.Fprintf(os.Stderr, "Local stale manifests: %d\n", len(localStale))
+	}
+	if len(remoteStale) > 0 {
+		fmt.Fprintf(os.Stderr, "Remote stale manifests: %d (will need manual cleanup on remote machines)\n", len(remoteStale))
+	}
+	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
+
 	fmt.Fprintf(os.Stderr, "Remove stale manifests? [y/N] ")
 	var answer string
 	fmt.Fscan(os.Stdin, &answer)
@@ -2181,10 +2200,10 @@ func runCleanupManifests(args []string) {
 		return
 	}
 
-	// Remove stale manifests
+	// Remove local stale manifests
 	removedCount := 0
 	for i := range sources {
-		if sources[i].IsStale {
+		if sources[i].IsStale && !isRemoteMachine(sources[i].MachineName) {
 			if err := os.Remove(sources[i].FilePath); err != nil {
 				fmt.Fprintf(os.Stderr, "⚠  Failed to remove %s: %v\n", sources[i].FilePath, err)
 			} else {
@@ -2194,7 +2213,53 @@ func runCleanupManifests(args []string) {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "\n✓ Cleaned up %d stale manifest(s)\n", removedCount)
+	// Generate remote cleanup commands
+	if len(remoteStale) > 0 {
+		fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
+		fmt.Fprintf(os.Stderr, "REMOTE CLEANUP REQUIRED\n")
+		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
+		fmt.Fprintf(os.Stderr, "These remote manifests are stale. Cleanup requires access to remote machines.\n")
+		fmt.Fprintf(os.Stderr, "Run these commands when remote machines are available:\n\n")
+
+		// Group by machine for SSH execution
+		machineCommands := make(map[string][]string)
+		for _, src := range remoteStale {
+			baseName := filepath.Base(src.FilePath)
+			machineCommands[src.MachineName] = append(machineCommands[src.MachineName], baseName)
+		}
+
+		// Generate removal commands for each machine
+		for machine, files := range machineCommands {
+			fmt.Fprintf(os.Stderr, "# Machine: %s (%d stale manifest(s))\n", machine, len(files))
+			fmt.Fprintf(os.Stderr, "ssh <user@host> 'rm")
+			for _, file := range files {
+				fmt.Fprintf(os.Stderr, " ~/manifests/_Manifest/%s", file)
+			}
+			fmt.Fprintf(os.Stderr, "'\n")
+			fmt.Fprintf(os.Stderr, "\n")
+		}
+
+		fmt.Fprintf(os.Stderr, "Note: If remote machines are offline, these manifests will remain and\n")
+		fmt.Fprintf(os.Stderr, "can be manually cleaned up later using the commands above.\n\n")
+	}
+
+	fmt.Fprintf(os.Stderr, "✓ Cleaned up %d local stale manifest(s)\n", removedCount)
+}
+
+// isRemoteMachine checks if a machine name looks like a remote machine
+// (contains @, or is a non-local identifier)
+func isRemoteMachine(machineName string) bool {
+	// If machine name looks like a remote identifier (not localhost-like),
+	// it's probably remote. Common patterns:
+	// - ubuntu-max-acb605 (remote)
+	// - ubuntu-nas-f7e184 (remote)
+	// - Ls-MBP-967e82 (local)
+	// - Sony-A7IV-... (local device)
+	// For simplicity: if it contains "ubuntu-" or starts with a known remote prefix, it's remote
+	isKnownRemote := strings.HasPrefix(machineName, "ubuntu-") ||
+		strings.HasPrefix(machineName, "backup-") ||
+		(strings.Contains(machineName, "-") && len(machineName) > 20) // Random identifiers
+	return isKnownRemote
 }
 
 // machineInfo holds metadata about a discovered machine
