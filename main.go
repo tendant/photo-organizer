@@ -1515,6 +1515,24 @@ func runScan(args []string) {
 		os.Exit(1)
 	}
 
+	// Check if folder was already scanned
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+	for _, path := range matches {
+		src, err := readManifest(path)
+		if err != nil {
+			continue
+		}
+		if src.ScanPath == absScanDir {
+			fmt.Fprintf(os.Stderr, "\n⚠️  This folder was already scanned:\n")
+			fmt.Fprintf(os.Stderr, "   Machine: %s\n", src.MachineName)
+			fmt.Fprintf(os.Stderr, "   Last scanned: %s\n", src.LastScanned)
+			fmt.Fprintf(os.Stderr, "   Files: %d\n", len(src.Rows))
+			fmt.Fprintf(os.Stderr, "   Tip: Use 'rescan' to update instead of 're-scanning from scratch'\n\n")
+			break
+		}
+	}
+
 	// Show file type coverage report by default (unless --no-report is set)
 	if !*noReportFlag {
 		analyzeDirectoryTypes(absScanDir)
