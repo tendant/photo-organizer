@@ -361,20 +361,21 @@ func detectStaleManifests(sources []ManifestSource) StaleManifestReport {
 	}
 
 	for i := range sources {
-		// Only check local paths — we can't verify remote paths
-		// Remote manifests may reference archived paths that are stale
-		// but we can only know this from the manifest's scan_path
-		if _, err := os.Stat(sources[i].ScanPath); os.IsNotExist(err) {
-			sources[i].IsStale = true
-			report.StaleCount++
-			detail := fmt.Sprintf(
-				"⚠  Stale manifest: %q @ %q (path no longer exists)\n"+
-					"   Last scanned: %s\n"+
-					"   Contains: %d file(s)\n"+
-					"   This likely means the folder was moved, archived, or deleted.",
-				sources[i].MachineName, sources[i].ScanPath, sources[i].LastScanned, len(sources[i].Rows),
-			)
-			report.Details = append(report.Details, detail)
+		// Only report stale LOCAL manifests (we can verify them with os.Stat)
+		// Remote manifests are unreachable from here, so skip them
+		if sources[i].IsLocal {
+			if _, err := os.Stat(sources[i].ScanPath); os.IsNotExist(err) {
+				sources[i].IsStale = true
+				report.StaleCount++
+				detail := fmt.Sprintf(
+					"⚠  Stale manifest: %q @ %q (path no longer exists)\n"+
+						"   Last scanned: %s\n"+
+						"   Contains: %d file(s)\n"+
+						"   This likely means the folder was moved, archived, or deleted.",
+					sources[i].MachineName, sources[i].ScanPath, sources[i].LastScanned, len(sources[i].Rows),
+				)
+				report.Details = append(report.Details, detail)
+			}
 		}
 	}
 
@@ -3651,6 +3652,9 @@ func runCheckBackup(flagArgs []string) {
 		os.Exit(1)
 	}
 
+	// Get local machine ID
+	localMachineID := resolveMachineID("")
+
 	// Load all manifests
 	defaultDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(defaultDir, "*.csv"))
@@ -3665,6 +3669,8 @@ func runCheckBackup(flagArgs []string) {
 		if err != nil {
 			continue
 		}
+		// Mark whether this manifest is local or remote
+		markManifestOrigin(&src, localMachineID)
 		sources = append(sources, src)
 	}
 
@@ -3685,17 +3691,20 @@ func runCheckBackup(flagArgs []string) {
 	idx := buildHashIndex(sources)
 
 	// Scan the folder and check each file
-	result := checkFolderBackup(absFolderPath, sources, idx)
+	result := checkFolderBackup(absFolderPath, sources, idx, localMachineID)
 
 	// Print results
 	printCheckBackupResult(result)
 }
 
-func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[string][]hashLocation) BackupCheckResult {
+func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[string][]hashLocation, localMachineID string) BackupCheckResult {
 	result := BackupCheckResult{
 		FolderPath:      folderPath,
 		BackupLocations: make(map[string]int),
 	}
+
+	// Resolve to absolute path for comparison
+	absFolderPath, _ := filepath.Abs(folderPath)
 
 	// Walk through all files in folder
 	filepath.WalkDir(folderPath, func(path string, d os.DirEntry, err error) error {
@@ -3751,9 +3760,16 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 
 		for i, loc := range locs {
 			path := sources[loc.sourceIdx].ScanPath
+			isLocalManifest := sources[loc.sourceIdx].MachineName == localMachineID
 
 			// Skip removable media entirely - they don't count as backups
 			if isRemovablePath(path) {
+				skipIndices[i] = true
+				continue
+			}
+
+			// Skip if it's the local machine's source folder (file we're checking from)
+			if isLocalManifest && path == absFolderPath {
 				skipIndices[i] = true
 				continue
 			}
