@@ -4004,7 +4004,7 @@ func printCheckBackupResult(r BackupCheckResult) {
 				fmt.Fprintf(os.Stdout, "   ... and %d more safely backed-up files\n\n", len(r.SafelyBackedUp)-5)
 				break
 			}
-			fmt.Fprintf(os.Stdout, "   • %s (%.1f MB, %d copies)\n", f.Path, float64(f.SizeBytes)/(1024*1024), f.Locations)
+			fmt.Fprintf(os.Stdout, "   • %s (%s, %d copies)\n", f.Path, formatBytes(f.SizeBytes), f.Locations)
 			for _, loc := range f.LocationDetails {
 				fmt.Fprintf(os.Stdout, "     → %s\n", loc)
 			}
@@ -4022,7 +4022,7 @@ func printCheckBackupResult(r BackupCheckResult) {
 				fmt.Fprintf(os.Stdout, "   ... and %d more at-risk files\n\n", len(r.AtRisk)-5)
 				break
 			}
-			fmt.Fprintf(os.Stdout, "   • %s (%.1f MB)\n", f.Path, float64(f.SizeBytes)/(1024*1024))
+			fmt.Fprintf(os.Stdout, "   • %s (%s)\n", f.Path, formatBytes(f.SizeBytes))
 			for _, loc := range f.LocationDetails {
 				fmt.Fprintf(os.Stdout, "     → %s\n", loc)
 			}
@@ -4038,7 +4038,7 @@ func printCheckBackupResult(r BackupCheckResult) {
 				fmt.Fprintf(os.Stdout, "   ... and %d more files\n\n", len(r.NotBackedUp)-5)
 				break
 			}
-			fmt.Fprintf(os.Stdout, "   • %s (%.1f MB)\n", f.Path, float64(f.SizeBytes)/(1024*1024))
+			fmt.Fprintf(os.Stdout, "   • %s (%s)\n", f.Path, formatBytes(f.SizeBytes))
 		}
 		fmt.Fprintf(os.Stdout, "\n   ❌ Back these up before deleting folder\n\n")
 	}
