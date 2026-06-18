@@ -496,11 +496,6 @@ func reportOverlapDeduplication(sources []ManifestSource) DeduplicationReport {
 	return report
 }
 
-// printDeduplicationReport shows deduplication info to user if there are overlaps
-func printDeduplicationReport(report DeduplicationReport) {
-	printDeduplicationReportFiltered(report, "", nil)
-}
-
 // printDeduplicationReportFiltered shows overlaps, optionally filtering to local machine only
 func printDeduplicationReportFiltered(report DeduplicationReport, localMachineID string, sources []ManifestSource) {
 	if report.TotalExcluded == 0 {
@@ -3735,9 +3730,9 @@ func runCheckBackup(flagArgs []string) {
 	stale := detectStaleManifests(sources)
 	printStaleManifestReport(stale)
 
-	// Report overlapping manifests before building index
+	// Report overlapping manifests before building index (only local overlaps matter)
 	dedup := reportOverlapDeduplication(sources)
-	printDeduplicationReport(dedup)
+	printDeduplicationReportFiltered(dedup, localMachineID, sources)
 
 	// Build hash index from all manifests
 	idx := buildHashIndex(sources)
