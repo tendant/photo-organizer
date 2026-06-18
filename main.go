@@ -3285,11 +3285,10 @@ func runCollectConfig(args []string) {
 
 		fmt.Printf("Collecting config from %s (%s)...\n", machine, target)
 
-		// SSH to remote and get machines.conf
-		remoteConfPath := target + ":~/manifests/machines.conf"
+		// SSH to remote and get machines.conf (silently returns empty if missing)
 		var out bytes.Buffer
 		var stderr bytes.Buffer
-		cmd := exec.Command("rsync", "-av", remoteConfPath, "-")
+		cmd := exec.Command("ssh", target, "cat ~/manifests/machines.conf 2>/dev/null || echo ''")
 		cmd.Stdout = &out
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
@@ -3384,10 +3383,9 @@ func runPushConfig(args []string) {
 		fmt.Printf("Pushing config to %s (%s)...\n", machine, target)
 
 		// SSH to remote and get their current machines.conf
-		remoteConfPath := target + ":~/manifests/machines.conf"
 		var out bytes.Buffer
 		var stderr bytes.Buffer
-		cmd := exec.Command("rsync", "-av", remoteConfPath, "-")
+		cmd := exec.Command("ssh", target, "cat ~/manifests/machines.conf 2>/dev/null || echo ''")
 		cmd.Stdout = &out
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
@@ -3430,24 +3428,10 @@ func runPushConfig(args []string) {
 			fmt.Fprintf(&sb, "%-30s = %s\n", id, merged[id])
 		}
 
-		// Write to temp file and push via rsync
-		tmpFile, err := os.CreateTemp("", "machines.conf")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating temp file: %v\n", err)
-			continue
-		}
-		defer os.Remove(tmpFile.Name())
-
-		if _, err := tmpFile.WriteString(sb.String()); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing temp file: %v\n", err)
-			tmpFile.Close()
-			continue
-		}
-		tmpFile.Close()
-
-		// Push merged config to remote
+		// Push merged config to remote via SSH
 		var pushStderr bytes.Buffer
-		pushCmd := exec.Command("rsync", "-av", tmpFile.Name(), remoteConfPath)
+		pushCmd := exec.Command("ssh", target, "mkdir -p ~/manifests && cat > ~/manifests/machines.conf")
+		pushCmd.Stdin = strings.NewReader(sb.String())
 		pushCmd.Stdout = os.Stdout
 		pushCmd.Stderr = &pushStderr
 		if err := pushCmd.Run(); err != nil {
