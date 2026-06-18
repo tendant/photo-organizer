@@ -358,11 +358,7 @@ func analyzeDirectoryTypes(dir string) {
 	}
 	fmt.Printf("  %-10s %10d %12s\n", "TOTAL", totalCount, formatBytes(totalBytes))
 
-	fmt.Printf("\n💡 To exclude file types, create .photoignore in this directory:\n")
-	fmt.Printf("   echo '*.tmp' >> .photoignore\n")
-	fmt.Printf("   echo 'cache/' >> .photoignore\n\n")
-
-	fmt.Printf("✓ Ready to scan %d files (%s)\n\n", totalCount, formatBytes(totalBytes))
+	fmt.Printf("\n✓ Ready to scan %d files (%s)\n\n", totalCount, formatBytes(totalBytes))
 }
 
 func formatBytes(b int64) string {
