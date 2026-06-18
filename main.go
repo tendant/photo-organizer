@@ -2246,7 +2246,7 @@ func runCleanupManifests(args []string) {
 	}
 
 	var sources []ManifestSource
-	var emptyManifests []string
+	var emptyManifests []ManifestSource
 	for _, path := range matches {
 		src, err := readManifest(path)
 		if err != nil {
@@ -2254,7 +2254,7 @@ func runCleanupManifests(args []string) {
 		}
 		// Flag empty manifests (header only, no data rows)
 		if len(src.Rows) == 0 {
-			emptyManifests = append(emptyManifests, path)
+			emptyManifests = append(emptyManifests, src)
 		}
 		sources = append(sources, src)
 	}
@@ -2285,13 +2285,19 @@ func runCleanupManifests(args []string) {
 		fmt.Fprintf(os.Stderr, "EMPTY MANIFESTS (no file data)\n")
 		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
 		fmt.Fprintf(os.Stderr, "Found %d empty manifest(s) - header only, no file entries:\n\n", len(emptyManifests))
-		for _, path := range emptyManifests {
-			info, _ := os.Stat(path)
+		for _, src := range emptyManifests {
+			info, _ := os.Stat(src.FilePath)
 			modTime := info.ModTime().Format("2006-01-02 15:04:05")
-			fmt.Fprintf(os.Stderr, "  • %s\n", filepath.Base(path))
-			fmt.Fprintf(os.Stderr, "    Size: %d bytes, Modified: %s\n", info.Size(), modTime)
+			fmt.Fprintf(os.Stderr, "  • Machine: %s\n", src.MachineName)
+			if src.ScanPath != "" {
+				fmt.Fprintf(os.Stderr, "    Path: %s\n", src.ScanPath)
+			} else {
+				fmt.Fprintf(os.Stderr, "    Path: (not recorded - corrupted manifest)\n")
+			}
+			fmt.Fprintf(os.Stderr, "    File: %s\n", filepath.Base(src.FilePath))
+			fmt.Fprintf(os.Stderr, "    Size: %d bytes, Modified: %s\n\n", info.Size(), modTime)
 		}
-		fmt.Fprintf(os.Stderr, "\nThese manifests contain no file entries. Investigate before deletion:\n")
+		fmt.Fprintf(os.Stderr, "These manifests contain no file entries. Investigate before deletion:\n")
 		fmt.Fprintf(os.Stderr, "  - Were they interrupted scans?\n")
 		fmt.Fprintf(os.Stderr, "  - Did the scan find 0 files in that path?\n")
 		fmt.Fprintf(os.Stderr, "  - Are they from deleted/inaccessible remote paths?\n\n")
