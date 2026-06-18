@@ -3758,6 +3758,9 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 	// Resolve to absolute path for comparison
 	absFolderPath, _ := filepath.Abs(folderPath)
 
+	// Load .photoignore patterns for this folder
+	photoIgnore := newPhotoIgnore(absFolderPath)
+
 	// Walk through all files in folder
 	filepath.WalkDir(folderPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -3774,6 +3777,13 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 
 		// Skip system and sync files
 		if shouldSkipFile(path) {
+			result.IgnoredFiles++
+			result.IgnoredSize += info.Size()
+			return nil
+		}
+
+		// Apply .photoignore patterns
+		if photoIgnore.ShouldSkip(path) {
 			result.IgnoredFiles++
 			result.IgnoredSize += info.Size()
 			return nil
