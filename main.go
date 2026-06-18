@@ -2246,10 +2246,15 @@ func runCleanupManifests(args []string) {
 	}
 
 	var sources []ManifestSource
+	var emptyManifests []string
 	for _, path := range matches {
 		src, err := readManifest(path)
 		if err != nil {
 			continue
+		}
+		// Flag empty manifests (header only, no data rows)
+		if len(src.Rows) == 0 {
+			emptyManifests = append(emptyManifests, path)
 		}
 		sources = append(sources, src)
 	}
@@ -2269,9 +2274,27 @@ func runCleanupManifests(args []string) {
 		}
 	}
 
-	if stale.StaleCount == 0 && overlapCount == 0 {
-		fmt.Fprintf(os.Stderr, "✓ No stale or overlapping manifests found\n")
+	if stale.StaleCount == 0 && overlapCount == 0 && len(emptyManifests) == 0 {
+		fmt.Fprintf(os.Stderr, "✓ No stale, overlapping, or empty manifests found\n")
 		return
+	}
+
+	// Show empty manifests (informational - don't delete yet)
+	if len(emptyManifests) > 0 {
+		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
+		fmt.Fprintf(os.Stderr, "EMPTY MANIFESTS (no file data)\n")
+		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
+		fmt.Fprintf(os.Stderr, "Found %d empty manifest(s) - header only, no file entries:\n\n", len(emptyManifests))
+		for _, path := range emptyManifests {
+			info, _ := os.Stat(path)
+			modTime := info.ModTime().Format("2006-01-02 15:04:05")
+			fmt.Fprintf(os.Stderr, "  • %s\n", filepath.Base(path))
+			fmt.Fprintf(os.Stderr, "    Size: %d bytes, Modified: %s\n", info.Size(), modTime)
+		}
+		fmt.Fprintf(os.Stderr, "\nThese manifests contain no file entries. Investigate before deletion:\n")
+		fmt.Fprintf(os.Stderr, "  - Were they interrupted scans?\n")
+		fmt.Fprintf(os.Stderr, "  - Did the scan find 0 files in that path?\n")
+		fmt.Fprintf(os.Stderr, "  - Are they from deleted/inaccessible remote paths?\n\n")
 	}
 
 	// Show overlapping manifests (informational only, don't remove)
@@ -2345,10 +2368,13 @@ func runCleanupManifests(args []string) {
 		fmt.Fprintf(os.Stderr, "  (these will be skipped - manual verification required)\n\n")
 	}
 
-	if len(localStale) == 0 && overlapCount == 0 {
+	if len(localStale) == 0 && len(emptyManifests) == 0 {
 		fmt.Fprintf(os.Stderr, "No manifests verified as stale (100%% certain).\n")
 		if len(remoteStale) > 0 {
 			fmt.Fprintf(os.Stderr, "Remote manifests cannot be auto-verified. Manual review needed.\n")
+		}
+		if len(emptyManifests) > 0 {
+			fmt.Fprintf(os.Stderr, "\nEmpty manifests found (see details above).\n")
 		}
 		return
 	}
