@@ -2039,9 +2039,9 @@ func runBackupMissing(args []string) {
 	stale := detectStaleManifests(sources)
 	printStaleManifestReport(stale)
 
-	// Report overlapping manifests before building index
+	// Report overlapping manifests before building index (only local overlaps matter)
 	dedup := reportOverlapDeduplication(sources)
-	printDeduplicationReport(dedup)
+	printDeduplicationReportFiltered(dedup, localMachineID, sources)
 
 	// Build hash index
 	idx := buildHashIndex(sources)

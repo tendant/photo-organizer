@@ -497,15 +497,56 @@ func reportOverlapDeduplication(sources []ManifestSource) DeduplicationReport {
 
 // printDeduplicationReport shows deduplication info to user if there are overlaps
 func printDeduplicationReport(report DeduplicationReport) {
+	printDeduplicationReportFiltered(report, "", nil)
+}
+
+// printDeduplicationReportFiltered shows overlaps, optionally filtering to local machine only
+func printDeduplicationReportFiltered(report DeduplicationReport, localMachineID string, sources []ManifestSource) {
 	if report.TotalExcluded == 0 {
 		return
+	}
+
+	// If filtering to local machine, rebuild details to exclude remote overlaps
+	filteredDetails := report.Details
+	if localMachineID != "" && sources != nil {
+		filteredDetails = []string{}
+		filteredCount := 0
+		for pair, count := range report.OverlapGroups {
+			// Check if both manifests are from the local machine
+			if sources[pair[0]].MachineName == localMachineID && sources[pair[1]].MachineName == localMachineID {
+				broaderIdx := pair[0]
+				if strings.HasPrefix(
+					filepath.Clean(sources[pair[0]].ScanPath),
+					filepath.Clean(sources[pair[1]].ScanPath)+string(filepath.Separator),
+				) {
+					broaderIdx = pair[1]
+				}
+				specificIdx := pair[1]
+				if broaderIdx == pair[1] {
+					specificIdx = pair[0]
+				}
+				broaderSrc := sources[broaderIdx]
+				specificSrc := sources[specificIdx]
+				detail := fmt.Sprintf(
+					"⚠  Overlapping scans: %q and %q (same machine %q)\n"+
+						"   Excluding %d file(s) from broader scan (using more specific scan instead)",
+					broaderSrc.ScanPath, specificSrc.ScanPath, broaderSrc.MachineName, count,
+				)
+				filteredDetails = append(filteredDetails, detail)
+				filteredCount += count
+			}
+		}
+		if len(filteredDetails) == 0 {
+			// No local overlaps to report
+			return
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "MANIFEST DEDUPLICATION\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
 
-	for _, detail := range report.Details {
+	for _, detail := range filteredDetails {
 		fmt.Fprintf(os.Stderr, "%s\n", detail)
 	}
 
