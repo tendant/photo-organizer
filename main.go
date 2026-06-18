@@ -1115,8 +1115,18 @@ doneLoading:
 		newCount++
 	}
 
+	// For LOCAL manifests: scan is authoritative — remove entries for files not found.
+	// For REMOTE manifests: keep them (remote might be offline but files still exist there).
+	// We determine "local" by checking if scanDir is readable on this machine.
+	isLocal := true
+	if _, err := os.Stat(scanDir); err != nil {
+		// Can't read scanDir on this machine, assume it's a remote backup location
+		isLocal = false
+	}
+
 	// Apply pruning before write (so we write the final state).
-	if prune {
+	// Only prune LOCAL manifests (scan is authoritative); keep REMOTE manifests as-is.
+	if prune && isLocal {
 		scanned := make(map[string]bool, len(files))
 		for _, fi := range files {
 			relPath, _ := filepath.Rel(scanDir, fi.Path)
@@ -1129,11 +1139,11 @@ doneLoading:
 			}
 		}
 		// Safety: if pruning would remove more than 50% of existing entries,
-		// the volume is likely unmounted or empty — skip pruning and warn.
+		// something is wrong (folder moved, volume unmounted, etc) — skip and warn.
 		if len(existing) > 0 && wouldPrune*100/len(existing) > 50 {
 			fmt.Fprintf(os.Stderr, "⚠  Skipping prune: would remove %s of %s entries (>50%%).\n",
 				formatCount(wouldPrune), formatCount(len(existing)))
-			fmt.Fprintf(os.Stderr, "   Is the volume mounted? Re-run with --prune after verifying.\n")
+			fmt.Fprintf(os.Stderr, "   Is the folder still at %s? Re-run with --prune after verifying.\n", scanDir)
 		} else {
 			for relPath := range existing {
 				if !scanned[relPath] {
@@ -1142,6 +1152,9 @@ doneLoading:
 				}
 			}
 		}
+	} else if prune && !isLocal {
+		fmt.Fprintf(os.Stderr, "⚠  Not pruning remote manifest (remote location %q not accessible)\n", scanDir)
+		fmt.Fprintf(os.Stderr, "   Remote backups are kept as-is for safety.\n")
 	}
 
 	mstats.New = newCount
