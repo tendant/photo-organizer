@@ -3624,6 +3624,8 @@ type BackupCheckResult struct {
 	BackupLocations map[string]int // machine@path -> count of files
 	BackedUp       []FileBackupStatus // backed-up files with their locations
 	AllBackedUp    bool
+	IgnoredFiles   int // number of system/sync files skipped
+	IgnoredSize    int64 // total size of ignored files
 }
 
 type FileBackupStatus struct {
@@ -3730,6 +3732,8 @@ func checkFolderBackup(folderPath string, sources []ManifestSource, idx map[stri
 
 		// Skip system and sync files
 		if shouldSkipFile(path) {
+			result.IgnoredFiles++
+			result.IgnoredSize += info.Size()
 			return nil
 		}
 
@@ -3899,6 +3903,9 @@ func printCheckBackupResult(r BackupCheckResult) {
 
 	fmt.Fprintf(os.Stdout, "Folder: %s\n", r.FolderPath)
 	fmt.Fprintf(os.Stdout, "Total files: %d\n", r.TotalFiles)
+	if r.IgnoredFiles > 0 {
+		fmt.Fprintf(os.Stdout, "Ignored (system/sync files): %d\n", r.IgnoredFiles)
+	}
 	backedUpSize := r.TotalSize - int64(0)
 	for _, f := range r.NotBackedUp {
 		backedUpSize -= f.SizeBytes
