@@ -2288,12 +2288,27 @@ func runCleanupManifests(args []string) {
 		for _, src := range emptyManifests {
 			info, _ := os.Stat(src.FilePath)
 			modTime := info.ModTime().Format("2006-01-02 15:04:05")
-			fmt.Fprintf(os.Stderr, "  • Machine: %s\n", src.MachineName)
-			if src.ScanPath != "" {
-				fmt.Fprintf(os.Stderr, "    Path: %s\n", src.ScanPath)
-			} else {
-				fmt.Fprintf(os.Stderr, "    Path: (not recorded - corrupted manifest)\n")
+
+			// Extract path from filename if ScanPath is empty
+			displayPath := src.ScanPath
+			if displayPath == "" {
+				// Parse filename: photo_manifest_<machine>_<path>.csv
+				filename := filepath.Base(src.FilePath)
+				// Remove .csv extension
+				pathEncoded := strings.TrimSuffix(filename, ".csv")
+				// Remove "photo_manifest_" prefix
+				pathEncoded = strings.TrimPrefix(pathEncoded, "photo_manifest_")
+				// Remove machine ID prefix (everything up to and including the next underscore after machine ID)
+				// Machine ID format: ubuntu-max-acb605, ubuntu-nas-f7e184, Ls-MBP-967e82
+				if idx := strings.Index(pathEncoded, src.MachineName); idx == 0 {
+					pathEncoded = pathEncoded[len(src.MachineName)+1:] // +1 for the underscore
+					// Replace underscores with slashes, add leading slash
+					displayPath = "/" + strings.ReplaceAll(pathEncoded, "_", "/")
+				}
 			}
+
+			fmt.Fprintf(os.Stderr, "  • Machine: %s\n", src.MachineName)
+			fmt.Fprintf(os.Stderr, "    Path: %s\n", displayPath)
 			fmt.Fprintf(os.Stderr, "    File: %s\n", filepath.Base(src.FilePath))
 			fmt.Fprintf(os.Stderr, "    Size: %d bytes, Modified: %s\n\n", info.Size(), modTime)
 		}
