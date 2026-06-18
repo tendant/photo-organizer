@@ -1770,17 +1770,34 @@ func runArchive(args []string) {
 	// Rescan the parent of source folder to remove old entries (with --prune)
 	sourceParent := filepath.Dir(absSourceFolder)
 	fmt.Fprintf(os.Stderr, "\nUpdating manifest for %s (pruning removed files)...\n", sourceParent)
-	manifestFile := manifestFilename(machineName, sourceParent)
+	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, sourceParent))
 
 	files, _, err := scanDirectory(sourceParent, make(map[string]CacheEntry), false)
 	if err == nil {
 		updateManifest(sourceParent, files, manifestFile, machineName, true) // prune=true
 	}
 
+	// Remove old manifests for the archived folder and its subdirectories
+	manifestDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
+	if matches, err := filepath.Glob(filepath.Join(manifestDir, "*.csv")); err == nil {
+		for _, path := range matches {
+			// Read manifest to check if it references the old source folder
+			if src, err := readManifest(path); err == nil {
+				// If this manifest scanned the old folder or its subdirectories, remove it
+				if src.ScanPath == absSourceFolder || strings.HasPrefix(src.ScanPath, absSourceFolder+string(filepath.Separator)) {
+					if err := os.Remove(path); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: could not remove old manifest %s: %v\n", path, err)
+					}
+				}
+			}
+		}
+	}
+
 	// Scan the archive folder to add new entries
 	fmt.Fprintf(os.Stderr, "Scanning archive folder...\n")
 	archiveParent := filepath.Dir(archiveFolder)
-	manifestFile = manifestFilename(machineName, archiveParent)
+	manifestFile = filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, archiveParent))
 
 	files, _, err = scanDirectory(archiveParent, make(map[string]CacheEntry), false)
 	if err == nil {
