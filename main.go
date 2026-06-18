@@ -1269,6 +1269,12 @@ func main() {
 		case "collect":
 			runCollect(os.Args[2:])
 			return
+		case "collect-config":
+			runCollectConfig(os.Args[2:])
+			return
+		case "push-config":
+			runPushConfig(os.Args[2:])
+			return
 		case "rescan":
 			runRescan(os.Args[2:])
 			return
@@ -3198,6 +3204,259 @@ func runCollect(args []string) {
 		} else {
 			fmt.Printf("Done: %s\n\n", machine)
 		}
+	}
+}
+
+// mergeMachinesConfig merges remote config into local config, preserving remote-only entries.
+// Returns the merged config, counts of added/updated/preserved entries, and list of conflicts.
+func mergeMachinesConfig(local, remote map[string]string) (map[string]string, int, int, int) {
+	merged := make(map[string]string)
+	var added, updated, preserved int
+
+	// Copy all remote entries initially
+	for k, v := range remote {
+		merged[k] = v
+	}
+
+	// Local entries override remote entries
+	for k, v := range local {
+		if _, exists := remote[k]; exists && remote[k] != v {
+			updated++
+		} else if !exists {
+			added++
+		}
+		merged[k] = v
+	}
+
+	// Count preserved remote-only entries
+	for k := range remote {
+		if _, inLocal := local[k]; !inLocal {
+			preserved++
+		}
+	}
+
+	return merged, added, updated, preserved
+}
+
+func runCollectConfig(args []string) {
+	fs := flag.NewFlagSet("collect-config", flag.ExitOnError)
+	fromFlag := fs.String("from", "", "collect from specific machine (default: all machines)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect-config [--from <machine>]\n\n")
+		fmt.Fprintf(os.Stderr, "Pulls machines.conf from remote machines and merges locally.\n")
+		fmt.Fprintf(os.Stderr, "Remote-only entries are preserved; local entries override.\n\n")
+		fmt.Fprintf(os.Stderr, "Collect from all machines:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect-config\n\n")
+		fmt.Fprintf(os.Stderr, "Collect from specific machine:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect-config --from ubuntu-max\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	cfg := loadMachinesConfig()
+	if len(cfg) == 0 {
+		fmt.Fprintln(os.Stderr, "No machines configured. Add one with:")
+		fmt.Fprintln(os.Stderr, "  photo-organizer collect --add machine_id=user@host")
+		return
+	}
+
+	fromMachines := []string{}
+	if *fromFlag != "" {
+		fromMachines = append(fromMachines, *fromFlag)
+	} else {
+		for id := range cfg {
+			fromMachines = append(fromMachines, id)
+		}
+		sort.Strings(fromMachines)
+	}
+
+	merged := make(map[string]string)
+	// Start with current local config
+	for k, v := range cfg {
+		merged[k] = v
+	}
+
+	for _, machine := range fromMachines {
+		target := sshTargetFor(machine, cfg)
+		if target == machine {
+			fmt.Fprintf(os.Stderr, "⚠  Machine %q not configured in machines.conf\n", machine)
+			continue
+		}
+
+		fmt.Printf("Collecting config from %s (%s)...\n", machine, target)
+
+		// SSH to remote and get machines.conf
+		remoteConfPath := target + ":~/manifests/machines.conf"
+		var out bytes.Buffer
+		var stderr bytes.Buffer
+		cmd := exec.Command("rsync", "-av", remoteConfPath, "-")
+		cmd.Stdout = &out
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠  Could not fetch config from %s: %v\n", machine, err)
+			continue
+		}
+
+		// Parse remote config
+		remoteConfig := make(map[string]string)
+		for _, line := range strings.Split(out.String(), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			id := strings.TrimSpace(parts[0])
+			target := strings.TrimSpace(parts[1])
+			if id != "" && target != "" {
+				remoteConfig[id] = target
+			}
+		}
+
+		// Merge: local overrides, remote-only preserved
+		var added, updated, preserved int
+		for k, v := range remoteConfig {
+			if localV, exists := merged[k]; exists {
+				if localV != v {
+					updated++
+				}
+			} else {
+				added++
+				merged[k] = v
+			}
+			if _, inLocal := cfg[k]; !inLocal {
+				preserved++
+			}
+		}
+
+		fmt.Printf("  Added: %d, Updated: %d, Preserved remote-only: %d\n", added, updated, preserved)
+	}
+
+	// Save merged config
+	if err := saveMachinesConfig(merged); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving merged config: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("\nMerged config saved to %s\n", machinesConfFile())
+}
+
+func runPushConfig(args []string) {
+	fs := flag.NewFlagSet("push-config", flag.ExitOnError)
+	toFlag := fs.String("to", "", "push to specific machine (default: all machines)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer push-config [--to <machine>]\n\n")
+		fmt.Fprintf(os.Stderr, "Pushes local machines.conf to remote machines with merge strategy.\n")
+		fmt.Fprintf(os.Stderr, "Local entries override; remote-only entries are preserved.\n\n")
+		fmt.Fprintf(os.Stderr, "Push to all machines:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer push-config\n\n")
+		fmt.Fprintf(os.Stderr, "Push to specific machine:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer push-config --to ubuntu-max\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	cfg := loadMachinesConfig()
+	if len(cfg) == 0 {
+		fmt.Fprintln(os.Stderr, "No machines configured. Add one with:")
+		fmt.Fprintln(os.Stderr, "  photo-organizer collect --add machine_id=user@host")
+		return
+	}
+
+	toMachines := []string{}
+	if *toFlag != "" {
+		toMachines = append(toMachines, *toFlag)
+	} else {
+		for id := range cfg {
+			toMachines = append(toMachines, id)
+		}
+		sort.Strings(toMachines)
+	}
+
+	for _, machine := range toMachines {
+		target := sshTargetFor(machine, cfg)
+		if target == machine {
+			fmt.Fprintf(os.Stderr, "⚠  Machine %q not configured in machines.conf\n", machine)
+			continue
+		}
+
+		fmt.Printf("Pushing config to %s (%s)...\n", machine, target)
+
+		// SSH to remote and get their current machines.conf
+		remoteConfPath := target + ":~/manifests/machines.conf"
+		var out bytes.Buffer
+		var stderr bytes.Buffer
+		cmd := exec.Command("rsync", "-av", remoteConfPath, "-")
+		cmd.Stdout = &out
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠  Could not fetch remote config from %s: %v\n", machine, err)
+			continue
+		}
+
+		// Parse remote config
+		remoteConfig := make(map[string]string)
+		for _, line := range strings.Split(out.String(), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			id := strings.TrimSpace(parts[0])
+			target := strings.TrimSpace(parts[1])
+			if id != "" && target != "" {
+				remoteConfig[id] = target
+			}
+		}
+
+		// Merge: local overrides, remote-only preserved
+		merged, added, updated, preserved := mergeMachinesConfig(cfg, remoteConfig)
+
+		// Build merged config content
+		var sb strings.Builder
+		sb.WriteString("# photo-organizer machines configuration\n")
+		sb.WriteString("# Format: machine_id = user@host\n")
+		sb.WriteString("# SSH connection details (port, key, etc.) go in ~/.ssh/config\n\n")
+		ids := make([]string, 0, len(merged))
+		for id := range merged {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			fmt.Fprintf(&sb, "%-30s = %s\n", id, merged[id])
+		}
+
+		// Write to temp file and push via rsync
+		tmpFile, err := os.CreateTemp("", "machines.conf")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating temp file: %v\n", err)
+			continue
+		}
+		defer os.Remove(tmpFile.Name())
+
+		if _, err := tmpFile.WriteString(sb.String()); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing temp file: %v\n", err)
+			tmpFile.Close()
+			continue
+		}
+		tmpFile.Close()
+
+		// Push merged config to remote
+		var pushStderr bytes.Buffer
+		pushCmd := exec.Command("rsync", "-av", tmpFile.Name(), remoteConfPath)
+		pushCmd.Stdout = os.Stdout
+		pushCmd.Stderr = &pushStderr
+		if err := pushCmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠  Could not push config to %s: %v\n", machine, err)
+			continue
+		}
+
+		fmt.Printf("  Added: %d, Updated: %d, Preserved remote-only: %d\n", added, updated, preserved)
+		fmt.Printf("Done: %s\n\n", machine)
 	}
 }
 
