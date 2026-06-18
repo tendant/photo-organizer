@@ -1197,6 +1197,54 @@ doneLoading:
 
 // =============================================================================
 // Main / Subcommand Dispatch
+// suggestCommand finds similar command names for typo suggestions
+func suggestCommand(typo string) string {
+	commands := []string{
+		"analyze", "backup-status", "plan", "migrate", "collect", "rescan",
+		"machines", "risk-report", "analyze-backup-compliance", "check-backup",
+		"archive", "delete-folder", "backup-missing", "cleanup-plan",
+		"cleanup-manifests", "search", "scan", "help",
+	}
+
+	// Simple similarity: count matching prefixes and characters
+	bestMatch := ""
+	bestScore := 0
+
+	for _, cmd := range commands {
+		score := 0
+
+		// Bonus for common prefix
+		for i := 0; i < len(typo) && i < len(cmd); i++ {
+			if typo[i] == cmd[i] {
+				score += 2
+			}
+		}
+
+		// Bonus if typo appears as substring
+		if strings.Contains(cmd, typo) || strings.Contains(typo, cmd) {
+			score += 3
+		}
+
+		// Penalize based on length difference
+		lenDiff := len(cmd) - len(typo)
+		if lenDiff < 0 {
+			lenDiff = -lenDiff
+		}
+		score -= lenDiff
+
+		if score > bestScore {
+			bestScore = score
+			bestMatch = cmd
+		}
+	}
+
+	// Only suggest if there's a reasonable match
+	if bestScore > 2 {
+		return bestMatch
+	}
+	return ""
+}
+
 // =============================================================================
 
 func main() {
@@ -1204,7 +1252,8 @@ func main() {
 	DetectInterruptedOperations()
 
 	if len(os.Args) >= 2 {
-		switch os.Args[1] {
+		cmd := os.Args[1]
+		switch cmd {
 		case "analyze":
 			runAnalyze(os.Args[2:])
 			return
@@ -1259,6 +1308,19 @@ func main() {
 		case "help", "--help", "-h":
 			printUsage()
 			return
+		default:
+			// Check if it looks like a command (not a directory path)
+			if !strings.HasPrefix(cmd, "/") && !strings.HasPrefix(cmd, ".") {
+				// Might be a typo'd command, suggest similar ones
+				suggested := suggestCommand(cmd)
+				fmt.Fprintf(os.Stderr, "Error: unknown command %q\n", cmd)
+				if suggested != "" {
+					fmt.Fprintf(os.Stderr, "Did you mean: %s?\n\n", suggested)
+				}
+				fmt.Fprintf(os.Stderr, "Run 'photo-organizer help' for available commands.\n")
+				os.Exit(1)
+			}
+			// Looks like a directory path, try to scan it
 		}
 		runScan(os.Args[1:])
 		return
