@@ -2183,15 +2183,29 @@ func runCleanupManifests(args []string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
-	if len(localStale) > 0 {
-		fmt.Fprintf(os.Stderr, "Local stale manifests: %d\n", len(localStale))
-	}
-	if len(remoteStale) > 0 {
-		fmt.Fprintf(os.Stderr, "Remote stale manifests: %d (will need manual cleanup on remote machines)\n", len(remoteStale))
-	}
+	fmt.Fprintf(os.Stderr, "CLEANUP STATUS\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
 
-	fmt.Fprintf(os.Stderr, "Remove stale manifests? [y/N] ")
+	if len(localStale) > 0 {
+		fmt.Fprintf(os.Stderr, "✓ Verified stale (local): %d manifest(s) - SAFE TO REMOVE\n", len(localStale))
+		fmt.Fprintf(os.Stderr, "  (paths verified as non-existent on this machine)\n\n")
+	}
+
+	if len(remoteStale) > 0 {
+		fmt.Fprintf(os.Stderr, "⚠  Uncertain (remote): %d manifest(s) - CANNOT VERIFY\n", len(remoteStale))
+		fmt.Fprintf(os.Stderr, "  (cannot verify if paths exist on unreachable remote machines)\n")
+		fmt.Fprintf(os.Stderr, "  (these will be skipped - manual verification required)\n\n")
+	}
+
+	if len(localStale) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests verified as stale (100%% certain).\n")
+		if len(remoteStale) > 0 {
+			fmt.Fprintf(os.Stderr, "Remote manifests cannot be auto-verified. Manual review needed.\n")
+		}
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "Remove %d verified stale local manifest(s)? [y/N] ", len(localStale))
 	var answer string
 	fmt.Fscan(os.Stdin, &answer)
 
@@ -2200,7 +2214,7 @@ func runCleanupManifests(args []string) {
 		return
 	}
 
-	// Remove local stale manifests
+	// Remove ONLY local stale manifests (100% certain)
 	removedCount := 0
 	for i := range sources {
 		if sources[i].IsStale && !isRemoteMachine(sources[i].MachineName) {
@@ -2213,37 +2227,17 @@ func runCleanupManifests(args []string) {
 		}
 	}
 
-	// Generate remote cleanup commands
+	fmt.Fprintf(os.Stderr, "\n✓ Cleaned up %d verified stale local manifest(s)\n", removedCount)
+
 	if len(remoteStale) > 0 {
 		fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
-		fmt.Fprintf(os.Stderr, "REMOTE CLEANUP REQUIRED\n")
+		fmt.Fprintf(os.Stderr, "REMOTE MANIFESTS (cannot auto-verify)\n")
 		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
-		fmt.Fprintf(os.Stderr, "These remote manifests are stale. Cleanup requires access to remote machines.\n")
-		fmt.Fprintf(os.Stderr, "Run these commands when remote machines are available:\n\n")
-
-		// Group by machine for SSH execution
-		machineCommands := make(map[string][]string)
-		for _, src := range remoteStale {
-			baseName := filepath.Base(src.FilePath)
-			machineCommands[src.MachineName] = append(machineCommands[src.MachineName], baseName)
-		}
-
-		// Generate removal commands for each machine
-		for machine, files := range machineCommands {
-			fmt.Fprintf(os.Stderr, "# Machine: %s (%d stale manifest(s))\n", machine, len(files))
-			fmt.Fprintf(os.Stderr, "ssh <user@host> 'rm")
-			for _, file := range files {
-				fmt.Fprintf(os.Stderr, " ~/manifests/_Manifest/%s", file)
-			}
-			fmt.Fprintf(os.Stderr, "'\n")
-			fmt.Fprintf(os.Stderr, "\n")
-		}
-
-		fmt.Fprintf(os.Stderr, "Note: If remote machines are offline, these manifests will remain and\n")
-		fmt.Fprintf(os.Stderr, "can be manually cleaned up later using the commands above.\n\n")
+		fmt.Fprintf(os.Stderr, "Found %d potentially stale remote manifests, but cannot verify remotely.\n", len(remoteStale))
+		fmt.Fprintf(os.Stderr, "Manual verification required before deletion.\n\n")
+		fmt.Fprintf(os.Stderr, "To manually check remote manifests, SSH to each remote machine and verify\n")
+		fmt.Fprintf(os.Stderr, "if the paths actually exist, then delete manifests manually if confirmed stale.\n")
 	}
-
-	fmt.Fprintf(os.Stderr, "✓ Cleaned up %d local stale manifest(s)\n", removedCount)
 }
 
 // isRemoteMachine checks if a machine name looks like a remote machine
