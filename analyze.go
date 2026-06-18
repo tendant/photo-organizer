@@ -335,6 +335,109 @@ func indexKey(partialHash string, sizeBytes int64) string {
 	return fmt.Sprintf("%s|%d", partialHash, sizeBytes)
 }
 
+// DeduplicationReport tracks files excluded due to overlapping scans
+type DeduplicationReport struct {
+	OverlapGroups map[[2]int]int // pair → count of files excluded from broader manifest
+	TotalExcluded  int
+	Details        []string // Human-readable details
+}
+
+// reportOverlapDeduplication analyzes what would be deduplicated and returns details
+func reportOverlapDeduplication(sources []ManifestSource) DeduplicationReport {
+	report := DeduplicationReport{
+		OverlapGroups: make(map[[2]int]int),
+		Details:       []string{},
+	}
+
+	if len(sources) < 2 {
+		return report
+	}
+
+	overlaps := overlappingPairs(sources)
+	if len(overlaps) == 0 {
+		return report
+	}
+
+	// Track which pairs we've already reported
+	reportedPairs := make(map[[2]int]bool)
+
+	// For each overlapping pair, count how many files would be excluded
+	for pair := range overlaps {
+		if reportedPairs[pair] {
+			continue
+		}
+
+		// Normalize pair so broader is first
+		canonical := pair
+		if pair[0] > pair[1] {
+			canonical = [2]int{pair[1], pair[0]}
+		}
+		reportedPairs[canonical] = true
+
+		broaderIdx := canonical[0]
+		if strings.HasPrefix(
+			filepath.Clean(sources[canonical[0]].ScanPath),
+			filepath.Clean(sources[canonical[1]].ScanPath)+string(filepath.Separator),
+		) {
+			broaderIdx = canonical[1]
+		}
+		specificIdx := canonical[1]
+		if broaderIdx == canonical[1] {
+			specificIdx = canonical[0]
+		}
+
+		broaderSrc := sources[broaderIdx]
+		specificSrc := sources[specificIdx]
+		excludedCount := 0
+
+		// Build set of absolute paths in specific scan for fast lookup
+		specificPaths := make(map[string]bool)
+		for _, row := range specificSrc.Rows {
+			absPath := absFilePath(specificSrc, row)
+			specificPaths[filepath.Clean(absPath)] = true
+		}
+
+		// Count files that would be excluded from the broader manifest
+		for _, row := range broaderSrc.Rows {
+			absPath := filepath.Clean(absFilePath(broaderSrc, row))
+			if specificPaths[absPath] {
+				excludedCount++
+			}
+		}
+
+		if excludedCount > 0 {
+			report.OverlapGroups[canonical] = excludedCount
+			report.TotalExcluded += excludedCount
+			detail := fmt.Sprintf(
+				"⚠  Overlapping scans: %q and %q (same machine %q)\n"+
+					"   Excluding %d file(s) from broader scan (using more specific scan instead)",
+				broaderSrc.ScanPath, specificSrc.ScanPath, broaderSrc.MachineName, excludedCount,
+			)
+			report.Details = append(report.Details, detail)
+		}
+	}
+
+	return report
+}
+
+// printDeduplicationReport shows deduplication info to user if there are overlaps
+func printDeduplicationReport(report DeduplicationReport) {
+	if report.TotalExcluded == 0 {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
+	fmt.Fprintf(os.Stderr, "MANIFEST DEDUPLICATION\n")
+	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
+
+	for _, detail := range report.Details {
+		fmt.Fprintf(os.Stderr, "%s\n", detail)
+	}
+
+	fmt.Fprintf(os.Stderr, "\nTotal files excluded from duplicate scans: %d\n", report.TotalExcluded)
+	fmt.Fprintf(os.Stderr, "This ensures files are counted only once in analysis.\n\n")
+}
+
 func buildHashIndex(sources []ManifestSource) map[string][]hashLocation {
 	idx := make(map[string][]hashLocation)
 
@@ -3503,6 +3606,10 @@ func runCheckBackup(flagArgs []string) {
 		fmt.Fprintf(os.Stderr, "Error: no manifests loaded\n")
 		os.Exit(1)
 	}
+
+	// Report overlapping manifests before building index
+	dedup := reportOverlapDeduplication(sources)
+	printDeduplicationReport(dedup)
 
 	// Build hash index from all manifests
 	idx := buildHashIndex(sources)

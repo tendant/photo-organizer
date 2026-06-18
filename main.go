@@ -1932,6 +1932,10 @@ func runBackupMissing(args []string) {
 		sources = append(sources, src)
 	}
 
+	// Report overlapping manifests before building index
+	dedup := reportOverlapDeduplication(sources)
+	printDeduplicationReport(dedup)
+
 	// Build hash index
 	idx := buildHashIndex(sources)
 
