@@ -298,6 +298,13 @@ func shouldSkipFile(path string) bool {
 	if strings.Contains(path, "/.stfolder/") || strings.HasPrefix(name, ".stfolder") {
 		return true
 	}
+	// Skip Claude Code workspace metadata (exact folder match)
+	parts := strings.Split(path, string(filepath.Separator))
+	for _, part := range parts {
+		if part == ".claude" {
+			return true
+		}
+	}
 	return false
 }
 
