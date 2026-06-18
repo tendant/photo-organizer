@@ -2921,26 +2921,109 @@ func runManifests(args []string) {
 		return sources[i].ScanPath < sources[j].ScanPath
 	})
 
-	// Separate normal manifests from empty ones
-	var normalSources, emptySources []ManifestSource
+	// Separate into local, removable, and remote (excluding empty)
+	var localSources, removableSources, remoteSources, emptySources []ManifestSource
 	for _, src := range sources {
 		if len(src.Rows) == 0 {
 			emptySources = append(emptySources, src)
+		} else if src.IsLocal {
+			if isRemovablePath(src.ScanPath) {
+				removableSources = append(removableSources, src)
+			} else {
+				localSources = append(localSources, src)
+			}
 		} else {
-			normalSources = append(normalSources, src)
+			remoteSources = append(remoteSources, src)
 		}
 	}
 
-	// Display normal manifests
-	fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files  Status              Last Scanned\n")
-	fmt.Fprintf(os.Stderr, "──────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
+	// Display local manifests
+	if len(localSources) > 0 {
+		fmt.Fprintf(os.Stderr, "LOCAL MANIFESTS\n")
+		fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files  Status              Last Scanned\n")
+		fmt.Fprintf(os.Stderr, "──────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
+		displayManifestTable(localSources, "💻 lcl")
+	}
 
-	for _, src := range normalSources {
-		// Origin indicator
-		originMark := "📦 rmt"
-		if src.IsLocal {
-			originMark = "💻 lcl"
+	// Display removable manifests
+	if len(removableSources) > 0 {
+		if len(localSources) > 0 {
+			fmt.Fprintf(os.Stderr, "\n")
 		}
+		fmt.Fprintf(os.Stderr, "REMOVABLE MEDIA (USB, SD cards, etc.)\n")
+		fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files  Status              Last Scanned\n")
+		fmt.Fprintf(os.Stderr, "──────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
+		displayManifestTable(removableSources, "💾 rem")
+	}
+
+	// Display remote manifests
+	if len(remoteSources) > 0 {
+		if len(localSources) > 0 || len(removableSources) > 0 {
+			fmt.Fprintf(os.Stderr, "\n")
+		}
+		fmt.Fprintf(os.Stderr, "REMOTE MACHINES\n")
+		fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files  Status              Last Scanned\n")
+		fmt.Fprintf(os.Stderr, "──────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
+		displayManifestTable(remoteSources, "📦 rmt")
+	}
+
+	// Display empty manifests separately
+	if len(emptySources) > 0 {
+		fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
+		fmt.Fprintf(os.Stderr, "EMPTY MANIFESTS (0 files - need investigation)\n")
+		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
+
+		for i, src := range emptySources {
+			// Extract path from filename
+			scanPath := src.ScanPath
+			if scanPath == "" {
+				filename := filepath.Base(src.FilePath)
+				pathEncoded := strings.TrimSuffix(filename, ".csv")
+				pathEncoded = strings.TrimPrefix(pathEncoded, "photo_manifest_")
+				if idx := strings.Index(pathEncoded, src.MachineName); idx == 0 {
+					pathEncoded = pathEncoded[len(src.MachineName)+1:]
+					scanPath = "/" + strings.ReplaceAll(pathEncoded, "_", "/")
+				}
+			}
+
+			originMark := "📦 rmt"
+			if src.IsLocal {
+				originMark = "💻 lcl"
+			}
+			if isRemovablePath(src.ScanPath) {
+				originMark = "💾 rem"
+			}
+
+			fmt.Fprintf(os.Stderr, "%d. %s %s @ %s\n", i+1, originMark, src.MachineName, scanPath)
+			fmt.Fprintf(os.Stderr, "   File: %s\n\n", src.FilePath)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "\n")
+	localCount := 0
+	removableCount := 0
+	remoteCount := 0
+	emptyCount := 0
+	for _, src := range sources {
+		if len(src.Rows) == 0 {
+			emptyCount++
+		} else if src.IsLocal {
+			if isRemovablePath(src.ScanPath) {
+				removableCount++
+			} else {
+				localCount++
+			}
+		} else {
+			remoteCount++
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Summary: %d local, %d removable, %d remote, %d empty\n", localCount, removableCount, remoteCount, emptyCount)
+	fmt.Fprintf(os.Stderr, "💻 = Local machine       💾 = Removable media       📦 = Remote machines\n")
+}
+
+// Helper function to display manifest table
+func displayManifestTable(sources []ManifestSource, originMark string) {
+	for _, src := range sources {
 
 		// Truncate long paths
 		scanPath := src.ScanPath
@@ -2972,52 +3055,6 @@ func runManifests(args []string) {
 			src.LastScanned,
 		)
 	}
-
-	// Display empty manifests separately
-	if len(emptySources) > 0 {
-		fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
-		fmt.Fprintf(os.Stderr, "EMPTY MANIFESTS (0 files - need investigation)\n")
-		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
-
-		for i, src := range emptySources {
-			// Extract path from filename
-			scanPath := src.ScanPath
-			if scanPath == "" {
-				filename := filepath.Base(src.FilePath)
-				pathEncoded := strings.TrimSuffix(filename, ".csv")
-				pathEncoded = strings.TrimPrefix(pathEncoded, "photo_manifest_")
-				if idx := strings.Index(pathEncoded, src.MachineName); idx == 0 {
-					pathEncoded = pathEncoded[len(src.MachineName)+1:]
-					scanPath = "/" + strings.ReplaceAll(pathEncoded, "_", "/")
-				}
-			}
-
-			originMark := "🔴 remote"
-			if src.IsLocal {
-				originMark = "🟢 local "
-			}
-
-			fmt.Fprintf(os.Stderr, "%d. %s %s @ %s\n", i+1, originMark, src.MachineName, scanPath)
-			fmt.Fprintf(os.Stderr, "   File: %s\n\n", src.FilePath)
-		}
-	}
-
-	fmt.Fprintf(os.Stderr, "\n")
-	localCount := 0
-	remoteCount := 0
-	emptyCount := 0
-	for _, src := range sources {
-		if len(src.Rows) == 0 {
-			emptyCount++
-		} else if src.IsLocal {
-			localCount++
-		} else {
-			remoteCount++
-		}
-	}
-	fmt.Fprintf(os.Stderr, "Summary: %d local, %d remote, %d empty\n", localCount, remoteCount, emptyCount)
-	fmt.Fprintf(os.Stderr, "🟢 = Manifests from this machine\n")
-	fmt.Fprintf(os.Stderr, "🔴 = Manifests collected from remote machines\n")
 }
 
 // =============================================================================
