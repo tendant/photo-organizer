@@ -2205,29 +2205,68 @@ func runCleanupManifests(args []string) {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "Remove %d verified stale local manifest(s)? [y/N] ", len(localStale))
-	var answer string
-	fmt.Fscan(os.Stdin, &answer)
+	// Ask user confirmation mode: one-by-one or all at once
+	fmt.Fprintf(os.Stderr, "\nConfirm removal: [o]ne-by-one or [a]ll? [o/a] ")
+	var mode string
+	fmt.Fscan(os.Stdin, &mode)
+	mode = strings.ToLower(strings.TrimSpace(mode))
 
-	if answer != "y" && answer != "Y" {
-		fmt.Fprintf(os.Stderr, "Aborted.\n")
+	if mode != "a" && mode != "o" {
+		fmt.Fprintf(os.Stderr, "Invalid choice. Aborted.\n")
 		return
 	}
 
+	confirmAll := mode == "a"
+
 	// Remove ONLY local stale manifests (100% certain)
 	removedCount := 0
+	skippedCount := 0
+
 	for i := range sources {
-		if sources[i].IsStale && !isRemoteMachine(sources[i].MachineName) {
-			if err := os.Remove(sources[i].FilePath); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠  Failed to remove %s: %v\n", sources[i].FilePath, err)
-			} else {
-				fmt.Fprintf(os.Stderr, "✓ Removed: %s\n", filepath.Base(sources[i].FilePath))
-				removedCount++
+		if !sources[i].IsStale || isRemoteMachine(sources[i].MachineName) {
+			continue
+		}
+
+		if !confirmAll {
+			// Ask for each manifest one by one
+			fmt.Fprintf(os.Stderr, "\nRemove: %s @ %s\n", sources[i].MachineName, sources[i].ScanPath)
+			fmt.Fprintf(os.Stderr, "         (File: %s)\n", filepath.Base(sources[i].FilePath))
+			fmt.Fprintf(os.Stderr, "  Remove? [y/n/a-all/q-quit] ")
+			var answer string
+			fmt.Fscan(os.Stdin, &answer)
+			answer = strings.ToLower(strings.TrimSpace(answer))
+
+			switch answer {
+			case "a":
+				confirmAll = true // Start confirming all remaining
+				fallthrough
+			case "y":
+				// Remove this one
+			case "q":
+				fmt.Fprintf(os.Stderr, "Quit. Aborted.\n")
+				return
+			case "n", "":
+				skippedCount++
+				continue
+			default:
+				fmt.Fprintf(os.Stderr, "Invalid choice. Skipping.\n")
+				skippedCount++
+				continue
 			}
+		}
+
+		// Remove the manifest
+		if err := os.Remove(sources[i].FilePath); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠  Failed to remove %s: %v\n", filepath.Base(sources[i].FilePath), err)
+		} else {
+			fmt.Fprintf(os.Stderr, "✓ Removed: %s\n", filepath.Base(sources[i].FilePath))
+			removedCount++
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "\n✓ Cleaned up %d verified stale local manifest(s)\n", removedCount)
+	fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
+	fmt.Fprintf(os.Stderr, "Summary: Removed %d, Skipped %d\n", removedCount, skippedCount)
+	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 
 	if len(remoteStale) > 0 {
 		fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════\n")
