@@ -360,7 +360,15 @@ func detectStaleManifests(sources []ManifestSource) StaleManifestReport {
 		Details: []string{},
 	}
 
+	// Get current machine ID to identify local vs remote manifests
+	localMachineID := resolveMachineID("")
+
 	for i := range sources {
+		// Ensure origin is marked before checking
+		if sources[i].Origin == "" {
+			markManifestOrigin(&sources[i], localMachineID)
+		}
+
 		// Only report stale LOCAL manifests (we can verify them with os.Stat)
 		// Remote manifests are unreachable from here, so skip them
 		if sources[i].IsLocal {
