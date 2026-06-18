@@ -1333,6 +1333,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  rescan                          Re-scan previously scanned folders\n")
 	fmt.Fprintf(os.Stderr, "  collect [--from <machine>]      Pull manifests from remote machines\n")
 	fmt.Fprintf(os.Stderr, "  manifests                       List all manifests and show origin (local/remote)\n")
+	fmt.Fprintf(os.Stderr, "  cleanup-manifests               Remove stale manifests (scan paths no longer exist)\n")
 	fmt.Fprintf(os.Stderr, "  check-backup <path>             Check if folder is backed up elsewhere\n")
 	fmt.Fprintf(os.Stderr, "  cleanup-plan <path>             Show cleanup plan & space impact\n")
 	fmt.Fprintf(os.Stderr, "  backup-missing <path> --dest <dest>  Back up files not backed up (auto pipeline)\n")
