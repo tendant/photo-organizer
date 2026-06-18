@@ -2137,14 +2137,53 @@ func runBackupMissing(args []string) {
 
 	fmt.Fprintf(os.Stderr, "\n✓ Missing files copied via rsync\n")
 
-	// Step 3: Note about remote scanning
-	fmt.Fprintf(os.Stderr, "\nStep 3: Remote scanning (optional)\n")
-	fmt.Fprintf(os.Stderr, "Note: To create a manifest on the remote, install photo-organizer there\n")
-	fmt.Fprintf(os.Stderr, "      and run: ssh <remote> 'cd %s && photo-organizer scan .'\n", destLocation)
-	fmt.Fprintf(os.Stderr, "✓ Files copied to remote\n")
+	// Parse remote destination (user@host:/path)
+	parts := strings.Split(destLocation, ":")
+	if len(parts) != 2 {
+		fmt.Fprintf(os.Stderr, "Error: invalid destination format. Use: user@host:/path\n")
+		os.Exit(1)
+	}
 
-	// Step 4: Verify all files are now backed up
-	fmt.Fprintf(os.Stderr, "\nStep 4: Verifying backup status...\n")
+	remoteUserHost := parts[0]
+	remotePath := parts[1]
+
+	// Look up remote machine ID from machines.conf
+	machines := loadMachinesConfig()
+
+	remoteMachineID := machines[remoteUserHost]
+	if remoteMachineID == "" {
+		fmt.Fprintf(os.Stderr, "Error: Remote machine '%s' not found in machines.conf\n", remoteUserHost)
+		fmt.Fprintf(os.Stderr, "Add it with: photo-organizer collect --add <machine-id>=%s\n", remoteUserHost)
+		os.Exit(1)
+	}
+
+	// Step 3: SSH to remote and scan
+	fmt.Fprintf(os.Stderr, "\nStep 3: Scanning remote location...\n")
+	scanCmd := fmt.Sprintf("cd %s && photo-organizer scan . --machine %s", remotePath, remoteMachineID)
+	sshCmd := exec.Command("ssh", remoteUserHost, scanCmd)
+	sshCmd.Stdout = os.Stderr
+	sshCmd.Stderr = os.Stderr
+	if err := sshCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "\nError: Remote scan failed\n")
+		fmt.Fprintf(os.Stderr, "photo-organizer must be installed on the remote machine.\n")
+		fmt.Fprintf(os.Stderr, "Install it and run: ssh %s 'cd %s && photo-organizer scan . --machine %s'\n", remoteUserHost, remotePath, remoteMachineID)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "✓ Remote location scanned\n")
+
+	// Step 4: Collect updated manifests
+	fmt.Fprintf(os.Stderr, "\nStep 4: Collecting manifests from remote...\n")
+	collectCmd := exec.Command("photo-organizer", "collect", "--from", remoteMachineID)
+	collectCmd.Stdout = os.Stderr
+	collectCmd.Stderr = os.Stderr
+	if err := collectCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Manifest collection had issues: %v\n", err)
+	} else {
+		fmt.Fprintf(os.Stderr, "✓ Manifests collected\n")
+	}
+
+	// Step 5: Verify all files are now backed up
+	fmt.Fprintf(os.Stderr, "\nStep 5: Verifying backup status...\n")
 	verifyCmd := exec.Command("photo-organizer", "check-backup", absSourceFolder)
 	verifyCmd.Stdout = os.Stderr
 	verifyCmd.Stderr = os.Stderr
