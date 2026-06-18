@@ -3070,18 +3070,33 @@ func displayManifestTable(sources []ManifestSource, originMark string) {
 // =============================================================================
 
 func runCollect(args []string) {
-	// Collect all --from values manually (flag package doesn't support
-	// repeated string flags natively).
+	// Collect all --from/-f values and convert short flags to long form.
+	// (flag package doesn't support repeated string flags natively)
 	var fromMachines []string
 	var remaining []string
 	for i := 0; i < len(args); i++ {
-		if (args[i] == "--from" || args[i] == "-from") && i+1 < len(args) {
+		arg := args[i]
+		// Handle short aliases: -f → --from, -a → --add, -l → --list, -r → --root
+		if arg == "-f" && i+1 < len(args) {
 			fromMachines = append(fromMachines, args[i+1])
 			i++
-		} else if strings.HasPrefix(args[i], "--from=") {
-			fromMachines = append(fromMachines, strings.TrimPrefix(args[i], "--from="))
+		} else if arg == "-a" && i+1 < len(args) {
+			remaining = append(remaining, "--add", args[i+1])
+			i++
+		} else if arg == "-l" {
+			remaining = append(remaining, "--list")
+		} else if arg == "-r" && i+1 < len(args) {
+			remaining = append(remaining, "--root", args[i+1])
+			i++
+		} else if (arg == "--from" || arg == "-from") && i+1 < len(args) {
+			fromMachines = append(fromMachines, args[i+1])
+			i++
+		} else if strings.HasPrefix(arg, "--from=") {
+			fromMachines = append(fromMachines, strings.TrimPrefix(arg, "--from="))
+		} else if strings.HasPrefix(arg, "-f=") {
+			fromMachines = append(fromMachines, strings.TrimPrefix(arg, "-f="))
 		} else {
-			remaining = append(remaining, args[i])
+			remaining = append(remaining, arg)
 		}
 	}
 
@@ -3090,18 +3105,18 @@ func runCollect(args []string) {
 	addFlag := fs.String("add", "", "register a new machine: --add machine_id=user@host")
 	listFlag := fs.Bool("list", false, "list configured machines")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect [--from <machine> [--from <machine> ...]]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect [--from/-f <machine> [--from <machine> ...]]\n\n")
 		fmt.Fprintf(os.Stderr, "Pulls manifests from remote machines into ~/manifests/_Manifest/.\n")
-		fmt.Fprintf(os.Stderr, "If --from is omitted, collects from all configured machines.\n")
+		fmt.Fprintf(os.Stderr, "If --from/-f is omitted, collects from all configured machines.\n")
 		fmt.Fprintf(os.Stderr, "SSH targets are looked up from ~/manifests/machines.conf.\n\n")
 		fmt.Fprintf(os.Stderr, "Collect from all machines:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer collect\n\n")
 		fmt.Fprintf(os.Stderr, "Collect from specific machines:\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer collect --from ubuntu-max --from nas\n\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect -f ubuntu-max -f nas\n\n")
 		fmt.Fprintf(os.Stderr, "Register a machine:\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer collect --add ubuntu-max-acb605=ubuntu@192.168.1.100\n\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect -a ubuntu-max-acb605=ubuntu@192.168.1.100\n\n")
 		fmt.Fprintf(os.Stderr, "List configured machines:\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer collect --list\n\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect -l\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(remaining)
@@ -3242,19 +3257,33 @@ func mergeMachinesConfig(local, remote map[string]string) (map[string]string, in
 }
 
 func runCollectConfig(args []string) {
+	// Convert short flags to long form for consistency
+	var processedArgs []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if (arg == "-f" || arg == "--from") && i+1 < len(args) {
+			processedArgs = append(processedArgs, "--from", args[i+1])
+			i++
+		} else if strings.HasPrefix(arg, "-f=") {
+			processedArgs = append(processedArgs, "--from="+strings.TrimPrefix(arg, "-f="))
+		} else {
+			processedArgs = append(processedArgs, arg)
+		}
+	}
+
 	fs := flag.NewFlagSet("collect-config", flag.ExitOnError)
 	fromFlag := fs.String("from", "", "collect from specific machine (default: all machines)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect-config [--from <machine>]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect-config [-f/--from <machine>]\n\n")
 		fmt.Fprintf(os.Stderr, "Pulls machines.conf from remote machines and merges locally.\n")
 		fmt.Fprintf(os.Stderr, "Remote-only entries are preserved; local entries override.\n\n")
 		fmt.Fprintf(os.Stderr, "Collect from all machines:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer collect-config\n\n")
 		fmt.Fprintf(os.Stderr, "Collect from specific machine:\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer collect-config --from ubuntu-max\n\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect-config -f ubuntu-max\n\n")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	fs.Parse(processedArgs)
 
 	cfg := loadMachinesConfig()
 	if len(cfg) == 0 {
@@ -3340,19 +3369,33 @@ func runCollectConfig(args []string) {
 }
 
 func runPushConfig(args []string) {
+	// Convert short flags to long form for consistency
+	var processedArgs []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if (arg == "-t" || arg == "--to") && i+1 < len(args) {
+			processedArgs = append(processedArgs, "--to", args[i+1])
+			i++
+		} else if strings.HasPrefix(arg, "-t=") {
+			processedArgs = append(processedArgs, "--to="+strings.TrimPrefix(arg, "-t="))
+		} else {
+			processedArgs = append(processedArgs, arg)
+		}
+	}
+
 	fs := flag.NewFlagSet("push-config", flag.ExitOnError)
 	toFlag := fs.String("to", "", "push to specific machine (default: all machines)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer push-config [--to <machine>]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer push-config [-t/--to <machine>]\n\n")
 		fmt.Fprintf(os.Stderr, "Pushes local machines.conf to remote machines with merge strategy.\n")
 		fmt.Fprintf(os.Stderr, "Local entries override; remote-only entries are preserved.\n\n")
 		fmt.Fprintf(os.Stderr, "Push to all machines:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer push-config\n\n")
 		fmt.Fprintf(os.Stderr, "Push to specific machine:\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer push-config --to ubuntu-max\n\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer push-config -t ubuntu-max\n\n")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	fs.Parse(processedArgs)
 
 	cfg := loadMachinesConfig()
 	if len(cfg) == 0 {
@@ -3443,20 +3486,30 @@ func runPushConfig(args []string) {
 }
 
 func runSyncConfig(args []string) {
+	// Convert short flags to long form for consistency
+	var processedArgs []string
+	for _, arg := range args {
+		if arg == "-d" || arg == "--dry-run" {
+			processedArgs = append(processedArgs, "--dry-run")
+		} else {
+			processedArgs = append(processedArgs, arg)
+		}
+	}
+
 	fs := flag.NewFlagSet("sync-config", flag.ExitOnError)
 	dryRunFlag := fs.Bool("dry-run", false, "show what would be added without modifying machines.conf")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer sync-config [--dry-run]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer sync-config [-d/--dry-run]\n\n")
 		fmt.Fprintf(os.Stderr, "Auto-register machines found in manifests to machines.conf.\n")
 		fmt.Fprintf(os.Stderr, "Reads all manifest files and adds any machines not yet in machines.conf.\n")
 		fmt.Fprintf(os.Stderr, "Machines are tagged as [local], [removable], or plain SSH targets.\n\n")
 		fmt.Fprintf(os.Stderr, "Dry-run preview:\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer sync-config --dry-run\n\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer sync-config -d\n\n")
 		fmt.Fprintf(os.Stderr, "Actually sync:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer sync-config\n\n")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	fs.Parse(processedArgs)
 
 	// Load all manifests
 	manifestRoot := defaultManifestRoot()
