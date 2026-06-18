@@ -2206,17 +2206,17 @@ func runCleanupManifests(args []string) {
 	}
 
 	// Ask user confirmation mode: one-by-one or all at once
-	fmt.Fprintf(os.Stderr, "\nConfirm removal: [o]ne-by-one or [a]ll? [o/a] ")
+	fmt.Fprintf(os.Stderr, "\nConfirm removal: [o]ne-by-one or [A]ll? [o/A] ")
 	var mode string
 	fmt.Fscan(os.Stdin, &mode)
-	mode = strings.ToLower(strings.TrimSpace(mode))
+	mode = strings.TrimSpace(mode)
 
-	if mode != "a" && mode != "o" {
+	if mode != "A" && mode != "o" {
 		fmt.Fprintf(os.Stderr, "Invalid choice. Aborted.\n")
 		return
 	}
 
-	confirmAll := mode == "a"
+	confirmAll := mode == "A"
 
 	// Remove ONLY local stale manifests (100% certain)
 	removedCount := 0
@@ -2231,13 +2231,13 @@ func runCleanupManifests(args []string) {
 			// Ask for each manifest one by one
 			fmt.Fprintf(os.Stderr, "\nRemove: %s @ %s\n", sources[i].MachineName, sources[i].ScanPath)
 			fmt.Fprintf(os.Stderr, "         (File: %s)\n", filepath.Base(sources[i].FilePath))
-			fmt.Fprintf(os.Stderr, "  Remove? [y/n/a-all/q-quit] ")
+			fmt.Fprintf(os.Stderr, "  Remove? [y/n/A-all/q-quit] ")
 			var answer string
 			fmt.Fscan(os.Stdin, &answer)
-			answer = strings.ToLower(strings.TrimSpace(answer))
+			answer = strings.TrimSpace(answer)
 
 			switch answer {
-			case "a":
+			case "A":
 				confirmAll = true // Start confirming all remaining
 				fallthrough
 			case "y":
