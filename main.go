@@ -1355,6 +1355,9 @@ func main() {
 		case "cleanup-manifests":
 			runCleanupManifests(os.Args[2:])
 			return
+		case "prune-deleted-entries":
+			runPruneDeletedEntries(os.Args[2:])
+			return
 		case "search":
 			runSearch(os.Args[2:])
 			return
@@ -1398,7 +1401,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  cleanup-plan <path>             Show cleanup plan & space impact\n")
 	fmt.Fprintf(os.Stderr, "  backup-missing <path> --dest <dest>  Back up files not backed up (auto pipeline)\n")
 	fmt.Fprintf(os.Stderr, "  archive <path> --dest <dir>        Archive folder locally (move, not copy)\n")
-	fmt.Fprintf(os.Stderr, "  archive-status <archive-dir>    Show archived folders & safe deletion checklist\n\n")
+	fmt.Fprintf(os.Stderr, "  archive-status <archive-dir>    Show archived folders & safe deletion checklist\n")
+	fmt.Fprintf(os.Stderr, "  prune-deleted-entries           Clean up manifest entries for deleted files (AFTER manual rm)\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "ANALYSIS & VERIFICATION\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
@@ -2300,6 +2304,105 @@ func runArchiveStatus(args []string) {
 }
 
 // =============================================================================
+// Prune Deleted Entries (Clean manifests after manual deletion)
+// =============================================================================
+
+func runPruneDeletedEntries(args []string) {
+	fmt.Fprintf(os.Stderr, "\n🧹 PRUNING MANIFEST ENTRIES FOR DELETED FILES\n\n")
+	fmt.Fprintf(os.Stderr, "This scans ALL manifests and removes entries for files that no longer exist.\n")
+	fmt.Fprintf(os.Stderr, "Use this AFTER manually deleting archived folders with rm -rf.\n\n")
+
+	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found\n")
+		return
+	}
+
+	totalPruned := 0
+	for _, manifestPath := range matches {
+		if _, err := readManifest(manifestPath); err != nil {
+			continue
+		}
+
+		var validRows [][]string
+		var prunedCount int
+
+		// Read CSV to preserve all columns
+		f, err := os.Open(manifestPath)
+		if err != nil {
+			continue
+		}
+		reader := csv.NewReader(f)
+		records, _ := reader.ReadAll()
+		f.Close()
+
+		if len(records) < 1 {
+			continue
+		}
+
+		// Header row
+		validRows = append(validRows, records[0])
+
+		// Check each file entry
+		for _, record := range records[1:] {
+			if len(record) < 2 {
+				continue
+			}
+
+			// Reconstruct full path from ScanPath + RelativePath
+			scanPath := ""
+			relativePath := ""
+
+			// Find columns by header
+			for i, h := range records[0] {
+				if h == "scan_path" && i < len(record) {
+					scanPath = record[i]
+				}
+				if h == "relative_path" && i < len(record) {
+					relativePath = record[i]
+				}
+			}
+
+			fullPath := filepath.Join(scanPath, relativePath)
+
+			// Check if file still exists
+			if _, err := os.Stat(fullPath); err == nil {
+				// File exists, keep it
+				validRows = append(validRows, record)
+			} else {
+				// File deleted, prune it
+				prunedCount++
+			}
+		}
+
+		// If any entries were pruned, update manifest
+		if prunedCount > 0 {
+			// Write back with only valid rows
+			tmpFile, err := os.CreateTemp(filepath.Dir(manifestPath), ".manifest-tmp-*")
+			if err != nil {
+				continue
+			}
+			writer := csv.NewWriter(tmpFile)
+			writer.WriteAll(validRows)
+			writer.Flush()
+			tmpFile.Close()
+
+			// Atomic rename
+			os.Rename(tmpFile.Name(), manifestPath)
+			totalPruned += prunedCount
+
+			fmt.Fprintf(os.Stderr, "  ✓ %s: removed %d deleted entries\n", filepath.Base(manifestPath), prunedCount)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "\n✅ Pruning complete: removed %d deleted file entries from manifests\n", totalPruned)
+	fmt.Fprintf(os.Stderr, "   Manifests are now in sync with disk\n")
+}
+
+// =============================================================================
 // Cleanup Folder - DEPRECATED (use archive-status instead)
 // =============================================================================
 
@@ -2314,6 +2417,8 @@ func runCleanupFolder(args []string) {
 	fmt.Fprintf(os.Stderr, "  3. Wait 7-14 days for backup sync\n\n")
 	fmt.Fprintf(os.Stderr, "  4. Delete manually:\n")
 	fmt.Fprintf(os.Stderr, "     rm -rf /path/to/archived/folder\n\n")
+	fmt.Fprintf(os.Stderr, "  5. Clean up manifests:\n")
+	fmt.Fprintf(os.Stderr, "     photo-organizer prune-deleted-entries\n\n")
 	os.Exit(1)
 }
 
