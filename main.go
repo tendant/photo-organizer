@@ -4158,14 +4158,30 @@ func runFindDuplicateFolders(args []string) {
 			// Then by path within same machine
 			return sortedFolders[a].Path < sortedFolders[b].Path
 		})
+
+		// Group folders by machine for display
+		foldersByMachine := make(map[string][]*FolderInfo)
+		machineOrder := []string{}
 		for _, folder := range sortedFolders {
 			machine := folder.MachineName
 			if machine == "" {
 				machine = "unknown"
 			}
-			fmt.Printf("  - %s (%d files) [%s]\n", folder.Path, folder.FileCount, machine)
+			if _, exists := foldersByMachine[machine]; !exists {
+				machineOrder = append(machineOrder, machine)
+			}
+			foldersByMachine[machine] = append(foldersByMachine[machine], folder)
 		}
-		fmt.Printf("\n")
+
+		// Print folders grouped by machine
+		for _, machine := range machineOrder {
+			folders := foldersByMachine[machine]
+			fmt.Printf("  [%s] - %d copies\n", machine, len(folders))
+			for _, folder := range folders {
+				fmt.Printf("    - %s (%d files)\n", folder.Path, folder.FileCount)
+			}
+			fmt.Printf("\n")
+		}
 	}
 }
 
