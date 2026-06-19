@@ -705,26 +705,25 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 	fmt.Fprintf(os.Stderr, "\r  %-78s\n", fmt.Sprintf("%s files found, processing...", formatCount(len(raw))))
 
 	// Phase 2: extract EXIF dates and compute hashes using work queue.
-	// Spawn workers upfront, let them pull work from the queue.
-	// This avoids pre-counting and goroutine explosion.
+	// Spawn fixed workers, send file indices, workers write directly to files array.
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 4 {
 		numWorkers = 4
 	}
 
-	// Work queue: send files here, workers will process
-	workQueue := make(chan rawFile, numWorkers)
-	results := make(chan FileInfo, numWorkers)
+	files := make([]FileInfo, len(raw))
+	workQueue := make(chan int, numWorkers) // Send indices, not raw files
 
 	var wg sync.WaitGroup
 	var processed atomic.Int64
 
 	// Start fixed number of workers
-	for i := 0; i < numWorkers; i++ {
+	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for rf := range workQueue {
+			for idx := range workQueue {
+				rf := raw[idx]
 				relPath, _ := filepath.Rel(dir, rf.path)
 				fi := FileInfo{Path: rf.path, Size: rf.size, ModTime: rf.modTime}
 
@@ -737,7 +736,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 					fi.PartialHash, fi.CaptureDate = processFile(rf.path)
 					fi.FullHash = ""
 				}
-				results <- fi
+				files[idx] = fi
 
 				n := processed.Add(1)
 				if n%100 == 0 {
@@ -748,94 +747,20 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 		}()
 	}
 
-	// Send work to queue (non-blocking with channel buffer)
+	// Send work indices to queue
 	go func() {
-		for _, rf := range raw {
-			workQueue <- rf
+		for i := range raw {
+			workQueue <- i
 		}
 		close(workQueue)
 	}()
-
-	// Collect results
-	files := make([]FileInfo, len(raw))
-	for i := 0; i < len(raw); i++ {
-		fi := <-results
-		// Find original index
-		for j, rf := range raw {
-			if rf.path == fi.Path {
-				files[j] = fi
-				break
-			}
-		}
-	}
 
 	wg.Wait()
 	fmt.Fprintf(os.Stderr, "\r  %-78s\n",
 		fmt.Sprintf("%s / %s processed", formatCount(len(raw)), formatCount(len(raw))))
 
-	// Phase 3: compute full hash only for files that share BOTH the same
-	// partial hash AND the same file size with at least one other file in
-	// this scan. Different sizes can never be duplicates regardless of
-	// partial hash match. --full-hash upgrades all remaining files too.
-	//
-	// All files (including those already full-hashed from cache) count toward
-	// collision detection, but only files missing a full hash get upgraded.
-	// This ensures a new file colliding with a cached full-hashed file still
-	// gets its full hash computed.
-	byKey := make(map[string][]int)
-	for i, fi := range files {
-		k := indexKey(fi.PartialHash, fi.Size)
-		byKey[k] = append(byKey[k], i)
-	}
-	var upgradeIdx []int
-	for _, indices := range byKey {
-		if len(indices) >= 2 || fullHash {
-			for _, idx := range indices {
-				if files[idx].FullHash == "" {
-					upgradeIdx = append(upgradeIdx, idx)
-				}
-			}
-		}
-	}
-	if len(upgradeIdx) > 0 {
-		stats.FullHashed = len(upgradeIdx)
-		total := len(upgradeIdx)
-
-		// Use work queue for full hash computation (same pattern as partial hash)
-		fullHashQueue := make(chan int, numWorkers)
-		var fullDone atomic.Int64
-		var fhWg sync.WaitGroup
-
-		for i := 0; i < numWorkers; i++ {
-			fhWg.Add(1)
-			go func() {
-				defer fhWg.Done()
-				for idx := range fullHashQueue {
-					files[idx].FullHash = computeFullHash(files[idx].Path)
-					n := fullDone.Add(1)
-					if n%100 == 0 || int(n) == total {
-						name := filepath.Base(files[idx].Path)
-						progress := fmt.Sprintf("full hash: %s / %s  %s", formatCount(int(n)), formatCount(total), name)
-						if len(progress) > 78 {
-							progress = progress[:75] + "..."
-						}
-						fmt.Fprintf(os.Stderr, "\r  %-78s", progress)
-					}
-				}
-			}()
-		}
-
-		go func() {
-			for _, idx := range upgradeIdx {
-				fullHashQueue <- idx
-			}
-			close(fullHashQueue)
-		}()
-
-		fhWg.Wait()
-		fmt.Fprintf(os.Stderr, "\r  %-78s\n",
-			fmt.Sprintf("full hash: %s / %s done", formatCount(total), formatCount(total)))
-	}
+	// No full hash phase - we only use partial hash for deduplication
+	// (size + partial hash = unique signature)
 
 	for _, fi := range files {
 		stats.TotalBytes += fi.Size
