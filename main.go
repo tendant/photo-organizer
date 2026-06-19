@@ -2308,29 +2308,53 @@ func runArchiveStatus(args []string) {
 // =============================================================================
 
 func runPruneDeletedEntries(args []string) {
-	fmt.Fprintf(os.Stderr, "\n🧹 PRUNING MANIFEST ENTRIES FOR DELETED FILES\n\n")
-	fmt.Fprintf(os.Stderr, "This scans ALL manifests and removes entries for files that no longer exist.\n")
-	fmt.Fprintf(os.Stderr, "Use this AFTER manually deleting archived folders with rm -rf.\n\n")
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "\n🧹 PRUNE MANIFEST ENTRIES FOR DELETED FILES\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer prune-deleted-entries <archive-folder>\n\n")
+		fmt.Fprintf(os.Stderr, "Example:\n")
+		fmt.Fprintf(os.Stderr, "  rm -rf /archive/location/2026-06-19-*\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer prune-deleted-entries /archive/location\n\n")
+		fmt.Fprintf(os.Stderr, "This removes manifest entries for files that no longer exist in the archive.\n")
+		os.Exit(1)
+	}
 
-	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
-	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	archivePath := filepath.Clean(args[0])
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Archive path not found: %s\n", archivePath)
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "❌ Path is not a directory: %s\n", archivePath)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "\n🧹 SCANNING ARCHIVE FOR DELETED ENTRIES\n")
+	fmt.Fprintf(os.Stderr, "Archive: %s\n\n", archivePath)
+
+	// Find manifests in the archive location
+	manifestDir := filepath.Join(archivePath, "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
 
 	if len(matches) == 0 {
-		fmt.Fprintf(os.Stderr, "No manifests found\n")
+		fmt.Fprintf(os.Stderr, "No manifests found in %s\n", manifestDir)
 		return
 	}
 
-	totalPruned := 0
+	// First pass: collect what would be deleted
+	type DeletionInfo struct {
+		manifestPath string
+		count        int
+		entries      []string // relative paths of deleted entries
+	}
+	var deletions []DeletionInfo
+	totalToDelete := 0
+
 	for _, manifestPath := range matches {
 		if _, err := readManifest(manifestPath); err != nil {
 			continue
 		}
 
-		var validRows [][]string
-		var prunedCount int
-
-		// Read CSV to preserve all columns
 		f, err := os.Open(manifestPath)
 		if err != nil {
 			continue
@@ -2343,20 +2367,14 @@ func runPruneDeletedEntries(args []string) {
 			continue
 		}
 
-		// Header row
-		validRows = append(validRows, records[0])
-
-		// Check each file entry
+		var deletedEntries []string
 		for _, record := range records[1:] {
 			if len(record) < 2 {
 				continue
 			}
 
-			// Reconstruct full path from ScanPath + RelativePath
 			scanPath := ""
 			relativePath := ""
-
-			// Find columns by header
 			for i, h := range records[0] {
 				if h == "scan_path" && i < len(record) {
 					scanPath = record[i]
@@ -2367,20 +2385,103 @@ func runPruneDeletedEntries(args []string) {
 			}
 
 			fullPath := filepath.Join(scanPath, relativePath)
+			if _, err := os.Stat(fullPath); err != nil {
+				deletedEntries = append(deletedEntries, relativePath)
+			}
+		}
 
-			// Check if file still exists
+		if len(deletedEntries) > 0 {
+			deletions = append(deletions, DeletionInfo{
+				manifestPath: manifestPath,
+				count:        len(deletedEntries),
+				entries:      deletedEntries,
+			})
+			totalToDelete += len(deletedEntries)
+		}
+	}
+
+	if totalToDelete == 0 {
+		fmt.Fprintf(os.Stderr, "✅ No deleted entries found in archive manifests\n")
+		return
+	}
+
+	// Show preview
+	fmt.Fprintf(os.Stderr, "📋 PREVIEW: Will remove %d deleted entries from %d manifests:\n\n", totalToDelete, len(deletions))
+	for _, del := range deletions {
+		fmt.Fprintf(os.Stderr, "  %s (%d entries)\n", filepath.Base(del.manifestPath), del.count)
+		if del.count <= 5 {
+			for _, entry := range del.entries {
+				fmt.Fprintf(os.Stderr, "    - %s\n", entry)
+			}
+		} else {
+			for _, entry := range del.entries[:5] {
+				fmt.Fprintf(os.Stderr, "    - %s\n", entry)
+			}
+			fmt.Fprintf(os.Stderr, "    ... and %d more\n", del.count-5)
+		}
+	}
+
+	// Ask for confirmation
+	fmt.Fprintf(os.Stderr, "\n⚠️  This will permanently update manifests in this archive.\n")
+	fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
+
+	var response string
+	fmt.Scanln(&response)
+	if response != "y" && response != "Y" {
+		fmt.Fprintf(os.Stderr, "Cancelled\n")
+		return
+	}
+
+	// Second pass: actually delete entries
+	fmt.Fprintf(os.Stderr, "\n🔄 Updating manifests...\n\n")
+	totalPruned := 0
+
+	for _, manifestPath := range matches {
+		if _, err := readManifest(manifestPath); err != nil {
+			continue
+		}
+
+		f, err := os.Open(manifestPath)
+		if err != nil {
+			continue
+		}
+		reader := csv.NewReader(f)
+		records, _ := reader.ReadAll()
+		f.Close()
+
+		if len(records) < 1 {
+			continue
+		}
+
+		var validRows [][]string
+		validRows = append(validRows, records[0])
+		prunedCount := 0
+
+		for _, record := range records[1:] {
+			if len(record) < 2 {
+				continue
+			}
+
+			scanPath := ""
+			relativePath := ""
+			for i, h := range records[0] {
+				if h == "scan_path" && i < len(record) {
+					scanPath = record[i]
+				}
+				if h == "relative_path" && i < len(record) {
+					relativePath = record[i]
+				}
+			}
+
+			fullPath := filepath.Join(scanPath, relativePath)
 			if _, err := os.Stat(fullPath); err == nil {
-				// File exists, keep it
 				validRows = append(validRows, record)
 			} else {
-				// File deleted, prune it
 				prunedCount++
 			}
 		}
 
-		// If any entries were pruned, update manifest
 		if prunedCount > 0 {
-			// Write back with only valid rows
 			tmpFile, err := os.CreateTemp(filepath.Dir(manifestPath), ".manifest-tmp-*")
 			if err != nil {
 				continue
@@ -2390,16 +2491,15 @@ func runPruneDeletedEntries(args []string) {
 			writer.Flush()
 			tmpFile.Close()
 
-			// Atomic rename
 			os.Rename(tmpFile.Name(), manifestPath)
 			totalPruned += prunedCount
 
-			fmt.Fprintf(os.Stderr, "  ✓ %s: removed %d deleted entries\n", filepath.Base(manifestPath), prunedCount)
+			fmt.Fprintf(os.Stderr, "  ✓ %s: removed %d entries\n", filepath.Base(manifestPath), prunedCount)
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "\n✅ Pruning complete: removed %d deleted file entries from manifests\n", totalPruned)
-	fmt.Fprintf(os.Stderr, "   Manifests are now in sync with disk\n")
+	fmt.Fprintf(os.Stderr, "\n✅ Pruning complete: removed %d deleted entries\n", totalPruned)
+	fmt.Fprintf(os.Stderr, "   Archive manifests are now in sync with disk\n")
 }
 
 // =============================================================================
