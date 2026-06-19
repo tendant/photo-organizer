@@ -1904,23 +1904,12 @@ func runArchive(args []string) {
 		}
 	}
 
-	// Scan the archive folder to add new entries
-	fmt.Fprintf(os.Stderr, "Scanning archive folder...\n")
-	archiveParent := filepath.Dir(archiveFolder)
-	manifestFile = filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, archiveParent))
-
-	files, _, err = scanDirectory(archiveParent, make(map[string]CacheEntry), false, nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠  Warning: Could not scan archive folder: %v\n", err)
-	} else {
-		fmt.Fprintf(os.Stderr, "Updating manifest for %s...\n", archiveParent)
-		stats, err := updateManifest(archiveParent, files, manifestFile, machineName, false)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "⚠  Warning: Could not update archive manifest: %v\n", err)
-		} else if stats.New > 0 || stats.Updated > 0 {
-			fmt.Fprintf(os.Stderr, "✓ Updated archive manifest (%d new, %d updated)\n", stats.New, stats.Updated)
-		}
-	}
+	// Skip scanning archive folder since files are unchanged, just relocated
+	// Manifests will show files at new archive path when they're rescanned
+	// (e.g., via 'scan' command or 'collect' from remote)
+	fmt.Fprintf(os.Stderr, "✓ Archive path: %s\n", archiveFolder)
+	fmt.Fprintf(os.Stderr, "  Files will appear at new location when manifests are rescanned\n")
+	fmt.Fprintf(os.Stderr, "  To update manifests now: photo-organizer scan %s\n", filepath.Dir(archiveFolder))
 
 	fmt.Fprintf(os.Stderr, "\n✓ Folder archived to %s\n", archiveFolder)
 	fmt.Fprintf(os.Stderr, "  Files are still tracked in manifest at new location\n")
