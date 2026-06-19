@@ -705,14 +705,25 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 	fmt.Fprintf(os.Stderr, "\r  %-78s\n", fmt.Sprintf("%s files found, processing...", formatCount(len(raw))))
 
 	// Phase 2: extract EXIF dates and compute hashes using work queue.
-	// Spawn fixed workers, send file indices, workers write directly to files array.
+	// Send work as (index, rawFile) pairs, receive results with explicit index pairing.
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 4 {
 		numWorkers = 4
 	}
 
+	type workItem struct {
+		idx int
+		rf  rawFile
+	}
+
+	type workResult struct {
+		idx int
+		fi  FileInfo
+	}
+
 	files := make([]FileInfo, len(raw))
-	workQueue := make(chan int, numWorkers) // Send indices, not raw files
+	workQueue := make(chan workItem, numWorkers)
+	resultQueue := make(chan workResult, numWorkers)
 
 	var wg sync.WaitGroup
 	var processed atomic.Int64
@@ -722,21 +733,21 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for idx := range workQueue {
-				rf := raw[idx]
-				relPath, _ := filepath.Rel(dir, rf.path)
-				fi := FileInfo{Path: rf.path, Size: rf.size, ModTime: rf.modTime}
+			for work := range workQueue {
+				relPath, _ := filepath.Rel(dir, work.rf.path)
+				fi := FileInfo{Path: work.rf.path, Size: work.rf.size, ModTime: work.rf.modTime}
 
 				entry, hasCached := cache[relPath]
-				if hasCached && entry.SizeBytes == rf.size {
+				if hasCached && entry.SizeBytes == work.rf.size {
 					fi.PartialHash = entry.PartialHash
 					fi.FullHash = entry.FullHash
 					fi.CaptureDate = entry.CaptureDate
 				} else {
-					fi.PartialHash, fi.CaptureDate = processFile(rf.path)
+					fi.PartialHash, fi.CaptureDate = processFile(work.rf.path)
 					fi.FullHash = ""
 				}
-				files[idx] = fi
+
+				resultQueue <- workResult{work.idx, fi}
 
 				n := processed.Add(1)
 				if n%100 == 0 {
@@ -747,12 +758,20 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 		}()
 	}
 
-	// Send work indices to queue
+	// Send work to queue
 	go func() {
-		for i := range raw {
-			workQueue <- i
+		for i, rf := range raw {
+			workQueue <- workItem{i, rf}
 		}
 		close(workQueue)
+	}()
+
+	// Collect results with explicit index pairing
+	go func() {
+		for i := 0; i < len(raw); i++ {
+			res := <-resultQueue
+			files[res.idx] = res.fi
+		}
 	}()
 
 	wg.Wait()
