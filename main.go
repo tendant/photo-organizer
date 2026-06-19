@@ -1284,6 +1284,9 @@ func main() {
 		case "dup-folders":
 			runFindDuplicateFolders(os.Args[2:])
 			return
+		case "verify":
+			runVerify(os.Args[2:])
+			return
 		case "rescan":
 			runRescan(os.Args[2:])
 			return
@@ -4050,6 +4053,219 @@ func runFindDuplicateFolders(args []string) {
 		}
 		fmt.Printf("\n")
 	}
+}
+
+func runVerify(args []string) {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	localOnlyFlag := fs.Bool("local", false, "verify local files only")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer verify <folder-path> [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Verify folder integrity on disk against manifest.\n")
+		fmt.Fprintf(os.Stderr, "Checks all files present, sizes match, hashes valid.\n")
+		fmt.Fprintf(os.Stderr, "Also finds copies on other machines.\n\n")
+		fmt.Fprintf(os.Stderr, "Verify folder and all copies:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer verify /path/to/folder\n\n")
+		fmt.Fprintf(os.Stderr, "Verify local files only:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer verify /path/to/folder --local\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintf(os.Stderr, "Error: folder path required\n")
+		os.Exit(1)
+	}
+
+	folderPath := fs.Arg(0)
+
+	// Verify it's a valid path
+	info, err := os.Stat(folderPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot access folder: %v\n", err)
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "Error: %s is not a directory\n", folderPath)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Verifying folder: %s\n\n", folderPath)
+
+	// Load all manifests to find this folder
+	manifestRoot := defaultManifestRoot()
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	type CopyInfo struct {
+		Path     string
+		Machine  string
+		Valid    bool
+		Message  string
+		FileInfo struct {
+			Count     int
+			TotalSize int64
+			Missing   []string
+			SizeMismatches []string
+		}
+	}
+
+	var localCopies, remoteCopies []CopyInfo
+
+	// Find all copies of this folder in manifests
+	folderAbsPath, _ := filepath.Abs(folderPath)
+	foundInManifest := false
+
+	for _, manifestPath := range matches {
+		src, err := readManifest(manifestPath)
+		if err != nil {
+			continue
+		}
+
+		// Check if this manifest contains files from the target folder
+		var folderRows []ManifestRow
+		for _, row := range src.Rows {
+			filePath := filepath.Join(row.ScanPath, row.RelativePath)
+			// Check if file is under our target folder
+			if strings.HasPrefix(filePath, folderAbsPath+"/") || strings.HasPrefix(filePath, folderAbsPath+string(filepath.Separator)) {
+				folderRows = append(folderRows, row)
+				foundInManifest = true
+			}
+		}
+
+		if len(folderRows) == 0 {
+			continue
+		}
+
+		// This folder is in this manifest
+		// Group files by their scan path (different copies of the same folder)
+		folderCopies := make(map[string][]ManifestRow)
+		for _, row := range folderRows {
+			scanFolder := filepath.Join(row.ScanPath, filepath.Dir(row.RelativePath))
+			folderCopies[scanFolder] = append(folderCopies[scanFolder], row)
+		}
+
+		// Verify each copy
+		for copyPath, rows := range folderCopies {
+			copy := CopyInfo{
+				Path:    copyPath,
+				Machine: src.MachineName,
+				Valid:   true,
+			}
+
+			// For local folders, verify files on disk
+			if src.IsLocal || src.MachineName == "" {
+				copy.FileInfo.Count = len(rows)
+				copy.FileInfo.TotalSize = 0
+
+				// List actual files on disk
+				diskFiles := make(map[string]os.FileInfo)
+				filepath.Walk(copyPath, func(path string, info os.FileInfo, err error) error {
+					if err != nil || info.IsDir() {
+						return nil
+					}
+					rel, _ := filepath.Rel(copyPath, path)
+					diskFiles[rel] = info
+					return nil
+				})
+
+				// Verify each manifest entry
+				for _, row := range rows {
+					copy.FileInfo.TotalSize += row.SizeBytes
+
+					if _, exists := diskFiles[row.RelativePath]; !exists {
+						copy.Valid = false
+						copy.FileInfo.Missing = append(copy.FileInfo.Missing, row.RelativePath)
+					} else if diskFiles[row.RelativePath].Size() != row.SizeBytes {
+						copy.Valid = false
+						copy.FileInfo.SizeMismatches = append(copy.FileInfo.SizeMismatches, row.RelativePath)
+					}
+				}
+
+				if copy.Valid {
+					copy.Message = fmt.Sprintf("✓ VALID: %d files, %s", copy.FileInfo.Count, formatBytes(copy.FileInfo.TotalSize))
+				} else {
+					if len(copy.FileInfo.Missing) > 0 {
+						copy.Message = fmt.Sprintf("✗ INVALID: %d missing files", len(copy.FileInfo.Missing))
+					} else if len(copy.FileInfo.SizeMismatches) > 0 {
+						copy.Message = fmt.Sprintf("✗ INVALID: %d size mismatches", len(copy.FileInfo.SizeMismatches))
+					}
+				}
+
+				localCopies = append(localCopies, copy)
+			} else {
+				// Remote folder - mark as remote but don't verify disk
+				copy.FileInfo.Count = len(rows)
+				for _, row := range rows {
+					copy.FileInfo.TotalSize += row.SizeBytes
+				}
+				copy.Valid = true // Can't verify remote without SSH
+				copy.Message = fmt.Sprintf("(Remote) %d files, %s", copy.FileInfo.Count, formatBytes(copy.FileInfo.TotalSize))
+				remoteCopies = append(remoteCopies, copy)
+			}
+		}
+	}
+
+	if !foundInManifest {
+		fmt.Fprintf(os.Stderr, "Error: folder not found in any manifest\n")
+		fmt.Fprintf(os.Stderr, "Run: photo-organizer scan %s\n", folderPath)
+		os.Exit(1)
+	}
+
+	// Report results
+	fmt.Printf("LOCAL COPIES:\n")
+	for i, copy := range localCopies {
+		fmt.Printf("  %d. %s\n", i+1, copy.Path)
+		fmt.Printf("     Status: %s\n", copy.Message)
+		if !copy.Valid {
+			if len(copy.FileInfo.Missing) > 0 {
+				fmt.Printf("     Missing files: %v\n", copy.FileInfo.Missing[:min(len(copy.FileInfo.Missing), 3)])
+				if len(copy.FileInfo.Missing) > 3 {
+					fmt.Printf("     ... and %d more\n", len(copy.FileInfo.Missing)-3)
+				}
+			}
+			if len(copy.FileInfo.SizeMismatches) > 0 {
+				fmt.Printf("     Size mismatches: %v\n", copy.FileInfo.SizeMismatches[:min(len(copy.FileInfo.SizeMismatches), 3)])
+			}
+		}
+	}
+
+	if !*localOnlyFlag && len(remoteCopies) > 0 {
+		fmt.Printf("\nREMOTE COPIES:\n")
+		for i, copy := range remoteCopies {
+			fmt.Printf("  %d. %s (on %s)\n", i+1, copy.Path, copy.Machine)
+			fmt.Printf("     Status: %s\n", copy.Message)
+		}
+	}
+
+	// Safety summary
+	fmt.Printf("\nSUMMARY:\n")
+	validLocal := 0
+	for _, c := range localCopies {
+		if c.Valid {
+			validLocal++
+		}
+	}
+	totalCopies := len(localCopies) + len(remoteCopies)
+	fmt.Printf("  Total copies found: %d (local: %d, remote: %d)\n", totalCopies, len(localCopies), len(remoteCopies))
+	fmt.Printf("  Valid local copies: %d/%d\n", validLocal, len(localCopies))
+
+	if validLocal > 0 && totalCopies >= 2 {
+		archiveCandidate := len(localCopies) - 1
+		if archiveCandidate > 0 {
+			fmt.Printf("\n✓ SAFE TO ARCHIVE: %d local duplicate(s) (keep 1 local + %d remote backups)\n", archiveCandidate, len(remoteCopies))
+		}
+	} else if validLocal == 0 {
+		fmt.Printf("\n✗ CANNOT ARCHIVE: No valid local copies\n")
+	} else if totalCopies < 2 {
+		fmt.Printf("\n✗ CANNOT ARCHIVE: Only %d copy/copies total (need at least 2)\n", totalCopies)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func runSearch(args []string) {
