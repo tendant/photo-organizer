@@ -984,6 +984,119 @@ func TestParseCollectArgs(t *testing.T) {
 // findStalledManifests
 // =============================================================================
 
+// =============================================================================
+// .photoignore Support
+// =============================================================================
+
+func TestPhotoIgnoreShouldSkip(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create .photoignore file
+	photoignorePath := filepath.Join(dir, ".photoignore")
+	if err := os.WriteFile(photoignorePath, []byte(".claude/\n_Manifest/\n*.tmp\n"), 0o644); err != nil {
+		t.Fatalf("write .photoignore: %v", err)
+	}
+
+	ig := newPhotoIgnore(dir)
+
+	tests := []struct {
+		name     string
+		path     string
+		shouldSkip bool
+	}{
+		{
+			name:     "skip .claude folder",
+			path:     filepath.Join(dir, ".claude", "test.txt"),
+			shouldSkip: true,
+		},
+		{
+			name:     "skip _Manifest folder",
+			path:     filepath.Join(dir, "_Manifest", "test.csv"),
+			shouldSkip: true,
+		},
+		{
+			name:     "skip .tmp files",
+			path:     filepath.Join(dir, "file.tmp"),
+			shouldSkip: true,
+		},
+		{
+			name:     "keep .jpg files",
+			path:     filepath.Join(dir, "photo.jpg"),
+			shouldSkip: false,
+		},
+		{
+			name:     "keep nested files outside .claude",
+			path:     filepath.Join(dir, "photos", "photo.jpg"),
+			shouldSkip: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ig.ShouldSkip(tt.path)
+			if got != tt.shouldSkip {
+				t.Errorf("ShouldSkip(%q) = %v, want %v", tt.path, got, tt.shouldSkip)
+			}
+		})
+	}
+}
+
+func TestPhotoIgnoreCascade(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create root .photoignore
+	if err := os.WriteFile(filepath.Join(dir, ".photoignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatalf("write root .photoignore: %v", err)
+	}
+
+	// Create subdirectory .photoignore
+	subdir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, ".photoignore"), []byte("*.tmp\n"), 0o644); err != nil {
+		t.Fatalf("write subdir .photoignore: %v", err)
+	}
+
+	ig := newPhotoIgnore(dir)
+
+	tests := []struct {
+		name       string
+		path       string
+		shouldSkip bool
+	}{
+		{
+			name:       "root pattern matches in root",
+			path:       filepath.Join(dir, "debug.log"),
+			shouldSkip: true,
+		},
+		{
+			name:       "root pattern matches in subdir",
+			path:       filepath.Join(subdir, "debug.log"),
+			shouldSkip: true,
+		},
+		{
+			name:       "subdir pattern only in subdir",
+			path:       filepath.Join(subdir, "cache.tmp"),
+			shouldSkip: true,
+		},
+		{
+			name:       "subdir pattern not in root",
+			path:       filepath.Join(dir, "cache.tmp"),
+			shouldSkip: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ig.ShouldSkip(tt.path)
+			if got != tt.shouldSkip {
+				t.Errorf("ShouldSkip(%q) = %v, want %v", tt.path, got, tt.shouldSkip)
+			}
+		})
+	}
+}
+
 func TestFindStalledManifests(t *testing.T) {
 	tests := []struct {
 		name         string

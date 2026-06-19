@@ -1722,6 +1722,14 @@ func runScan(args []string) {
 			cache = make(map[string]CacheEntry) // discard cache — force full recompute
 		}
 		photoIgnore := newPhotoIgnore(absScanDir)
+
+		// Show .photoignore hint if it doesn't exist
+		photoignorePath := filepath.Join(absScanDir, ".photoignore")
+		if _, err := os.Stat(photoignorePath); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "💡 Tip: Create a .photoignore file to exclude folders/files from backup\n")
+			fmt.Fprintf(os.Stderr, "   Example: echo '.claude/\\n_Manifest/' > %s\n\n", photoignorePath)
+		}
+
 		fmt.Fprintf(os.Stderr, "\nScanning directory tree...\n")
 		files, scanStats, err := scanDirectory(absScanDir, cache, photoIgnore)
 		if err != nil {
