@@ -832,3 +832,111 @@ func TestPruneManifestRecords(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// findStalledManifests
+// =============================================================================
+
+func TestFindStalledManifests(t *testing.T) {
+	tests := []struct {
+		name         string
+		manifests    []*ManifestSource
+		localMachine string
+		allMachines  bool
+		pathExists   func(string) bool
+		wantCount    int
+		wantScan     string // first stalled scan path
+	}{
+		{
+			name: "no stalled manifests",
+			manifests: []*ManifestSource{
+				{
+					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
+					Rows:        []ManifestRow{{MachineName: "m1", ScanPath: "/data/photos", FileModified: "2026-06-19"}},
+				},
+			},
+			localMachine: "m1",
+			allMachines:  false,
+			pathExists:   func(p string) bool { return p == "/data/photos" },
+			wantCount:    0,
+			wantScan:     "",
+		},
+		{
+			name: "one stalled manifest",
+			manifests: []*ManifestSource{
+				{
+					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
+					Rows:        []ManifestRow{{MachineName: "m1", ScanPath: "/missing/photos", FileModified: "2026-06-19"}},
+				},
+			},
+			localMachine: "m1",
+			allMachines:  false,
+			pathExists:   func(p string) bool { return false },
+			wantCount:    1,
+			wantScan:     "/missing/photos",
+		},
+		{
+			name: "filter by local machine",
+			manifests: []*ManifestSource{
+				{
+					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
+					Rows:        []ManifestRow{{MachineName: "m1", ScanPath: "/missing1", FileModified: "2026-06-19"}},
+				},
+				{
+					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m2_data.csv",
+					Rows:        []ManifestRow{{MachineName: "m2", ScanPath: "/missing2", FileModified: "2026-06-19"}},
+				},
+			},
+			localMachine: "m1",
+			allMachines:  false,
+			pathExists:   func(p string) bool { return false },
+			wantCount:    1,
+			wantScan:     "/missing1",
+		},
+		{
+			name: "all machines",
+			manifests: []*ManifestSource{
+				{
+					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
+					Rows:        []ManifestRow{{MachineName: "m1", ScanPath: "/missing1", FileModified: "2026-06-19"}},
+				},
+				{
+					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m2_data.csv",
+					Rows:        []ManifestRow{{MachineName: "m2", ScanPath: "/missing2", FileModified: "2026-06-19"}},
+				},
+			},
+			localMachine: "m1",
+			allMachines:  true,
+			pathExists:   func(p string) bool { return false },
+			wantCount:    2,
+			wantScan:     "/missing1",
+		},
+		{
+			name: "empty manifest rows ignored",
+			manifests: []*ManifestSource{
+				{
+					FilePath: "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
+					Rows:     []ManifestRow{}, // empty
+				},
+			},
+			localMachine: "m1",
+			allMachines:  false,
+			pathExists:   func(p string) bool { return false },
+			wantCount:    0,
+			wantScan:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := findStalledManifests(tt.manifests, tt.localMachine, tt.allMachines, tt.pathExists)
+
+			if len(result) != tt.wantCount {
+				t.Errorf("got %d stalled manifests, want %d", len(result), tt.wantCount)
+			}
+			if tt.wantCount > 0 && result[0].ScanPath != tt.wantScan {
+				t.Errorf("first stalled scan path: got %q, want %q", result[0].ScanPath, tt.wantScan)
+			}
+		})
+	}
+}

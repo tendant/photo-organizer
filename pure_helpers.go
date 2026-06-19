@@ -186,3 +186,57 @@ func pruneManifestRecords(
 
 	return result
 }
+
+// =============================================================================
+// findStalledManifests: Stalled Manifest Detection (Pure Function)
+// =============================================================================
+
+// StalledManifestInfo represents a manifest whose scan path no longer exists.
+type StalledManifestInfo struct {
+	ManifestPath string
+	ScanPath     string
+	Machine      string
+	LastScanned  string
+	EntryCount   int
+}
+
+// findStalledManifests identifies manifests whose scan_path no longer exists.
+// Pure: filtering and logic are deterministic; file existence check is injected.
+// The pathExists function is called to check if each scan path still exists.
+func findStalledManifests(
+	manifests []*ManifestSource,
+	localMachine string,
+	allMachines bool,
+	pathExists func(path string) bool,
+) []StalledManifestInfo {
+	var result []StalledManifestInfo
+
+	for _, src := range manifests {
+		if len(src.Rows) == 0 {
+			continue
+		}
+
+		machine := src.Rows[0].MachineName
+
+		// Filter by machine
+		if !allMachines && machine != localMachine {
+			continue
+		}
+
+		scanPath := src.Rows[0].ScanPath
+		lastScanned := src.Rows[0].FileModified
+
+		// Check if scan path still exists
+		if !pathExists(scanPath) {
+			result = append(result, StalledManifestInfo{
+				ManifestPath: src.FilePath,
+				ScanPath:     scanPath,
+				Machine:      machine,
+				LastScanned:  lastScanned,
+				EntryCount:   len(src.Rows),
+			})
+		}
+	}
+
+	return result
+}
