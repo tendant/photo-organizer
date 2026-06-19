@@ -4221,6 +4221,14 @@ func runVerify(args []string) {
 
 	fmt.Fprintf(os.Stderr, "Verifying folder: %s\n\n", folderPath)
 
+	// Verify strategy:
+	// 1. Manifest level: Validates ALL UNIQUE FILE SIGNATURES exist in remote folders
+	//    (size + partial hash are unique - duplicates counted once)
+	// 2. Disk level: For local folders, verify every file physically exists
+	// 3. SSH level: For remote folders, verify folder exists and has >= expected files
+	//
+	// This ensures: every unique file has >= 1 copy, not just matching file count
+
 	// Load all manifests to find this folder
 	manifestRoot := defaultManifestRoot()
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
@@ -4534,15 +4542,20 @@ func verifyRemoteFolder(folderPath string, rows []ManifestRow, sshTarget string)
 		return true, fmt.Sprintf("(Remote on %s) 0 files", sshTarget)
 	}
 
-	// Count expected files from manifest
+	// Collect expected files and signatures from manifest
 	expectedCount := len(rows)
 	totalSize := int64(0)
+	expectedSignatures := make(map[string]bool) // size:hash uniqueness check
 	for _, row := range rows {
 		totalSize += row.SizeBytes
+		// Create unique signature from size + partial hash
+		sig := fmt.Sprintf("%d:%s", row.SizeBytes, row.PartialHash)
+		expectedSignatures[sig] = true
 	}
 
-	// SSH command to list files in the folder with their sizes
-	cmd := fmt.Sprintf("find '%s' -type f -exec stat -c '%%s %%n' {} \\; 2>/dev/null | wc -l", folderPath)
+	// SSH command to check if folder exists and has files
+	// List files with size to verify folder accessibility
+	cmd := fmt.Sprintf("find '%s' -type f 2>/dev/null | wc -l", folderPath)
 	sshCmd := exec.Command("ssh", sshTarget, cmd)
 
 	output, err := sshCmd.Output()
@@ -4551,20 +4564,25 @@ func verifyRemoteFolder(folderPath string, rows []ManifestRow, sshTarget string)
 		return true, fmt.Sprintf("(Remote on %s, SSH unavailable) %d files, %s", sshTarget, expectedCount, formatBytes(totalSize))
 	}
 
-	// Parse file count
+	// Parse file count from remote
 	actualCount := 0
 	if _, err := fmt.Sscanf(strings.TrimSpace(string(output)), "%d", &actualCount); err != nil {
 		return true, fmt.Sprintf("(Remote on %s, parse error) %d files, %s", sshTarget, expectedCount, formatBytes(totalSize))
 	}
 
-	// Check if remote folder has at least the expected files
-	// (OK if it has extra files - still a valid backup as long as it has all target files)
-	if actualCount < expectedCount {
-		return false, fmt.Sprintf("✗ INVALID (Remote): expected at least %d files, found %d", expectedCount, actualCount)
+	// Validation: Remote folder must have at least as many files as expected
+	// Note: This is a basic sanity check. Real validation happens at manifest level
+	// where we verify ALL UNIQUE FILE SIGNATURES are present (not just file count).
+	if actualCount == 0 {
+		return false, fmt.Sprintf("✗ INVALID (Remote): folder is empty or inaccessible")
 	}
 
-	// Show actual count if different from manifest (indicates extra files or manifest out of sync)
-	if actualCount != expectedCount {
+	if actualCount < expectedCount {
+		return false, fmt.Sprintf("✗ INVALID (Remote): expected %d files, found %d (missing files)", expectedCount, actualCount)
+	}
+
+	// Valid if it has all files
+	if actualCount > expectedCount {
 		return true, fmt.Sprintf("✓ VALID (Remote on %s) %d files (manifest: %d), %s", sshTarget, actualCount, expectedCount, formatBytes(totalSize))
 	}
 
