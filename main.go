@@ -4115,6 +4115,14 @@ func runVerify(args []string) {
 	folderAbsPath, _ := filepath.Abs(folderPath)
 	foundInManifest := false
 
+	type ManifestRowWithMeta struct {
+		row        ManifestRow
+		scanFolder string // Full path to folder being scanned
+		machine    string // Machine that has this copy
+	}
+
+	var allMatchingRows []ManifestRowWithMeta
+
 	for _, manifestPath := range matches {
 		src, err := readManifest(manifestPath)
 		if err != nil {
@@ -4122,41 +4130,58 @@ func runVerify(args []string) {
 		}
 
 		// Check if this manifest contains files from the target folder
-		var folderRows []ManifestRow
 		for _, row := range src.Rows {
 			filePath := filepath.Join(row.ScanPath, row.RelativePath)
 			// Check if file is under our target folder
 			if strings.HasPrefix(filePath, folderAbsPath+"/") || strings.HasPrefix(filePath, folderAbsPath+string(filepath.Separator)) {
-				folderRows = append(folderRows, row)
+				// Compute the folder path: just use ScanPath since that's the folder root in the manifest
+				allMatchingRows = append(allMatchingRows, ManifestRowWithMeta{
+					row:        row,
+					scanFolder: row.ScanPath,
+					machine:    src.MachineName,
+				})
 				foundInManifest = true
 			}
 		}
+	}
 
-		if len(folderRows) == 0 {
-			continue
-		}
-
-		// This folder is in this manifest
-		// Group files by their scan path (different copies of the same folder)
-		folderCopies := make(map[string][]ManifestRow)
-		for _, row := range folderRows {
-			scanFolder := filepath.Join(row.ScanPath, filepath.Dir(row.RelativePath))
-			folderCopies[scanFolder] = append(folderCopies[scanFolder], row)
+	if len(allMatchingRows) > 0 {
+		// Group files by their scan folder path and machine
+		folderCopies := make(map[string][]ManifestRowWithMeta)
+		for _, item := range allMatchingRows {
+			key := item.scanFolder + ":" + item.machine
+			folderCopies[key] = append(folderCopies[key], item)
 		}
 
 		// Verify each copy
-		for copyPath, rows := range folderCopies {
+		for key, items := range folderCopies {
+			// Extract scanFolder and machine from key
+			parts := strings.SplitN(key, ":", 2)
+			copyPath := parts[0]
+			machineName := parts[1]
+
 			copy := CopyInfo{
 				Path:    copyPath,
-				Machine: src.MachineName,
+				Machine: machineName,
 				Valid:   true,
 			}
 
-			// For local folders, verify files on disk
-			if src.IsLocal || src.MachineName == "" {
-				copy.FileInfo.Count = len(rows)
-				copy.FileInfo.TotalSize = 0
+			var rows []ManifestRow
+			for _, item := range items {
+				rows = append(rows, item.row)
+			}
 
+			// Try to access the folder - if it exists and is readable, it's local
+			isLocallyAccessible := false
+			if info, err := os.Stat(copyPath); err == nil && info.IsDir() {
+				isLocallyAccessible = true
+			}
+
+			copy.FileInfo.Count = len(rows)
+			copy.FileInfo.TotalSize = 0
+
+			if isLocallyAccessible {
+				// Local folder - verify files on disk
 				// List actual files on disk
 				diskFiles := make(map[string]os.FileInfo)
 				filepath.Walk(copyPath, func(path string, info os.FileInfo, err error) error {
@@ -4172,12 +4197,16 @@ func runVerify(args []string) {
 				for _, row := range rows {
 					copy.FileInfo.TotalSize += row.SizeBytes
 
-					if _, exists := diskFiles[row.RelativePath]; !exists {
+					// Compute relative path from copyPath
+					fullFilePath := filepath.Join(row.ScanPath, row.RelativePath)
+					relPath, _ := filepath.Rel(copyPath, fullFilePath)
+
+					if _, exists := diskFiles[relPath]; !exists {
 						copy.Valid = false
-						copy.FileInfo.Missing = append(copy.FileInfo.Missing, row.RelativePath)
-					} else if diskFiles[row.RelativePath].Size() != row.SizeBytes {
+						copy.FileInfo.Missing = append(copy.FileInfo.Missing, relPath)
+					} else if diskFiles[relPath].Size() != row.SizeBytes {
 						copy.Valid = false
-						copy.FileInfo.SizeMismatches = append(copy.FileInfo.SizeMismatches, row.RelativePath)
+						copy.FileInfo.SizeMismatches = append(copy.FileInfo.SizeMismatches, relPath)
 					}
 				}
 
@@ -4194,12 +4223,11 @@ func runVerify(args []string) {
 				localCopies = append(localCopies, copy)
 			} else {
 				// Remote folder - mark as remote but don't verify disk
-				copy.FileInfo.Count = len(rows)
 				for _, row := range rows {
 					copy.FileInfo.TotalSize += row.SizeBytes
 				}
 				copy.Valid = true // Can't verify remote without SSH
-				copy.Message = fmt.Sprintf("(Remote) %d files, %s", copy.FileInfo.Count, formatBytes(copy.FileInfo.TotalSize))
+				copy.Message = fmt.Sprintf("(Remote on %s) %d files, %s", machineName, copy.FileInfo.Count, formatBytes(copy.FileInfo.TotalSize))
 				remoteCopies = append(remoteCopies, copy)
 			}
 		}
