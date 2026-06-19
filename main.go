@@ -161,17 +161,6 @@ func processFile(path string) (hash string, captureDate time.Time) {
 }
 
 // computeFullHash hashes the entire file and returns its MD5.
-func computeFullHash(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	h := md5.New()
-	io.Copy(h, f)
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
 func getDateFallback(path string) time.Time {
 	if t, ok := getDateFromFilename(filepath.Base(path)); ok {
 		return t
@@ -650,7 +639,7 @@ type ScanStats struct {
 	TotalBytes int64
 }
 
-func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photoIgnore *PhotoIgnore) ([]FileInfo, ScanStats, error) {
+func scanDirectory(dir string, cache map[string]CacheEntry, photoIgnore *PhotoIgnore) ([]FileInfo, ScanStats, error) {
 	var stats ScanStats
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, stats, fmt.Errorf("directory not found: %s", dir)
@@ -1497,7 +1486,6 @@ func runScan(args []string) {
 	machineFlag := fs.String("machine", "", "machine label embedded in manifest (default: stable machine ID)")
 	mediaIDFlag := fs.String("media-id", "", "stable identifier for removable media (same across different machines)")
 	noWriteMediaIDFlag := fs.Bool("no-write-media-id", false, "skip writing machine-id file to card")
-	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones (rarely needed)")
 	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values (use after hash algorithm change)")
 	pruneFlag := fs.Bool("prune", false, "remove manifest entries for files no longer on disk")
 	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those matching score threshold")
@@ -1671,7 +1659,7 @@ func runScan(args []string) {
 			}
 			photoIgnore := newPhotoIgnore(qualifyingAbsDir)
 			fmt.Fprintf(os.Stderr, "Scanning directory tree...\n")
-			files, scanStats, err := scanDirectory(qualifyingAbsDir, cache, *fullHashFlag, photoIgnore)
+			files, scanStats, err := scanDirectory(qualifyingAbsDir, cache, photoIgnore)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", scored.Path, err)
 				continue
@@ -1708,7 +1696,7 @@ func runScan(args []string) {
 		}
 		photoIgnore := newPhotoIgnore(absScanDir)
 		fmt.Fprintf(os.Stderr, "\nScanning directory tree...\n")
-		files, scanStats, err := scanDirectory(absScanDir, cache, *fullHashFlag, photoIgnore)
+		files, scanStats, err := scanDirectory(absScanDir, cache, photoIgnore)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
@@ -1770,7 +1758,6 @@ func runRescan(args []string) {
 	fs := flag.NewFlagSet("rescan", flag.ExitOnError)
 	machineFlag := fs.String("machine", "", "machine ID to rescan (default: current machine)")
 	rootFlag := fs.String("root", "", "manifest directory (default: ~/manifests)")
-	fullHashFlag := fs.Bool("full-hash", false, "hash all files fully, not just colliding ones")
 	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values")
 	pruneFlag := fs.Bool("prune", false, "remove manifest entries for files no longer on disk")
 	fs.Usage = func() {
@@ -1843,7 +1830,7 @@ func runRescan(args []string) {
 		if *noCacheFlag {
 			cache = make(map[string]CacheEntry)
 		}
-		files, scanStats, err := scanDirectory(scanDir, cache, *fullHashFlag, newPhotoIgnore(scanDir))
+		files, scanStats, err := scanDirectory(scanDir, cache, newPhotoIgnore(scanDir))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", scanDir, err)
 			continue
@@ -2006,7 +1993,7 @@ func runArchive(args []string) {
 	fmt.Fprintf(os.Stderr, "Source: %s\n", absSourceFolder)
 
 	// Scan folder to show stats
-	folderFiles, _, err := scanDirectory(absSourceFolder, make(map[string]CacheEntry), false, nil)
+	folderFiles, _, err := scanDirectory(absSourceFolder, make(map[string]CacheEntry), nil)
 	if err == nil && len(folderFiles) > 0 {
 		totalSize := int64(0)
 		for _, f := range folderFiles {
@@ -2046,7 +2033,7 @@ func runArchive(args []string) {
 	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
 	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, sourceParent))
 
-	files, _, err := scanDirectory(sourceParent, make(map[string]CacheEntry), false, nil)
+	files, _, err := scanDirectory(sourceParent, make(map[string]CacheEntry), nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠  Warning: Could not rescan parent folder: %v\n", err)
 		fmt.Fprintf(os.Stderr, "   Stale entries may remain. Run 'photo-organizer cleanup-manifests' to clean them up.\n")
@@ -2091,7 +2078,7 @@ func runArchive(args []string) {
 	archiveParent := filepath.Dir(archiveFolder)
 	manifestFile = filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, archiveParent))
 
-	files, _, err = scanDirectory(archiveParent, make(map[string]CacheEntry), false, nil)
+	files, _, err = scanDirectory(archiveParent, make(map[string]CacheEntry), nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠  Warning: Could not scan archive folder: %v\n", err)
 	} else {
@@ -2111,65 +2098,6 @@ func runArchive(args []string) {
 
 	fmt.Fprintf(os.Stderr, "\n✓ Folder archived to %s\n", archiveFolder)
 	fmt.Fprintf(os.Stderr, "  Files are still tracked in manifest at new location\n")
-}
-
-func runDeleteFolder(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer delete-folder <folder-path>\n\n")
-		fmt.Fprintf(os.Stderr, "Delete folder and remove entries from manifest.\n")
-		os.Exit(1)
-	}
-
-	folderPath := args[0]
-
-	// Resolve to absolute path
-	absFolderPath, err := filepath.Abs(folderPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: invalid path %q\n", folderPath)
-		os.Exit(1)
-	}
-
-	// Check folder exists
-	info, err := os.Stat(absFolderPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: folder not found: %v\n", err)
-		os.Exit(1)
-	}
-	if !info.IsDir() {
-		fmt.Fprintf(os.Stderr, "Error: %q is not a directory\n", folderPath)
-		os.Exit(1)
-	}
-
-	// Confirm deletion
-	fmt.Fprintf(os.Stderr, "⚠  This will permanently delete: %s\n", absFolderPath)
-	fmt.Fprintf(os.Stderr, "Proceed? [y/N] ")
-	var answer string
-	fmt.Fscan(os.Stdin, &answer)
-	if answer != "y" && answer != "Y" {
-		fmt.Fprintf(os.Stderr, "Aborted.\n")
-		os.Exit(0)
-	}
-
-	// Delete the folder
-	fmt.Fprintf(os.Stderr, "Deleting folder...\n")
-	if err := os.RemoveAll(absFolderPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: failed to delete folder: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Update manifest - rescan parent with prune
-	machineName := resolveMachineID("")
-	parentFolder := filepath.Dir(absFolderPath)
-	manifestFile := manifestFilename(machineName, parentFolder)
-
-	fmt.Fprintf(os.Stderr, "Updating manifest (removing deleted files)...\n")
-	files, _, err := scanDirectory(parentFolder, make(map[string]CacheEntry), false, nil)
-	if err == nil {
-		updateManifest(parentFolder, files, manifestFile, machineName, true) // prune=true
-	}
-
-	fmt.Fprintf(os.Stderr, "\n✓ Folder deleted: %s\n", absFolderPath)
-	fmt.Fprintf(os.Stderr, "  Manifest entries removed\n")
 }
 
 // =============================================================================
@@ -2825,26 +2753,6 @@ func runRemoveManifest(args []string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "\n✅ Removal complete: deleted %d manifest(s)\n", deletedCount)
-}
-
-// =============================================================================
-// Cleanup Folder - DEPRECATED (use archive-status instead)
-// =============================================================================
-
-func runCleanupFolder(args []string) {
-	fmt.Fprintf(os.Stderr, "\n⚠️  cleanup-folder is DEPRECATED\n\n")
-	fmt.Fprintf(os.Stderr, "Reason: Avoid code that deletes folders (safety risk)\n\n")
-	fmt.Fprintf(os.Stderr, "New workflow:\n")
-	fmt.Fprintf(os.Stderr, "  1. photo-organizer archive-status <archive-dir>\n")
-	fmt.Fprintf(os.Stderr, "     → Shows archived folders and safety checklist\n\n")
-	fmt.Fprintf(os.Stderr, "  2. Manually verify remote backups (don't trust code)\n")
-	fmt.Fprintf(os.Stderr, "     → Run: photo-organizer verify <folder>\n\n")
-	fmt.Fprintf(os.Stderr, "  3. Wait 7-14 days for backup sync\n\n")
-	fmt.Fprintf(os.Stderr, "  4. Delete manually:\n")
-	fmt.Fprintf(os.Stderr, "     rm -rf /path/to/archived/folder\n\n")
-	fmt.Fprintf(os.Stderr, "  5. Clean up manifests:\n")
-	fmt.Fprintf(os.Stderr, "     photo-organizer prune-deleted-entries\n\n")
-	os.Exit(1)
 }
 
 // =============================================================================

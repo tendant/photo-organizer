@@ -291,7 +291,7 @@ func TestScanDirectorySpecialChars(t *testing.T) {
 	}
 
 	cache := make(map[string]CacheEntry)
-	entries, _, err := scanDirectory(dir, cache, false, newPhotoIgnore(dir))
+	entries, _, err := scanDirectory(dir, cache, newPhotoIgnore(dir))
 	if err != nil {
 		t.Fatalf("scanDirectory: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestScanDirectorySymlinkSkipped(t *testing.T) {
 	}
 
 	cache := make(map[string]CacheEntry)
-	entries, stats, err := scanDirectory(dir, cache, false, newPhotoIgnore(dir))
+	entries, stats, err := scanDirectory(dir, cache, newPhotoIgnore(dir))
 	if err != nil {
 		t.Fatalf("scanDirectory: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestScanDirectorySkipFolders(t *testing.T) {
 	}
 
 	cache := make(map[string]CacheEntry)
-	entries, _, err := scanDirectory(dir, cache, false, newPhotoIgnore(dir))
+	entries, _, err := scanDirectory(dir, cache, newPhotoIgnore(dir))
 	if err != nil {
 		t.Fatalf("scanDirectory: %v", err)
 	}
