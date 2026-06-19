@@ -4122,7 +4122,13 @@ func runVerify(args []string) {
 
 	var allMatchingRows []ManifestRowWithMeta
 
-	// Find all files under target folder
+	// Step 1: Find all files in target folder and collect their signatures (size + partial hash)
+	type FileSignature struct {
+		size        int64
+		partialHash string
+	}
+	targetFileSignatures := make(map[FileSignature]bool)
+
 	for _, manifestPath := range matches {
 		src, err := readManifest(manifestPath)
 		if err != nil {
@@ -4133,11 +4139,11 @@ func runVerify(args []string) {
 			filePath := filepath.Join(row.ScanPath, row.RelativePath)
 			// Check if file is under or equals our target folder
 			if filePath == folderAbsPath || strings.HasPrefix(filePath, folderAbsPath+"/") || strings.HasPrefix(filePath, folderAbsPath+string(filepath.Separator)) {
-				allMatchingRows = append(allMatchingRows, ManifestRowWithMeta{
-					row:      row,
-					machine:  src.MachineName,
-					fullPath: filePath,
-				})
+				sig := FileSignature{
+					size:        row.SizeBytes,
+					partialHash: row.PartialHash,
+				}
+				targetFileSignatures[sig] = true
 				foundInManifest = true
 			}
 		}
@@ -4147,6 +4153,28 @@ func runVerify(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: folder not found in any manifest\n")
 		fmt.Fprintf(os.Stderr, "Run: photo-organizer scan %s\n", folderPath)
 		os.Exit(1)
+	}
+
+	// Step 2: Find all files with matching signatures (potential duplicates)
+	for _, manifestPath := range matches {
+		src, err := readManifest(manifestPath)
+		if err != nil {
+			continue
+		}
+
+		for _, row := range src.Rows {
+			sig := FileSignature{
+				size:        row.SizeBytes,
+				partialHash: row.PartialHash,
+			}
+			if targetFileSignatures[sig] {
+				allMatchingRows = append(allMatchingRows, ManifestRowWithMeta{
+					row:      row,
+					machine:  src.MachineName,
+					fullPath: filepath.Join(row.ScanPath, row.RelativePath),
+				})
+			}
+		}
 	}
 
 	if len(allMatchingRows) > 0 {
