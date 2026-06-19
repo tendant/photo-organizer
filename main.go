@@ -3621,7 +3621,7 @@ type FileMeta struct {
 	ModTime time.Time
 }
 
-func runFindDuplicatesFromManifest(machineFilter string, summaryOnly bool, excludePattern string) {
+func runFindDuplicatesFromManifest(machineFilter, pathFilter string, summaryOnly bool, excludePattern string) {
 	// Load all manifests
 	manifestRoot := defaultManifestRoot()
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
@@ -3665,6 +3665,16 @@ func runFindDuplicatesFromManifest(machineFilter string, summaryOnly bool, exclu
 		for _, row := range src.Rows {
 			totalFiles++
 
+			// Construct full file path
+			filePath := filepath.Join(row.ScanPath, row.RelativePath)
+
+			// Skip based on path filter (if specified)
+			if pathFilter != "" {
+				if !strings.HasPrefix(filePath, pathFilter) {
+					continue
+				}
+			}
+
 			// Skip based on exclude pattern
 			if excludePattern != "" {
 				if matched, _ := filepath.Match(excludePattern, row.Filename); matched {
@@ -3679,9 +3689,6 @@ func runFindDuplicatesFromManifest(machineFilter string, summaryOnly bool, exclu
 			if hash == "" {
 				continue
 			}
-
-			// Construct full file path
-			filePath := filepath.Join(row.ScanPath, row.RelativePath)
 
 			// Use file's actual modification time (not scan time)
 			// Format: "2025-12-24 12:18:24"
@@ -3772,6 +3779,9 @@ func runFindDuplicates(args []string) {
 		if arg == "-m" && i+1 < len(args) {
 			processedArgs = append(processedArgs, "--machine", args[i+1])
 			i++
+		} else if arg == "-p" && i+1 < len(args) {
+			processedArgs = append(processedArgs, "--path", args[i+1])
+			i++
 		} else if arg == "-s" || arg == "--summary" {
 			processedArgs = append(processedArgs, "--summary")
 		} else if arg == "-x" && i+1 < len(args) {
@@ -3784,6 +3794,7 @@ func runFindDuplicates(args []string) {
 
 	fs := flag.NewFlagSet("find-duplicates", flag.ExitOnError)
 	machineFlag := fs.String("machine", "", "find duplicates in manifest from specific machine")
+	pathFlag := fs.String("path", "", "find duplicates only in specific folder")
 	summaryFlag := fs.Bool("summary", false, "show summary only, not individual files")
 	excludeFlag := fs.String("exclude", "", "exclude pattern (e.g., .DS_Store, *.tmp)")
 	fs.Usage = func() {
@@ -3792,16 +3803,18 @@ func runFindDuplicates(args []string) {
 		fmt.Fprintf(os.Stderr, "Does not modify or delete any files.\n\n")
 		fmt.Fprintf(os.Stderr, "Find all duplicates across manifests:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates\n\n")
-		fmt.Fprintf(os.Stderr, "Summary view (top duplicates):\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -s\n\n")
 		fmt.Fprintf(os.Stderr, "Find duplicates for specific machine:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -m ubuntu-max\n\n")
+		fmt.Fprintf(os.Stderr, "Find duplicates in specific folder:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -p /Users/lei/Photos/Originals\n\n")
+		fmt.Fprintf(os.Stderr, "Summary view (top duplicates):\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -s\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(processedArgs)
 
 	// Use manifest data only - find and report, never delete
-	runFindDuplicatesFromManifest(*machineFlag, *summaryFlag, *excludeFlag)
+	runFindDuplicatesFromManifest(*machineFlag, *pathFlag, *summaryFlag, *excludeFlag)
 }
 
 func runSearch(args []string) {
