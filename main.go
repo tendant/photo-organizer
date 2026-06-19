@@ -4023,10 +4023,9 @@ func runFindDuplicateFolders(args []string) {
 
 	for _, src := range sources {
 		for _, row := range src.Rows {
-			hash := row.FullHash
-			if hash == "" {
-				hash = row.PartialHash
-			}
+			// Use partial hash (always computed, fast) for grouping
+			// Full hash is optional and only needed for verification
+			hash := row.PartialHash
 			if hash == "" {
 				continue
 			}
