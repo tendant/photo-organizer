@@ -315,11 +315,47 @@ func analyzeDirectoryTypes(dir string) {
 	stats := make(map[string]*FileTypeStat)
 	var totalCount int
 	var totalBytes int64
+	var skippedSymlinks, skippedDotfiles, skippedJunk int
 
 	fmt.Fprintf(os.Stderr, "Analyzing file types...\n")
 
+	photoIgnore := newPhotoIgnore(dir)
+
 	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
+			return nil
+		}
+
+		// Skip directories
+		if info.IsDir() {
+			// Skip hidden directories
+			if path != dir && strings.HasPrefix(info.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Skip symlinks (same as scan)
+		if info.Mode()&os.ModeSymlink != 0 {
+			skippedSymlinks++
+			return nil
+		}
+
+		// Skip OS junk (same as scan)
+		if shouldSkipFile(path) {
+			skippedJunk++
+			return nil
+		}
+
+		// Skip dotfiles except .photoignore (same as scan)
+		if strings.HasPrefix(info.Name(), ".") && info.Name() != ".photoignore" {
+			skippedDotfiles++
+			return nil
+		}
+
+		// Apply .photoignore patterns (same as scan)
+		if photoIgnore.ShouldSkip(path) {
+			skippedDotfiles++
 			return nil
 		}
 
@@ -365,7 +401,12 @@ func analyzeDirectoryTypes(dir string) {
 	}
 	fmt.Printf("  %-10s %10d %12s\n", "TOTAL", totalCount, formatBytes(totalBytes))
 
-	fmt.Printf("\n✓ Ready to scan %d files (%s)\n\n", totalCount, formatBytes(totalBytes))
+	fmt.Printf("\n✓ Ready to scan %d files (%s)\n", totalCount, formatBytes(totalBytes))
+	if skippedSymlinks > 0 || skippedDotfiles > 0 || skippedJunk > 0 {
+		fmt.Printf("  (Excluded: %d symlinks, %d dotfiles, %d OS junk)\n\n", skippedSymlinks, skippedDotfiles, skippedJunk)
+	} else {
+		fmt.Printf("\n")
+	}
 }
 
 func formatBytes(b int64) string {
