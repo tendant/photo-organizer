@@ -2318,7 +2318,12 @@ func runPrune(args []string) {
 		os.Exit(1)
 	}
 
-	archivePath := filepath.Clean(args[0])
+	archivePath, err := filepath.Abs(filepath.Clean(args[0]))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Cannot resolve archive path: %s\n", args[0])
+		os.Exit(1)
+	}
+
 	info, err := os.Stat(archivePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Archive path not found: %s\n", archivePath)
