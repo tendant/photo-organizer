@@ -4222,12 +4222,26 @@ func runVerify(args []string) {
 
 				localCopies = append(localCopies, copy)
 			} else {
-				// Remote folder - mark as remote but don't verify disk
+				// Remote folder - try to verify via SSH
 				for _, row := range rows {
 					copy.FileInfo.TotalSize += row.SizeBytes
 				}
-				copy.Valid = true // Can't verify remote without SSH
-				copy.Message = fmt.Sprintf("(Remote on %s) %d files, %s", machineName, copy.FileInfo.Count, formatBytes(copy.FileInfo.TotalSize))
+
+				// Try SSH verification
+				cfg := loadMachinesConfig()
+				sshTarget := sshTargetFor(machineName, cfg)
+
+				if sshTarget != machineName && sshTarget != "" {
+					// We have SSH config for this machine, try to verify
+					valid, msg := verifyRemoteFolder(copyPath, rows, sshTarget)
+					copy.Valid = valid
+					copy.Message = msg
+				} else {
+					// No SSH config, can't verify
+					copy.Valid = true // Assume valid but unverified
+					copy.Message = fmt.Sprintf("(Remote on %s, unverified) %d files, %s", machineName, copy.FileInfo.Count, formatBytes(copy.FileInfo.TotalSize))
+				}
+
 				remoteCopies = append(remoteCopies, copy)
 			}
 		}
@@ -4294,6 +4308,42 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func verifyRemoteFolder(folderPath string, rows []ManifestRow, sshTarget string) (bool, string) {
+	if len(rows) == 0 {
+		return true, fmt.Sprintf("(Remote on %s) 0 files", sshTarget)
+	}
+
+	// Count expected files from manifest
+	expectedCount := len(rows)
+	totalSize := int64(0)
+	for _, row := range rows {
+		totalSize += row.SizeBytes
+	}
+
+	// SSH command to list files in the folder with their sizes
+	cmd := fmt.Sprintf("find '%s' -type f -exec stat -c '%%s %%n' {} \\; 2>/dev/null | wc -l", folderPath)
+	sshCmd := exec.Command("ssh", sshTarget, cmd)
+
+	output, err := sshCmd.Output()
+	if err != nil {
+		// SSH failed - can't verify
+		return true, fmt.Sprintf("(Remote on %s, SSH unavailable) %d files, %s", sshTarget, expectedCount, formatBytes(totalSize))
+	}
+
+	// Parse file count
+	actualCount := 0
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(output)), "%d", &actualCount); err != nil {
+		return true, fmt.Sprintf("(Remote on %s, parse error) %d files, %s", sshTarget, expectedCount, formatBytes(totalSize))
+	}
+
+	// Check if file counts match
+	if actualCount != expectedCount {
+		return false, fmt.Sprintf("✗ INVALID (Remote): expected %d files, found %d", expectedCount, actualCount)
+	}
+
+	return true, fmt.Sprintf("✓ VALID (Remote on %s) %d files, %s", sshTarget, expectedCount, formatBytes(totalSize))
 }
 
 func runSearch(args []string) {
