@@ -4060,7 +4060,20 @@ func runCollect(args []string) {
 		os.Exit(1)
 	}
 
+	// Get local machine ID to avoid collecting from ourselves
+	localMachineID := ""
+	machineIDPath := filepath.Join(manifestRoot, "machine-id")
+	if data, err := os.ReadFile(machineIDPath); err == nil {
+		localMachineID = strings.TrimSpace(string(data))
+	}
+
 	for _, machine := range fromMachines {
+		// Skip collecting from ourselves
+		if localMachineID != "" && machine == localMachineID {
+			fmt.Fprintf(os.Stderr, "⊘  Skipping %s (local machine, don't collect from self)\n", machine)
+			continue
+		}
+
 		target := sshTargetFor(machine, cfg)
 		if target == machine {
 			fmt.Fprintf(os.Stderr, "⚠  Machine %q not configured in machines.conf\n", machine)
