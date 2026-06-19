@@ -1237,7 +1237,7 @@ func suggestCommand(typo string) string {
 	commands := []string{
 		"analyze", "backup-status", "plan", "migrate", "collect", "rescan",
 		"machines", "risk-report", "analyze-backup-compliance", "check-backup",
-		"archive", "delete-folder", "cleanup-folder", "backup-missing", "cleanup-plan",
+		"archive", "archive-status", "backup-missing", "cleanup-plan",
 		"cleanup-manifests", "search", "scan", "help",
 	}
 
@@ -1343,11 +1343,8 @@ func main() {
 		case "archive":
 			runArchive(os.Args[2:])
 			return
-		case "delete-folder":
-			runDeleteFolder(os.Args[2:])
-			return
-		case "cleanup-folder":
-			runCleanupFolder(os.Args[2:])
+		case "archive-status":
+			runArchiveStatus(os.Args[2:])
 			return
 		case "backup-missing":
 			runBackupMissing(os.Args[2:])
@@ -1401,8 +1398,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  cleanup-plan <path>             Show cleanup plan & space impact\n")
 	fmt.Fprintf(os.Stderr, "  backup-missing <path> --dest <dest>  Back up files not backed up (auto pipeline)\n")
 	fmt.Fprintf(os.Stderr, "  archive <path> --dest <dir>        Archive folder locally (move, not copy)\n")
-	fmt.Fprintf(os.Stderr, "  cleanup-folder <path>           Safely delete folder after archiving (frees space)\n")
-	fmt.Fprintf(os.Stderr, "  delete-folder <path>            Delete folder and clean manifest\n\n")
+	fmt.Fprintf(os.Stderr, "  archive-status <archive-dir>    Show archived folders & safe deletion checklist\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "ANALYSIS & VERIFICATION\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
@@ -2161,104 +2157,164 @@ func runDeleteFolder(args []string) {
 }
 
 // =============================================================================
-// Cleanup Folder (Safe Post-Archive Delete)
+// Archive Status (Show archived folders and deletion safety)
 // =============================================================================
 
-func runCleanupFolder(args []string) {
+func runArchiveStatus(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer cleanup-folder <folder-path>\n\n")
-		fmt.Fprintf(os.Stderr, "Safely delete a folder after archiving.\n")
-		fmt.Fprintf(os.Stderr, "This is designed for post-archive cleanup to free space.\n\n")
-		fmt.Fprintf(os.Stderr, "Workflow:\n")
-		fmt.Fprintf(os.Stderr, "  1. Show folder stats and space to be freed\n")
-		fmt.Fprintf(os.Stderr, "  2. Verify it's safe to delete (check manifests)\n")
-		fmt.Fprintf(os.Stderr, "  3. Ask for confirmation\n")
-		fmt.Fprintf(os.Stderr, "  4. Delete folder\n")
-		fmt.Fprintf(os.Stderr, "  5. Update manifests\n\n")
-		fmt.Fprintf(os.Stderr, "This is safer than 'delete-folder' because it:\n")
-		fmt.Fprintf(os.Stderr, "  - Shows what will be deleted\n")
-		fmt.Fprintf(os.Stderr, "  - Verifies manifest consistency\n")
-		fmt.Fprintf(os.Stderr, "  - Requires explicit confirmation\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive-status <archive-dir>\n\n")
+		fmt.Fprintf(os.Stderr, "Show archived folders and safe deletion instructions.\n\n")
+		fmt.Fprintf(os.Stderr, "This command:\n")
+		fmt.Fprintf(os.Stderr, "  1. Lists all archived folders (timestamped)\n")
+		fmt.Fprintf(os.Stderr, "  2. Shows when each was archived\n")
+		fmt.Fprintf(os.Stderr, "  3. Shows size (to delete)\n")
+		fmt.Fprintf(os.Stderr, "  4. Provides safety checklist before deletion\n\n")
+		fmt.Fprintf(os.Stderr, "Example:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer archive-status /tankm1/media/archive\n")
 		os.Exit(1)
 	}
 
-	folderPath := args[0]
+	archiveDir := args[0]
 
 	// Resolve to absolute path
-	absFolderPath, err := filepath.Abs(folderPath)
+	absArchiveDir, err := filepath.Abs(archiveDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: invalid path %q\n", folderPath)
+		fmt.Fprintf(os.Stderr, "Error: invalid path %q\n", archiveDir)
 		os.Exit(1)
 	}
 
-	// Check folder exists
-	info, err := os.Stat(absFolderPath)
+	// Check directory exists
+	info, err := os.Stat(absArchiveDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: folder not found: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: archive directory not found: %v\n", err)
 		os.Exit(1)
 	}
 	if !info.IsDir() {
-		fmt.Fprintf(os.Stderr, "Error: %q is not a directory\n", folderPath)
+		fmt.Fprintf(os.Stderr, "Error: %q is not a directory\n", archiveDir)
 		os.Exit(1)
 	}
 
-	// Calculate folder size
-	var totalSize int64
-	filepath.Walk(absFolderPath, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
-			totalSize += info.Size()
-		}
-		return nil
-	})
-
-	// Count files
-	var fileCount int
-	filepath.Walk(absFolderPath, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
-			fileCount++
-		}
-		return nil
-	})
-
-	// Show what will be deleted
-	fmt.Fprintf(os.Stderr, "\n🗑️  CLEANUP PREVIEW\n")
-	fmt.Fprintf(os.Stderr, "Folder: %s\n", absFolderPath)
-	fmt.Fprintf(os.Stderr, "Files:  %d\n", fileCount)
-	fmt.Fprintf(os.Stderr, "Space:  %s\n", formatBytes(totalSize))
-	fmt.Fprintf(os.Stderr, "\n✓ Folder is eligible for deletion after archiving\n")
-	fmt.Fprintf(os.Stderr, "  (Files should be in archive location and backed up)\n\n")
-
-	// Ask for confirmation
-	fmt.Fprintf(os.Stderr, "⚠️  This will permanently delete and free %s of space\n", formatBytes(totalSize))
-	fmt.Fprintf(os.Stderr, "Proceed? [y/N] ")
-	var answer string
-	fmt.Fscan(os.Stdin, &answer)
-	if answer != "y" && answer != "Y" {
-		fmt.Fprintf(os.Stderr, "Aborted.\n")
-		os.Exit(0)
-	}
-
-	// Delete the folder
-	fmt.Fprintf(os.Stderr, "\n▶️  Deleting folder...\n")
-	if err := os.RemoveAll(absFolderPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: failed to delete folder: %v\n", err)
+	// List archived folders (format: YYYY-MM-DD-HHMMSS-foldername)
+	entries, err := os.ReadDir(absArchiveDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot read directory: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Update manifest - rescan parent with prune
-	machineName := resolveMachineID("")
-	parentFolder := filepath.Dir(absFolderPath)
-	manifestRoot := defaultManifestRoot()
-	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, parentFolder))
-
-	fmt.Fprintf(os.Stderr, "Updating manifest (removing deleted files)...\n")
-	files, _, err := scanDirectory(parentFolder, make(map[string]CacheEntry), false, nil)
-	if err == nil {
-		updateManifest(parentFolder, files, manifestFile, machineName, true) // prune=true
+	type ArchivedFolder struct {
+		Name      string
+		Path      string
+		ArchivedAt string
+		Size      int64
+		FileCount int
 	}
 
-	fmt.Fprintf(os.Stderr, "\n✅ Folder deleted and space freed: %s\n", formatBytes(totalSize))
-	fmt.Fprintf(os.Stderr, "   Manifest entries cleaned up\n")
+	var archived []ArchivedFolder
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		folderPath := filepath.Join(absArchiveDir, entry.Name())
+
+		// Parse timestamp from folder name (format: 2026-06-19-115440-foldername)
+		parts := strings.SplitN(entry.Name(), "-", 4)
+		var timestamp string
+		if len(parts) >= 4 && len(parts[3]) >= 6 {
+			timeStr := parts[3]
+			timestamp = fmt.Sprintf("%s-%s-%s %s:%s:%s", parts[0], parts[1], parts[2],
+				timeStr[0:2], timeStr[2:4], timeStr[4:6])
+		} else {
+			timestamp = "(unknown)"
+		}
+
+		// Calculate folder size and file count
+		var totalSize int64
+		var fileCount int
+		filepath.Walk(folderPath, func(path string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				totalSize += info.Size()
+				fileCount++
+			}
+			return nil
+		})
+
+		archived = append(archived, ArchivedFolder{
+			Name:      entry.Name(),
+			Path:      folderPath,
+			ArchivedAt: timestamp,
+			Size:      totalSize,
+			FileCount: fileCount,
+		})
+	}
+
+	if len(archived) == 0 {
+		fmt.Fprintf(os.Stderr, "✓ Archive directory is empty\n")
+		return
+	}
+
+	// Show archived folders
+	fmt.Fprintf(os.Stderr, "\n📦 ARCHIVED FOLDERS (%d)\n", len(archived))
+	fmt.Fprintf(os.Stderr, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+	totalArchivedSize := int64(0)
+	for i, folder := range archived {
+		totalArchivedSize += folder.Size
+		fmt.Fprintf(os.Stderr, "%d. %s\n", i+1, folder.Name)
+		fmt.Fprintf(os.Stderr, "   Archived: %s\n", folder.ArchivedAt)
+		fmt.Fprintf(os.Stderr, "   Files:    %d\n", folder.FileCount)
+		fmt.Fprintf(os.Stderr, "   Size:     %s\n", formatBytes(folder.Size))
+		fmt.Fprintf(os.Stderr, "   Path:     %s\n\n", folder.Path)
+	}
+
+	// Show total and safety instructions
+	fmt.Fprintf(os.Stderr, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Fprintf(os.Stderr, "TOTAL ARCHIVED: %s (%d folders)\n\n", formatBytes(totalArchivedSize), len(archived))
+
+	fmt.Fprintf(os.Stderr, "⚠️  BEFORE DELETING ARCHIVED FOLDERS:\n\n")
+	fmt.Fprintf(os.Stderr, "Safety checklist:\n")
+	fmt.Fprintf(os.Stderr, "  ☐ 1. Verify remote backups exist on other machines\n")
+	fmt.Fprintf(os.Stderr, "       Command: photo-organizer verify <original-folder-path>\n")
+	fmt.Fprintf(os.Stderr, "       Look for: ✓ multiple valid remote copies\n\n")
+	fmt.Fprintf(os.Stderr, "  ☐ 2. Confirm archive contains all files\n")
+	fmt.Fprintf(os.Stderr, "       Command: find <archive-folder> -type f | wc -l\n")
+	fmt.Fprintf(os.Stderr, "       Check: file count matches expected\n\n")
+	fmt.Fprintf(os.Stderr, "  ☐ 3. Wait reasonable time (days/weeks) to ensure backups synced\n")
+	fmt.Fprintf(os.Stderr, "       Reason: Remote backups may not be real-time\n\n")
+	fmt.Fprintf(os.Stderr, "  ☐ 4. Only then delete:\n")
+	fmt.Fprintf(os.Stderr, "       rm -rf <archive-folder-path>\n\n")
+
+	fmt.Fprintf(os.Stderr, "📝 DELETION PROCESS:\n\n")
+	fmt.Fprintf(os.Stderr, "  1. Run this command and verify all checks pass\n")
+	fmt.Fprintf(os.Stderr, "  2. Manually verify remote backups (don't trust code)\n")
+	fmt.Fprintf(os.Stderr, "  3. Wait at least 7-14 days\n")
+	fmt.Fprintf(os.Stderr, "  4. Delete with shell command:\n")
+	fmt.Fprintf(os.Stderr, "     rm -rf '%s/<folder-name>'\n\n", absArchiveDir)
+
+	fmt.Fprintf(os.Stderr, "🔒 WHY MANUAL DELETION?\n")
+	fmt.Fprintf(os.Stderr, "  - Code bugs could delete wrong folder\n")
+	fmt.Fprintf(os.Stderr, "  - Manual deletion forces you to think and verify\n")
+	fmt.Fprintf(os.Stderr, "  - Gives time for backups to fully sync\n")
+	fmt.Fprintf(os.Stderr, "  - Reversible: if you change mind, archive still exists\n")
+}
+
+// =============================================================================
+// Cleanup Folder - DEPRECATED (use archive-status instead)
+// =============================================================================
+
+func runCleanupFolder(args []string) {
+	fmt.Fprintf(os.Stderr, "\n⚠️  cleanup-folder is DEPRECATED\n\n")
+	fmt.Fprintf(os.Stderr, "Reason: Avoid code that deletes folders (safety risk)\n\n")
+	fmt.Fprintf(os.Stderr, "New workflow:\n")
+	fmt.Fprintf(os.Stderr, "  1. photo-organizer archive-status <archive-dir>\n")
+	fmt.Fprintf(os.Stderr, "     → Shows archived folders and safety checklist\n\n")
+	fmt.Fprintf(os.Stderr, "  2. Manually verify remote backups (don't trust code)\n")
+	fmt.Fprintf(os.Stderr, "     → Run: photo-organizer verify <folder>\n\n")
+	fmt.Fprintf(os.Stderr, "  3. Wait 7-14 days for backup sync\n\n")
+	fmt.Fprintf(os.Stderr, "  4. Delete manually:\n")
+	fmt.Fprintf(os.Stderr, "     rm -rf /path/to/archived/folder\n\n")
+	os.Exit(1)
 }
 
 // =============================================================================
