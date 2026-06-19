@@ -151,8 +151,9 @@ func readManifest(csvPath string) (ManifestSource, error) {
 		if scanDate != "" {
 			if scanTime, err := time.Parse("2006-01-02", scanDate[:10]); err == nil {
 				if scanTime.After(time.Now().AddDate(0, 0, 1)) {
-					validationIssues = append(validationIssues, fmt.Sprintf("row %d: future scan_date %s", rowIdx+2, scanDate))
-					// Don't skip, just warn
+					validationIssues = append(validationIssues, fmt.Sprintf("row %d: future scan_date %s (skipped - breaks age calculation)", rowIdx+2, scanDate))
+					skippedCount++
+					continue
 				}
 			}
 		}
