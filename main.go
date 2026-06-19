@@ -1281,6 +1281,9 @@ func main() {
 		case "find-duplicates", "dups", "dup":
 			runFindDuplicates(os.Args[2:])
 			return
+		case "dup-folders":
+			runFindDuplicateFolders(os.Args[2:])
+			return
 		case "rescan":
 			runRescan(os.Args[2:])
 			return
@@ -3835,6 +3838,182 @@ func runFindDuplicates(args []string) {
 
 	// Use manifest data only - find and report, never delete
 	runFindDuplicatesFromManifest(*machineFlag, *pathFlag, *summaryFlag, *excludeFlag)
+}
+
+func runFindDuplicateFolders(args []string) {
+	// Convert short flags to long form
+	var processedArgs []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-m" && i+1 < len(args) {
+			processedArgs = append(processedArgs, "--machine", args[i+1])
+			i++
+		} else if arg == "-s" || arg == "--summary" {
+			processedArgs = append(processedArgs, "--summary")
+		} else {
+			processedArgs = append(processedArgs, arg)
+		}
+	}
+
+	fs := flag.NewFlagSet("dup-folders", flag.ExitOnError)
+	machineFlag := fs.String("machine", "", "find duplicates in manifest from specific machine")
+	summaryFlag := fs.Bool("summary", false, "show summary only")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer dup-folders [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Find duplicate folders (entire directories with identical contents).\n")
+		fmt.Fprintf(os.Stderr, "Much simpler than individual file duplicates.\n\n")
+		fmt.Fprintf(os.Stderr, "Find all duplicate folders:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders\n\n")
+		fmt.Fprintf(os.Stderr, "Find duplicate folders on specific machine:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders -m ubuntu-max\n\n")
+		fmt.Fprintf(os.Stderr, "Summary view:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders -s\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(processedArgs)
+
+	// Load all manifests
+	manifestRoot := defaultManifestRoot()
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found\n")
+		return
+	}
+
+	var sources []ManifestSource
+	for _, path := range matches {
+		src, err := readManifest(path)
+		if err != nil || len(src.Rows) == 0 {
+			continue
+		}
+		if *machineFlag != "" && src.MachineName != *machineFlag {
+			continue
+		}
+		sources = append(sources, src)
+	}
+
+	if len(sources) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found\n")
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "Using manifest data from %d manifest(s)...\n\n", len(sources))
+
+	// Group files by folder, calculate folder hash
+	type FolderInfo struct {
+		Path       string
+		FileCount  int
+		TotalSize  int64
+		FolderHash string
+	}
+
+	folderHashes := make(map[string]*FolderInfo) // folder path -> info
+	filesByFolder := make(map[string][]string)   // folder path -> list of file hashes
+
+	for _, src := range sources {
+		for _, row := range src.Rows {
+			hash := row.FullHash
+			if hash == "" {
+				hash = row.PartialHash
+			}
+			if hash == "" {
+				continue
+			}
+
+			folderPath := filepath.Join(row.ScanPath, filepath.Dir(row.RelativePath))
+
+			if _, exists := folderHashes[folderPath]; !exists {
+				folderHashes[folderPath] = &FolderInfo{
+					Path: folderPath,
+				}
+			}
+
+			folderHashes[folderPath].FileCount++
+			folderHashes[folderPath].TotalSize += row.SizeBytes
+			filesByFolder[folderPath] = append(filesByFolder[folderPath], hash)
+		}
+	}
+
+	// Calculate folder hash from sorted file hashes
+	for folderPath, hashes := range filesByFolder {
+		// Sort hashes for deterministic folder hash
+		sort.Strings(hashes)
+		// Create folder hash from all file hashes
+		h := md5.New()
+		for _, hash := range hashes {
+			h.Write([]byte(hash))
+		}
+		folderHashes[folderPath].FolderHash = fmt.Sprintf("%x", h.Sum(nil))
+	}
+
+	// Find duplicate folders (same folder hash)
+	type DupFolderGroup struct {
+		FolderHash string
+		Folders    []*FolderInfo
+		TotalWasted int64
+	}
+
+	dupMap := make(map[string][]*FolderInfo)
+	for _, folderInfo := range folderHashes {
+		dupMap[folderInfo.FolderHash] = append(dupMap[folderInfo.FolderHash], folderInfo)
+	}
+
+	var duplicates []DupFolderGroup
+	for hash, folders := range dupMap {
+		if len(folders) > 1 {
+			group := DupFolderGroup{
+				FolderHash:  hash,
+				Folders:     folders,
+				TotalWasted: folders[0].TotalSize * int64(len(folders)-1),
+			}
+			duplicates = append(duplicates, group)
+		}
+	}
+
+	if len(duplicates) == 0 {
+		fmt.Printf("✓ No duplicate folders found\n")
+		return
+	}
+
+	// Sort by wasted space
+	sort.Slice(duplicates, func(i, j int) bool {
+		return duplicates[i].TotalWasted > duplicates[j].TotalWasted
+	})
+
+	if *summaryFlag {
+		totalWasted := int64(0)
+		for _, dup := range duplicates {
+			totalWasted += dup.TotalWasted
+		}
+		fmt.Printf("Found %d duplicate folders\n", len(duplicates))
+		fmt.Printf("Total wasted space: %s\n\n", formatBytes(totalWasted))
+		for i, dup := range duplicates {
+			fmt.Printf("  %d. %d copies of folder (%s each) → %s wasted\n",
+				i+1, len(dup.Folders), formatBytes(dup.Folders[0].TotalSize),
+				formatBytes(dup.TotalWasted))
+		}
+		return
+	}
+
+	// Full output
+	totalWasted := int64(0)
+	for _, dup := range duplicates {
+		totalWasted += dup.TotalWasted
+	}
+	fmt.Printf("Found %d duplicate folders\n", len(duplicates))
+	fmt.Printf("Total wasted space: %s\n\n", formatBytes(totalWasted))
+
+	for i, dup := range duplicates {
+		fmt.Printf("Duplicate Folder Group %d: %d copies (%s each, %s wasted)\n",
+			i+1, len(dup.Folders), formatBytes(dup.Folders[0].TotalSize),
+			formatBytes(dup.TotalWasted))
+		for _, folder := range dup.Folders {
+			fmt.Printf("  - %s (%d files)\n", folder.Path, folder.FileCount)
+		}
+		fmt.Printf("\n")
+	}
 }
 
 func runSearch(args []string) {
