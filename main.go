@@ -1960,8 +1960,37 @@ func runArchive(args []string) {
 	timestamp := time.Now().Format("2006-01-02-150405")
 	archiveFolder := filepath.Join(absArchiveDir, fmt.Sprintf("%s-%s", timestamp, folderName))
 
+	// === PREVIEW: Show what will happen ===
+	fmt.Fprintf(os.Stderr, "\n📋 ARCHIVE PREVIEW\n")
+	fmt.Fprintf(os.Stderr, "Source: %s\n", absSourceFolder)
+
+	// Scan folder to show stats
+	folderFiles, _, err := scanDirectory(absSourceFolder, make(map[string]CacheEntry), false, nil)
+	if err == nil && len(folderFiles) > 0 {
+		totalSize := int64(0)
+		for _, f := range folderFiles {
+			totalSize += f.Size
+		}
+		fmt.Fprintf(os.Stderr, "Files: %d, Size: %s\n", len(folderFiles), formatBytes(totalSize))
+	}
+
+	fmt.Fprintf(os.Stderr, "Archive to: %s\n", archiveFolder)
+	fmt.Fprintf(os.Stderr, "\n⚠️  SAFETY CHECK - Before archiving, verify:\n")
+	fmt.Fprintf(os.Stderr, "  1. You have 2+ valid backup copies (remote machines)\n")
+	fmt.Fprintf(os.Stderr, "  2. Run: photo-organizer verify %s\n", absSourceFolder)
+	fmt.Fprintf(os.Stderr, "  3. Confirm status shows '✓ SAFE TO ARCHIVE'\n")
+	fmt.Fprintf(os.Stderr, "\nProceed? [y/N] ")
+
+	// Wait for user confirmation
+	var response string
+	fmt.Scanln(&response)
+	if response != "y" && response != "Y" {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
+		os.Exit(0)
+	}
+
 	// Move the folder
-	fmt.Fprintf(os.Stderr, "Moving %s → %s\n", absSourceFolder, archiveFolder)
+	fmt.Fprintf(os.Stderr, "\n▶️  Moving %s → %s\n", absSourceFolder, archiveFolder)
 	if err := os.Rename(absSourceFolder, archiveFolder); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to move folder: %v\n", err)
 		os.Exit(1)
