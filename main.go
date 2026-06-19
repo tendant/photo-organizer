@@ -2329,11 +2329,12 @@ func runPrune(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "\n🧹 SCANNING ARCHIVE FOR DELETED ENTRIES\n")
+	fmt.Fprintf(os.Stderr, "\n🧹 SCANNING MANIFESTS FOR ARCHIVED FOLDER\n")
 	fmt.Fprintf(os.Stderr, "Archive: %s\n\n", archivePath)
 
-	// Find manifests in the archive location
-	manifestDir := filepath.Join(archivePath, "_Manifest")
+	// Find all manifests in ~/manifests/_Manifest/
+	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
 
 	if len(matches) == 0 {
@@ -2341,7 +2342,7 @@ func runPrune(args []string) {
 		return
 	}
 
-	// First pass: collect what would be deleted
+	// First pass: collect entries from manifests that reference this archive
 	type DeletionInfo struct {
 		manifestPath string
 		count        int
@@ -2384,6 +2385,11 @@ func runPrune(args []string) {
 				}
 			}
 
+			// Only process entries where scan_path matches the archive folder
+			if !strings.HasPrefix(filepath.Clean(scanPath), archivePath) {
+				continue
+			}
+
 			fullPath := filepath.Join(scanPath, relativePath)
 			if _, err := os.Stat(fullPath); err != nil {
 				deletedEntries = append(deletedEntries, relativePath)
@@ -2422,7 +2428,7 @@ func runPrune(args []string) {
 	}
 
 	// Ask for confirmation
-	fmt.Fprintf(os.Stderr, "\n⚠️  This will permanently update manifests in this archive.\n")
+	fmt.Fprintf(os.Stderr, "\n⚠️  This will permanently remove entries from system manifests.\n")
 	fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
 
 	var response string
@@ -2473,6 +2479,12 @@ func runPrune(args []string) {
 				}
 			}
 
+			// Only process entries matching the archive folder
+			if !strings.HasPrefix(filepath.Clean(scanPath), archivePath) {
+				validRows = append(validRows, record)
+				continue
+			}
+
 			fullPath := filepath.Join(scanPath, relativePath)
 			if _, err := os.Stat(fullPath); err == nil {
 				validRows = append(validRows, record)
@@ -2499,7 +2511,7 @@ func runPrune(args []string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "\n✅ Pruning complete: removed %d deleted entries\n", totalPruned)
-	fmt.Fprintf(os.Stderr, "   Archive manifests are now in sync with disk\n")
+	fmt.Fprintf(os.Stderr, "   Manifests are now in sync with archive\n")
 }
 
 // =============================================================================
