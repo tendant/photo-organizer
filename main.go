@@ -1635,12 +1635,15 @@ func runScan(args []string) {
 				cache = make(map[string]CacheEntry)
 			}
 			photoIgnore := newPhotoIgnore(qualifyingAbsDir)
+			fmt.Fprintf(os.Stderr, "Scanning directory tree...\n")
 			files, scanStats, err := scanDirectory(qualifyingAbsDir, cache, *fullHashFlag, photoIgnore)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", scored.Path, err)
 				continue
 			}
 
+			fmt.Fprintf(os.Stderr, "✓ Scan complete: %d files found\n", len(files))
+			fmt.Fprintf(os.Stderr, "Writing manifest file...\n")
 			manifestStats, err := updateManifest(qualifyingAbsDir, files, manifestFile, machineName, *pruneFlag)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error writing manifest: %v\n", err)
@@ -1669,12 +1672,15 @@ func runScan(args []string) {
 			cache = make(map[string]CacheEntry) // discard cache — force full recompute
 		}
 		photoIgnore := newPhotoIgnore(absScanDir)
+		fmt.Fprintf(os.Stderr, "\nScanning directory tree...\n")
 		files, scanStats, err := scanDirectory(absScanDir, cache, *fullHashFlag, photoIgnore)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
 
+		fmt.Fprintf(os.Stderr, "\n✓ Scan complete: %d files found\n", len(files))
+		fmt.Fprintf(os.Stderr, "Writing manifest file...\n")
 		manifestStats, err := updateManifest(absScanDir, files, manifestFile, machineName, *pruneFlag)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
