@@ -442,3 +442,293 @@ func TestManifestFilenameSanitization(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// PURE HELPERS TEST SUITE (Phase 1 Refactoring)
+// =============================================================================
+
+// =============================================================================
+// extractManifestFields
+// =============================================================================
+
+func TestExtractManifestFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		record    []string
+		headers   map[string]int
+		fields    []string
+		expected  map[string]string
+	}{
+		{
+			name:     "basic extraction",
+			record:   []string{"a", "b", "c", "d", "/path", "f", "rel/path"},
+			headers:  map[string]int{"scan_path": 4, "relative_path": 6},
+			fields:   []string{"scan_path", "relative_path"},
+			expected: map[string]string{"scan_path": "/path", "relative_path": "rel/path"},
+		},
+		{
+			name:     "missing field",
+			record:   []string{"a", "b", "c"},
+			headers:  map[string]int{"scan_path": 0, "relative_path": 1, "missing": 10},
+			fields:   []string{"scan_path", "relative_path", "missing"},
+			expected: map[string]string{"scan_path": "a", "relative_path": "b", "missing": ""},
+		},
+		{
+			name:     "out of bounds index",
+			record:   []string{"a", "b"},
+			headers:  map[string]int{"scan_path": 0, "out_of_bounds": 5},
+			fields:   []string{"scan_path", "out_of_bounds"},
+			expected: map[string]string{"scan_path": "a", "out_of_bounds": ""},
+		},
+		{
+			name:     "empty record",
+			record:   []string{},
+			headers:  map[string]int{"scan_path": 0},
+			fields:   []string{"scan_path"},
+			expected: map[string]string{"scan_path": ""},
+		},
+		{
+			name:     "special characters",
+			record:   []string{"path/with spaces", "photo's.jpg", "日本語.jpg"},
+			headers:  map[string]int{"scan_path": 0, "relative_path": 1, "name": 2},
+			fields:   []string{"scan_path", "relative_path", "name"},
+			expected: map[string]string{
+				"scan_path":      "path/with spaces",
+				"relative_path":  "photo's.jpg",
+				"name":           "日本語.jpg",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractManifestFields(tt.record, tt.headers, tt.fields...)
+			for field, expected := range tt.expected {
+				if result[field] != expected {
+					t.Errorf("field %q: got %q, want %q", field, result[field], expected)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildHeaderIndex(t *testing.T) {
+	header := []string{"file_modified", "file_size_bytes", "partial_hash", "scan_path", "machine_name"}
+	result := buildHeaderIndex(header)
+
+	tests := []struct {
+		field    string
+		expected int
+	}{
+		{"file_modified", 0},
+		{"partial_hash", 2},
+		{"scan_path", 3},
+		{"machine_name", 4},
+	}
+
+	for _, tt := range tests {
+		if idx, ok := result[tt.field]; !ok || idx != tt.expected {
+			t.Errorf("header %q: got idx %d (ok=%v), want %d", tt.field, idx, ok, tt.expected)
+		}
+	}
+
+	// Field not in header should not exist
+	if _, ok := result["nonexistent"]; ok {
+		t.Error("nonexistent field should not be in result")
+	}
+}
+
+// =============================================================================
+// pathMatches
+// =============================================================================
+
+func TestPathMatches(t *testing.T) {
+	tests := []struct {
+		name       string
+		scanPath   string
+		targetPath string
+		want       bool
+	}{
+		// Exact match
+		{"exact match", "/data/photos", "/data/photos", true},
+		{"exact match with trailing slash", "/data/photos/", "/data/photos", true},
+		{"exact match normalized", "/data/photos", "/data/photos/", true},
+
+		// Child paths
+		{"direct child", "/data/photos/2023", "/data/photos", true},
+		{"nested child", "/data/photos/2023/june/vacation.jpg", "/data/photos", true},
+		{"deep nesting", "/data/photos/a/b/c/d/e/f", "/data/photos", true},
+
+		// Non-matching paths
+		{"different root", "/data/other", "/data/photos", false},
+		{"similar name prefix but different", "/data/photos2", "/data/photos", false},
+		{"similar name embedded", "/var/data/photos_backup", "/data/photos", false},
+
+		// Edge cases
+		{"reverse (target under scan)", "/data/photos", "/data/photos/2023", false},
+		{"empty both", "", "", true},
+		{"empty target", "/data/photos", "", false},
+		{"empty scan", "", "/data/photos", false},
+
+		// Symlinks and relative paths (both normalized by filepath.Clean)
+		{"with dot", "/data/photos/./2023", "/data/photos", true},
+		{"with double dot parent", "/data/photos/2023/../2024", "/data/photos", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pathMatches(tt.scanPath, tt.targetPath)
+			if got != tt.want {
+				t.Errorf("pathMatches(%q, %q) = %v, want %v", tt.scanPath, tt.targetPath, got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// calculateFolderMetrics
+// =============================================================================
+
+func TestCalculateFolderMetrics(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create test files
+	files := []struct {
+		name string
+		size int
+	}{
+		{"file1.jpg", 1000},
+		{"file2.jpg", 2000},
+		{"file3.jpg", 3000},
+	}
+
+	for _, f := range files {
+		data := make([]byte, f.size)
+		if err := os.WriteFile(filepath.Join(dir, f.name), data, 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+	}
+
+	// Create a subdirectory with files
+	subdir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "file4.jpg"), make([]byte, 4000), 0o644); err != nil {
+		t.Fatalf("write subdir file: %v", err)
+	}
+
+	metrics := calculateFolderMetrics(dir)
+
+	expectedSize := int64(1000 + 2000 + 3000 + 4000)
+	expectedCount := 4
+
+	if metrics.TotalSize != expectedSize {
+		t.Errorf("TotalSize: got %d, want %d", metrics.TotalSize, expectedSize)
+	}
+	if metrics.FileCount != expectedCount {
+		t.Errorf("FileCount: got %d, want %d", metrics.FileCount, expectedCount)
+	}
+	if metrics.Error != nil {
+		t.Errorf("Error: got %v, want nil", metrics.Error)
+	}
+}
+
+func TestCalculateFolderMetricsEmpty(t *testing.T) {
+	dir := t.TempDir()
+
+	metrics := calculateFolderMetrics(dir)
+
+	if metrics.TotalSize != 0 {
+		t.Errorf("TotalSize: got %d, want 0", metrics.TotalSize)
+	}
+	if metrics.FileCount != 0 {
+		t.Errorf("FileCount: got %d, want 0", metrics.FileCount)
+	}
+	if metrics.Error != nil {
+		t.Errorf("Error: got %v, want nil", metrics.Error)
+	}
+}
+
+func TestCalculateFolderMetricsNonexistent(t *testing.T) {
+	nonexistent := "/tmp/this_path_should_not_exist_" + time.Now().Format("20060102150405")
+
+	metrics := calculateFolderMetrics(nonexistent)
+
+	// For nonexistent paths, Walk returns nil (callback receives error but returns nil to continue).
+	// The function should return 0 values.
+	if metrics.TotalSize != 0 {
+		t.Errorf("TotalSize: got %d, want 0", metrics.TotalSize)
+	}
+	if metrics.FileCount != 0 {
+		t.Errorf("FileCount: got %d, want 0", metrics.FileCount)
+	}
+}
+
+// =============================================================================
+// parseArchiveTimestamp
+// =============================================================================
+
+func TestParseArchiveTimestamp(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+		want    string
+	}{
+		{
+			"valid: YYYY-MM-DD-HHMMSSname",
+			"2026-06-19-060012DJI_001",
+			false,
+			"2026-06-19 06:00:12",
+		},
+		{
+			"valid: YYYY-MM-DD-HHMMSS-name",
+			"2026-06-19-235959-Camera-Roll",
+			false,
+			"2026-06-19 23:59:59",
+		},
+		{
+			"valid: YYYY-MM-DD-HHMMSS-complex-name",
+			"2026-06-19-120000-DJI_20230704_001_backup",
+			false,
+			"2026-06-19 12:00:00",
+		},
+		{
+			"invalid: too few parts",
+			"2026-06-19",
+			true,
+			"",
+		},
+		{
+			"invalid: only 3 dashes",
+			"2026-06-19-DJI",
+			true,
+			"",
+		},
+		{
+			"invalid: time too short",
+			"2026-06-19-12345",
+			true,
+			"",
+		},
+		{
+			"invalid: no date structure",
+			"just-a-name",
+			true,
+			"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseArchiveTimestamp(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("error: got %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

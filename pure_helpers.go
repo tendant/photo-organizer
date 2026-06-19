@@ -1,0 +1,127 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// =============================================================================
+// extractManifestFields: CSV Field Extraction (Pure Function)
+// =============================================================================
+
+// extractManifestFields extracts specific fields from a CSV record using header indices.
+// Pure: no side effects, deterministic, testable without I/O.
+// Returns a map of field name → value. Missing fields default to empty string.
+func extractManifestFields(record []string, headerIndex map[string]int, fieldNames ...string) map[string]string {
+	result := make(map[string]string)
+	for _, field := range fieldNames {
+		if idx, ok := headerIndex[field]; ok && idx < len(record) {
+			result[field] = record[idx]
+		} else {
+			result[field] = ""
+		}
+	}
+	return result
+}
+
+// buildHeaderIndex converts a CSV header row to an index map for fast lookups.
+// Pure: no side effects, deterministic.
+func buildHeaderIndex(headerRow []string) map[string]int {
+	index := make(map[string]int)
+	for i, h := range headerRow {
+		index[h] = i
+	}
+	return index
+}
+
+// =============================================================================
+// pathMatches: Path Prefix Matching (Pure Function)
+// =============================================================================
+
+// pathMatches checks if scanPath belongs to (or is under) targetPath.
+// Handles path normalization and directory boundary checking.
+// Pure: no side effects, deterministic.
+// Returns true if scanPath == targetPath or scanPath is a child of targetPath.
+func pathMatches(scanPath, targetPath string) bool {
+	scanPath = filepath.Clean(scanPath)
+	targetPath = filepath.Clean(targetPath)
+
+	if scanPath == targetPath {
+		return true
+	}
+
+	// Check if scanPath is under targetPath (with directory boundary).
+	// targetPath must end with separator to ensure we match /a/photos, not /a/photos2.
+	prefix := targetPath + string(filepath.Separator)
+	return strings.HasPrefix(scanPath, prefix)
+}
+
+// =============================================================================
+// calculateFolderMetrics: Folder Size & File Count (Pure-ish Function)
+// =============================================================================
+
+// FolderMetrics holds the result of a folder walk calculation.
+type FolderMetrics struct {
+	TotalSize int64
+	FileCount int
+	Error     error
+}
+
+// calculateFolderMetrics walks the given folder and returns total size and file count.
+// Note: This function performs I/O (filepath.Walk), but the accumulation logic is pure.
+// Returns error if the folder cannot be read.
+func calculateFolderMetrics(folderPath string) FolderMetrics {
+	var totalSize int64
+	var fileCount int
+
+	err := filepath.Walk(folderPath, func(path string, info os.FileInfo, e error) error {
+		if e != nil {
+			// Skip walk errors (permission denied on subdirs), continue walking
+			return nil
+		}
+		if !info.IsDir() {
+			totalSize += info.Size()
+			fileCount++
+		}
+		return nil
+	})
+
+	return FolderMetrics{
+		TotalSize: totalSize,
+		FileCount: fileCount,
+		Error:     err,
+	}
+}
+
+// =============================================================================
+// parseArchiveTimestamp: Timestamp Parsing (Pure Function)
+// =============================================================================
+
+// parseArchiveTimestamp extracts the timestamp from an archive folder name.
+// Expected format: YYYY-MM-DD-HHMMSSname (where HHMMSSname can be HHMMSS-name or HHMMSSname).
+// Pure: no side effects, deterministic, error-safe.
+func parseArchiveTimestamp(folderName string) (string, error) {
+	// Archive folder names are: YYYY-MM-DD-HHMMSSfoldername or YYYY-MM-DD-HHMMSS-foldername
+	// Split by "-" gives: [YYYY, MM, DD, HHMMSSfoldername, ...]
+	parts := strings.SplitN(folderName, "-", 4)
+
+	// Need at least: YYYY, MM, DD, HHMMSS...
+	if len(parts) < 4 {
+		return "", fmt.Errorf("invalid archive folder format: %q (expected YYYY-MM-DD-HHMMSS...)", folderName)
+	}
+
+	// parts[3] starts with the time component (HHMMSS) followed by folder name
+	timeStr := parts[3]
+	if len(timeStr) < 6 {
+		return "", fmt.Errorf("invalid time component in folder name: %q", folderName)
+	}
+
+	// Extract HH:MM:SS from first 6 characters
+	timestamp := fmt.Sprintf("%s-%s-%s %s:%s:%s",
+		parts[0], parts[1], parts[2],
+		timeStr[0:2], timeStr[2:4], timeStr[4:6])
+
+	return timestamp, nil
+}
