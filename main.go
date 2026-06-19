@@ -3813,6 +3813,13 @@ func runFindDuplicates(args []string) {
 	}
 	fs.Parse(processedArgs)
 
+	// Validate path flag - check if it looks like a flag was passed as path
+	if *pathFlag != "" && (strings.HasPrefix(*pathFlag, "-") || *pathFlag == "s") {
+		fmt.Fprintf(os.Stderr, "Error: -p/--path requires a valid folder path (got %q)\n", *pathFlag)
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer find-duplicates -p /path/to/folder [-s]\n")
+		os.Exit(1)
+	}
+
 	// Use manifest data only - find and report, never delete
 	runFindDuplicatesFromManifest(*machineFlag, *pathFlag, *summaryFlag, *excludeFlag)
 }
