@@ -4557,9 +4557,15 @@ func verifyRemoteFolder(folderPath string, rows []ManifestRow, sshTarget string)
 		return true, fmt.Sprintf("(Remote on %s, parse error) %d files, %s", sshTarget, expectedCount, formatBytes(totalSize))
 	}
 
-	// Check if file counts match
+	// Check if remote folder has at least the expected files
+	// (OK if it has extra files - still a valid backup as long as it has all target files)
+	if actualCount < expectedCount {
+		return false, fmt.Sprintf("✗ INVALID (Remote): expected at least %d files, found %d", expectedCount, actualCount)
+	}
+
+	// Show actual count if different from manifest (indicates extra files or manifest out of sync)
 	if actualCount != expectedCount {
-		return false, fmt.Sprintf("✗ INVALID (Remote): expected %d files, found %d", expectedCount, actualCount)
+		return true, fmt.Sprintf("✓ VALID (Remote on %s) %d files (manifest: %d), %s", sshTarget, actualCount, expectedCount, formatBytes(totalSize))
 	}
 
 	return true, fmt.Sprintf("✓ VALID (Remote on %s) %d files, %s", sshTarget, expectedCount, formatBytes(totalSize))
