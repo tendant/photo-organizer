@@ -4252,12 +4252,13 @@ func runVerify(args []string) {
 
 	var allMatchingRows []ManifestRowWithMeta
 
-	// Step 1: Collect file signatures from target folder
+	// Step 1: Collect file signatures from target folder (deduplicate by file path)
 	type FileSignature struct {
 		size        int64
 		partialHash string
 	}
 	targetFileSignatures := make(map[FileSignature]bool)
+	targetFilePaths := make(map[string]bool) // Deduplicate same file in multiple manifests
 
 	for _, manifestPath := range matches {
 		src, err := readManifest(manifestPath)
@@ -4269,12 +4270,15 @@ func runVerify(args []string) {
 			filePath := filepath.Join(row.ScanPath, row.RelativePath)
 			// Check if file is under or equals our target folder
 			if filePath == folderAbsPath || strings.HasPrefix(filePath, folderAbsPath+"/") || strings.HasPrefix(filePath, folderAbsPath+string(filepath.Separator)) {
-				sig := FileSignature{
-					size:        row.SizeBytes,
-					partialHash: row.PartialHash,
+				if !targetFilePaths[filePath] {
+					sig := FileSignature{
+						size:        row.SizeBytes,
+						partialHash: row.PartialHash,
+					}
+					targetFileSignatures[sig] = true
+					targetFilePaths[filePath] = true
+					foundInManifest = true
 				}
-				targetFileSignatures[sig] = true
-				foundInManifest = true
 			}
 		}
 	}
@@ -4291,7 +4295,8 @@ func runVerify(args []string) {
 		machine string
 	}
 	folderFileSignatures := make(map[FolderKey]map[FileSignature]bool)
-	folderRows := make(map[FolderKey][]ManifestRow)
+	folderRows := make(map[FolderKey]map[string]ManifestRow) // Use map to deduplicate by file path
+	folderRowsList := make(map[FolderKey][]ManifestRow)      // For final output
 
 	for _, manifestPath := range matches {
 		src, err := readManifest(manifestPath)
@@ -4305,6 +4310,7 @@ func runVerify(args []string) {
 
 			if _, exists := folderFileSignatures[key]; !exists {
 				folderFileSignatures[key] = make(map[FileSignature]bool)
+				folderRows[key] = make(map[string]ManifestRow)
 			}
 
 			sig := FileSignature{
@@ -4312,7 +4318,17 @@ func runVerify(args []string) {
 				partialHash: row.PartialHash,
 			}
 			folderFileSignatures[key][sig] = true
-			folderRows[key] = append(folderRows[key], row)
+
+			// Deduplicate by file path within the folder
+			filePath := filepath.Join(row.ScanPath, row.RelativePath)
+			folderRows[key][filePath] = row
+		}
+	}
+
+	// Convert map back to list for easier access
+	for key, fileMap := range folderRows {
+		for _, row := range fileMap {
+			folderRowsList[key] = append(folderRowsList[key], row)
 		}
 	}
 
@@ -4329,7 +4345,7 @@ func runVerify(args []string) {
 
 		// If folder contains all target files, collect them
 		if hasAllTargets {
-			for _, row := range folderRows[key] {
+			for _, row := range folderRowsList[key] {
 				allMatchingRows = append(allMatchingRows, ManifestRowWithMeta{
 					row:      row,
 					machine:  key.machine,
