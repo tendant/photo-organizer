@@ -4012,10 +4012,11 @@ func runFindDuplicateFolders(args []string) {
 
 	// Group files by folder, calculate folder hash
 	type FolderInfo struct {
-		Path       string
-		FileCount  int
-		TotalSize  int64
-		FolderHash string
+		Path        string
+		MachineName string
+		FileCount   int
+		TotalSize   int64
+		FolderHash  string
 	}
 
 	folderHashes := make(map[string]*FolderInfo) // folder path -> info
@@ -4034,7 +4035,8 @@ func runFindDuplicateFolders(args []string) {
 
 			if _, exists := folderHashes[folderPath]; !exists {
 				folderHashes[folderPath] = &FolderInfo{
-					Path: folderPath,
+					Path:        folderPath,
+					MachineName: src.MachineName,
 				}
 			}
 
@@ -4152,7 +4154,11 @@ func runFindDuplicateFolders(args []string) {
 			return sortedFolders[a].Path < sortedFolders[b].Path
 		})
 		for _, folder := range sortedFolders {
-			fmt.Printf("  - %s (%d files)\n", folder.Path, folder.FileCount)
+			machine := folder.MachineName
+			if machine == "" {
+				machine = "unknown"
+			}
+			fmt.Printf("  - %s (%d files) [%s]\n", folder.Path, folder.FileCount, machine)
 		}
 		fmt.Printf("\n")
 	}
