@@ -2483,6 +2483,22 @@ func runStalledManifests(args []string) {
 		return
 	}
 
+	// Load all manifests
+	var manifests []*ManifestSource
+	for _, manifestPath := range matches {
+		src, err := readManifest(manifestPath)
+		if err == nil && len(src.Rows) > 0 {
+			manifests = append(manifests, &src)
+		}
+	}
+
+	// Use pure function to find stalled manifests
+	stalledResults := findStalledManifests(manifests, localMachine, allMachines, func(path string) bool {
+		_, err := os.Stat(path)
+		return err == nil
+	})
+
+	// Convert results to display format
 	var stalledList []struct {
 		manifestPath string
 		scanPath     string
@@ -2490,41 +2506,20 @@ func runStalledManifests(args []string) {
 		lastScanned  string
 		entryCount   int
 	}
-
-	// Collect stalled manifests
-	for _, manifestPath := range matches {
-		src, err := readManifest(manifestPath)
-		if err != nil || len(src.Rows) == 0 {
-			continue
-		}
-
-		machine := src.Rows[0].MachineName
-
-		// Filter by machine
-		if !allMachines && machine != localMachine {
-			continue
-		}
-
-		// Get scan path from first entry
-		scanPath := src.Rows[0].ScanPath
-		lastScanned := src.Rows[0].FileModified
-
-		// Check if scan path still exists
-		if _, err := os.Stat(scanPath); err != nil {
-			stalledList = append(stalledList, struct {
-				manifestPath string
-				scanPath     string
-				machine      string
-				lastScanned  string
-				entryCount   int
-			}{
-				manifestPath: manifestPath,
-				scanPath:     scanPath,
-				machine:      machine,
-				lastScanned:  lastScanned,
-				entryCount:   len(src.Rows),
-			})
-		}
+	for _, stalled := range stalledResults {
+		stalledList = append(stalledList, struct {
+			manifestPath string
+			scanPath     string
+			machine      string
+			lastScanned  string
+			entryCount   int
+		}{
+			manifestPath: stalled.ManifestPath,
+			scanPath:     stalled.ScanPath,
+			machine:      stalled.Machine,
+			lastScanned:  stalled.LastScanned,
+			entryCount:   stalled.EntryCount,
+		})
 	}
 
 	if len(stalledList) == 0 {
