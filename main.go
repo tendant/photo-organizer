@@ -30,6 +30,29 @@ import (
 )
 
 // =============================================================================
+// Helper Functions for Consistency
+// =============================================================================
+
+// fatalError prints error to stderr and exits
+func fatalError(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "❌ "+format+"\n", args...)
+	os.Exit(1)
+}
+
+// warnError prints warning to stderr but continues
+func warnError(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "⚠️  "+format+"\n", args...)
+}
+
+// confirmPrompt asks user for y/n confirmation
+func confirmPrompt(message string) bool {
+	fmt.Fprintf(os.Stderr, "%s [y/N] ", message)
+	var response string
+	fmt.Scanln(&response)
+	return response == "y" || response == "Y"
+}
+
+// =============================================================================
 // Supported File Types
 // =============================================================================
 
@@ -2007,12 +2030,8 @@ func runArchive(args []string) {
 	fmt.Fprintf(os.Stderr, "  1. You have 2+ valid backup copies (remote machines)\n")
 	fmt.Fprintf(os.Stderr, "  2. Run: photo-organizer verify %s\n", absSourceFolder)
 	fmt.Fprintf(os.Stderr, "  3. Confirm status shows '✓ SAFE TO ARCHIVE'\n")
-	fmt.Fprintf(os.Stderr, "\nProceed? [y/N] ")
 
-	// Wait for user confirmation
-	var response string
-	fmt.Scanln(&response)
-	if response != "y" && response != "Y" {
+	if !confirmPrompt("\nProceed?") {
 		fmt.Fprintf(os.Stderr, "Cancelled.\n")
 		os.Exit(0)
 	}
@@ -2374,11 +2393,7 @@ func runPrune(args []string) {
 
 	// Ask for confirmation
 	fmt.Fprintf(os.Stderr, "\n⚠️  This will permanently remove entries from system manifests.\n")
-	fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
-
-	var response string
-	fmt.Scanln(&response)
-	if response != "y" && response != "Y" {
+	if !confirmPrompt("Continue?") {
 		fmt.Fprintf(os.Stderr, "Cancelled\n")
 		return
 	}
@@ -2729,11 +2744,7 @@ func runRemoveManifest(args []string) {
 
 	// Ask for confirmation
 	fmt.Fprintf(os.Stderr, "⚠️  This will permanently delete the manifest file(s).\n")
-	fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
-
-	var response string
-	fmt.Scanln(&response)
-	if response != "y" && response != "Y" {
+	if !confirmPrompt("Continue?") {
 		fmt.Fprintf(os.Stderr, "Cancelled\n")
 		return
 	}
