@@ -1910,8 +1910,16 @@ func runArchive(args []string) {
 	manifestFile = filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, archiveParent))
 
 	files, _, err = scanDirectory(archiveParent, make(map[string]CacheEntry), false, nil)
-	if err == nil {
-		updateManifest(archiveParent, files, manifestFile, machineName, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠  Warning: Could not scan archive folder: %v\n", err)
+	} else {
+		fmt.Fprintf(os.Stderr, "Updating manifest for %s...\n", archiveParent)
+		stats, err := updateManifest(archiveParent, files, manifestFile, machineName, false)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠  Warning: Could not update archive manifest: %v\n", err)
+		} else if stats.New > 0 || stats.Updated > 0 {
+			fmt.Fprintf(os.Stderr, "✓ Updated archive manifest (%d new, %d updated)\n", stats.New, stats.Updated)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "\n✓ Folder archived to %s\n", archiveFolder)
