@@ -2718,7 +2718,7 @@ func runLookup(args []string) {
 		fmt.Fprintf(os.Stderr, "     Matching entries: %d\n", match.matchCount)
 		fmt.Fprintf(os.Stderr, "     Last scanned: %s\n\n", match.lastScanned)
 		fmt.Fprintf(os.Stderr, "     To rescan:\n")
-		fmt.Fprintf(os.Stderr, "       photo-organizer scan %s --dest <backup-path>\n\n", match.scanPath)
+		fmt.Fprintf(os.Stderr, "       photo-organizer scan %s\n\n", match.scanPath)
 	}
 }
 
