@@ -3655,7 +3655,12 @@ func runFindDuplicatesFromManifest(machineFilter, pathFilter string, summaryOnly
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "Using manifest data from %d manifest(s)...\n\n", len(sources))
+	fmt.Fprintf(os.Stderr, "Using manifest data from %d manifest(s)...\n", len(sources))
+	if pathFilter != "" {
+		fmt.Fprintf(os.Stderr, "Searching in: %s\n\n", pathFilter)
+	} else {
+		fmt.Fprintf(os.Stderr, "\n")
+	}
 
 	// Map hash -> list of files from manifests
 	hashToFiles := make(map[string][]FileMeta)
@@ -3818,6 +3823,14 @@ func runFindDuplicates(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: -p/--path requires a valid folder path (got %q)\n", *pathFlag)
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer find-duplicates -p /path/to/folder [-s]\n")
 		os.Exit(1)
+	}
+
+	// Convert relative path to absolute
+	if *pathFlag != "" && !strings.HasPrefix(*pathFlag, "/") {
+		absPath, err := filepath.Abs(*pathFlag)
+		if err == nil {
+			*pathFlag = absPath
+		}
 	}
 
 	// Use manifest data only - find and report, never delete
