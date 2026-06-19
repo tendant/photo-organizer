@@ -4111,51 +4111,57 @@ func runVerify(args []string) {
 
 	var localCopies, remoteCopies []CopyInfo
 
-	// Find all copies of this folder in manifests
 	folderAbsPath, _ := filepath.Abs(folderPath)
 	foundInManifest := false
 
 	type ManifestRowWithMeta struct {
-		row        ManifestRow
-		scanFolder string // Full path to folder being scanned
-		machine    string // Machine that has this copy
+		row      ManifestRow
+		machine  string
+		fullPath string // Full file path
 	}
 
 	var allMatchingRows []ManifestRowWithMeta
 
+	// Find all files under target folder
 	for _, manifestPath := range matches {
 		src, err := readManifest(manifestPath)
 		if err != nil {
 			continue
 		}
 
-		// Check if this manifest contains files from the target folder
 		for _, row := range src.Rows {
 			filePath := filepath.Join(row.ScanPath, row.RelativePath)
-			// Check if file is under our target folder
-			if strings.HasPrefix(filePath, folderAbsPath+"/") || strings.HasPrefix(filePath, folderAbsPath+string(filepath.Separator)) {
-				// Compute the folder path: just use ScanPath since that's the folder root in the manifest
+			// Check if file is under or equals our target folder
+			if filePath == folderAbsPath || strings.HasPrefix(filePath, folderAbsPath+"/") || strings.HasPrefix(filePath, folderAbsPath+string(filepath.Separator)) {
 				allMatchingRows = append(allMatchingRows, ManifestRowWithMeta{
-					row:        row,
-					scanFolder: row.ScanPath,
-					machine:    src.MachineName,
+					row:      row,
+					machine:  src.MachineName,
+					fullPath: filePath,
 				})
 				foundInManifest = true
 			}
 		}
 	}
 
+	if !foundInManifest {
+		fmt.Fprintf(os.Stderr, "Error: folder not found in any manifest\n")
+		fmt.Fprintf(os.Stderr, "Run: photo-organizer scan %s\n", folderPath)
+		os.Exit(1)
+	}
+
 	if len(allMatchingRows) > 0 {
-		// Group files by their scan folder path and machine
+		// Group files by their folder parent path and machine
 		folderCopies := make(map[string][]ManifestRowWithMeta)
 		for _, item := range allMatchingRows {
-			key := item.scanFolder + ":" + item.machine
+			// Extract the folder path (parent directory of the file)
+			folderPath := filepath.Dir(item.fullPath)
+			key := folderPath + ":" + item.machine
 			folderCopies[key] = append(folderCopies[key], item)
 		}
 
 		// Verify each copy
 		for key, items := range folderCopies {
-			// Extract scanFolder and machine from key
+			// Extract folderPath and machine from key
 			parts := strings.SplitN(key, ":", 2)
 			copyPath := parts[0]
 			machineName := parts[1]
