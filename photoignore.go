@@ -50,9 +50,11 @@ func (ig *PhotoIgnore) ShouldSkip(path string) bool {
 
 		if isDir {
 			// Directory pattern: check if any path component matches
-			for _, part := range pathParts[:len(pathParts)-1] { // exclude filename
-				if matched, _ := filepath.Match(p, part); matched {
-					return true
+			if len(pathParts) > 1 {
+				for _, part := range pathParts[:len(pathParts)-1] { // exclude filename
+					if matched, _ := filepath.Match(p, part); matched {
+						return true
+					}
 				}
 			}
 		} else {

@@ -231,7 +231,11 @@ func loadCache(manifestFile string) map[string]CacheEntry {
 		if relPath == "" {
 			continue
 		}
-		size, _ := strconv.ParseInt(col(row, "file_size_bytes"), 10, 64)
+		sizeStr := col(row, "file_size_bytes")
+		size, err := strconv.ParseInt(sizeStr, 10, 64)
+		if err != nil || sizeStr == "" {
+			continue
+		}
 		var captureDate time.Time
 		if s := col(row, "capture_date"); s != "" {
 			captureDate, _ = time.Parse("2006:01:02 15:04:05", s)
@@ -1093,7 +1097,10 @@ doneLoading:
 		}
 		relPath, _ := filepath.Rel(scanDir, fi.Path)
 		if row, exists := existing[relPath]; exists {
-			storedSize, _ := strconv.ParseInt(row[headerIdx["file_size_bytes"]], 10, 64)
+			storedSize, err := strconv.ParseInt(row[headerIdx["file_size_bytes"]], 10, 64)
+			if err != nil {
+				continue
+			}
 			sizeChanged := storedSize != fi.Size
 			hashChanged := row[headerIdx["partial_hash"]] != fi.PartialHash ||
 				row[headerIdx["full_hash"]] != fi.FullHash
@@ -2313,10 +2320,10 @@ func runPrune(args []string) {
 			continue
 		}
 		reader := csv.NewReader(f)
-		records, _ := reader.ReadAll()
+		records, err := reader.ReadAll()
 		f.Close()
 
-		if len(records) < 1 {
+		if err != nil || len(records) < 1 {
 			continue
 		}
 
@@ -2401,10 +2408,10 @@ func runPrune(args []string) {
 			continue
 		}
 		reader := csv.NewReader(f)
-		records, _ := reader.ReadAll()
+		records, err := reader.ReadAll()
 		f.Close()
 
-		if len(records) < 1 {
+		if err != nil || len(records) < 1 {
 			continue
 		}
 
