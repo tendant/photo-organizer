@@ -4378,9 +4378,16 @@ func runVerify(args []string) {
 				Valid:   true,
 			}
 
-			var rows []ManifestRow
+			// Deduplicate rows by file path (same file may appear in multiple manifests)
+			deduplicatedRows := make(map[string]ManifestRow)
 			for _, item := range items {
-				rows = append(rows, item.row)
+				filePath := filepath.Join(item.row.ScanPath, item.row.RelativePath)
+				deduplicatedRows[filePath] = item.row
+			}
+
+			var rows []ManifestRow
+			for _, row := range deduplicatedRows {
+				rows = append(rows, row)
 			}
 
 			// Try to access the folder - if it exists and is readable, it's local
