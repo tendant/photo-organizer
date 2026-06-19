@@ -1808,19 +1808,25 @@ func runRescan(args []string) {
 
 func runArchive(args []string) {
 	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder-path> --dest <archive-dir>\n\n")
-		fmt.Fprintf(os.Stderr, "Move folder to local archive directory and update manifests.\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder-path> --dest <archive-dir> [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Move folder to local archive directory and update manifests.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(os.Stderr, "  --dest <dir>      Archive directory (required)\n")
+		fmt.Fprintf(os.Stderr, "  --force           Overwrite if archive already exists\n")
 		os.Exit(1)
 	}
 
 	sourceFolder := args[0]
 	var archiveDir string
+	forceFlag := false
 
-	// Parse --dest flag
+	// Parse flags
 	for i := 1; i < len(args); i++ {
 		if args[i] == "--dest" && i+1 < len(args) {
 			archiveDir = args[i+1]
-			break
+			i++
+		} else if args[i] == "--force" || args[i] == "-f" {
+			forceFlag = true
 		}
 	}
 
@@ -1861,8 +1867,17 @@ func runArchive(args []string) {
 
 	// Check if target already exists
 	if _, err := os.Stat(archiveFolder); err == nil {
-		fmt.Fprintf(os.Stderr, "Error: archive folder already exists: %s\n", archiveFolder)
-		os.Exit(1)
+		if !forceFlag {
+			fmt.Fprintf(os.Stderr, "Error: archive folder already exists: %s\n", archiveFolder)
+			fmt.Fprintf(os.Stderr, "Use --force to overwrite or choose different --dest\n")
+			os.Exit(1)
+		}
+		// With --force, remove existing archive
+		fmt.Fprintf(os.Stderr, "Removing existing archive: %s\n", archiveFolder)
+		if err := os.RemoveAll(archiveFolder); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: could not remove existing archive: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Move the folder
