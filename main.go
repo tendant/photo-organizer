@@ -2008,8 +2008,8 @@ func runArchive(args []string) {
 
 	// Create timestamped archive folder name (include time to avoid conflicts)
 	folderName := filepath.Base(absSourceFolder)
-	timestamp := time.Now().Format("2006-01-02-150405")
-	archiveFolder := filepath.Join(absArchiveDir, fmt.Sprintf("%s-%s", timestamp, folderName))
+	archiveFolderName := generateArchiveFolderName(folderName, time.Now())
+	archiveFolder := filepath.Join(absArchiveDir, archiveFolderName)
 
 	// === PREVIEW: Show what will happen ===
 	fmt.Fprintf(os.Stderr, "\n📋 ARCHIVE PREVIEW\n")

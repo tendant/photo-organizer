@@ -837,6 +837,51 @@ func TestPruneManifestRecords(t *testing.T) {
 // findStalledManifests
 // =============================================================================
 
+// =============================================================================
+// generateArchiveFolderName
+// =============================================================================
+
+func TestGenerateArchiveFolderName(t *testing.T) {
+	tests := []struct {
+		name      string
+		folderName string
+		timestamp time.Time
+		want      string
+	}{
+		{
+			name:       "basic case",
+			folderName: "DJI_001",
+			timestamp:  time.Date(2026, 6, 19, 6, 0, 12, 0, time.UTC),
+			want:       "2026-06-19-060012DJI_001",
+		},
+		{
+			name:       "complex folder name",
+			folderName: "Camera-Roll-Photos",
+			timestamp:  time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC),
+			want:       "2026-12-31-235959Camera-Roll-Photos",
+		},
+		{
+			name:       "folder name with underscores",
+			folderName: "DJI_20230704_001",
+			timestamp:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			want:       "2026-01-01-000000DJI_20230704_001",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := generateArchiveFolderName(tt.folderName, tt.timestamp)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// findStalledManifests
+// =============================================================================
+
 func TestFindStalledManifests(t *testing.T) {
 	tests := []struct {
 		name         string

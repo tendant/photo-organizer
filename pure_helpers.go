@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // =============================================================================
@@ -239,4 +240,16 @@ func findStalledManifests(
 	}
 
 	return result
+}
+
+// =============================================================================
+// generateArchiveFolderName: Archive Timestamp Generation (Pure Function)
+// =============================================================================
+
+// generateArchiveFolderName creates a timestamped archive folder name.
+// Pure: deterministic, no side effects. Time is passed as parameter for testability.
+// Format: YYYY-MM-DD-HHMMSSfoldername (e.g., 2026-06-19-060012DJI_001)
+func generateArchiveFolderName(folderName string, timestamp time.Time) string {
+	timeStr := timestamp.Format("2006-01-02-150405")
+	return fmt.Sprintf("%s%s", timeStr, folderName)
 }
