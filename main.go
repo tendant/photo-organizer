@@ -33,17 +33,6 @@ import (
 // Helper Functions for Consistency
 // =============================================================================
 
-// fatalError prints error to stderr and exits
-func fatalError(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, "❌ "+format+"\n", args...)
-	os.Exit(1)
-}
-
-// warnError prints warning to stderr but continues
-func warnError(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, "⚠️  "+format+"\n", args...)
-}
-
 // confirmPrompt asks user for y/n confirmation
 func confirmPrompt(message string) bool {
 	fmt.Fprintf(os.Stderr, "%s [y/N] ", message)
@@ -517,7 +506,7 @@ func scoreFolderSample(path string, s FolderSample) (score int, reasons []string
 
 	// Year detection (2000-2035).
 	for year := 2000; year <= 2035; year++ {
-		if strings.Contains(path, fmt.Sprintf("%d", year)) {
+		if strings.Contains(path, strconv.Itoa(year)) {
 			score += 10
 			reasons = append(reasons, fmt.Sprintf("year:%d", year))
 			break
@@ -4081,8 +4070,8 @@ func runCollectConfig(args []string) {
 		if (arg == "-f" || arg == "--from") && i+1 < len(args) {
 			processedArgs = append(processedArgs, "--from", args[i+1])
 			i++
-		} else if strings.HasPrefix(arg, "-f=") {
-			processedArgs = append(processedArgs, "--from="+strings.TrimPrefix(arg, "-f="))
+		} else if after, ok := strings.CutPrefix(arg, "-f="); ok {
+			processedArgs = append(processedArgs, "--from="+after)
 		} else {
 			processedArgs = append(processedArgs, arg)
 		}
@@ -4193,8 +4182,8 @@ func runPushConfig(args []string) {
 		if (arg == "-t" || arg == "--to") && i+1 < len(args) {
 			processedArgs = append(processedArgs, "--to", args[i+1])
 			i++
-		} else if strings.HasPrefix(arg, "-t=") {
-			processedArgs = append(processedArgs, "--to="+strings.TrimPrefix(arg, "-t="))
+		} else if after, ok := strings.CutPrefix(arg, "-t="); ok {
+			processedArgs = append(processedArgs, "--to="+after)
 		} else {
 			processedArgs = append(processedArgs, arg)
 		}
