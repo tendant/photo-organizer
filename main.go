@@ -4065,6 +4065,12 @@ func runCollect(args []string) {
 			continue
 		}
 
+		// Skip removable devices (mounted locally, not remote)
+		if strings.Contains(target, "[removable]") {
+			fmt.Fprintf(os.Stderr, "⊘  Skipping %s (removable device, mounted locally)\n", machine)
+			continue
+		}
+
 		remoteDir := target + ":~/manifests/_Manifest/"
 		fmt.Printf("Collecting from %s (%s)...\n", machine, target)
 
