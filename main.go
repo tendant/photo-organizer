@@ -96,16 +96,11 @@ var audioExts = map[string]bool{
 }
 
 var sidecarExts = map[string]bool{
-	".lrf": true,
-	".xmp": true,
-	".aae": true,
-	".json": true,
-	".bnp": true,
-	".inp": true,
-	".int": true,
-	".xml": true,
-	".bin": true,
-	".txt": true,
+	".lrf": true,  // Lightroom catalog
+	".xmp": true,  // XMP metadata
+	".aae": true,  // Apple photo edits
+	".json": true, // JSON metadata/config
+	".xml": true,  // XML metadata/config
 }
 
 
@@ -682,9 +677,16 @@ func scanDirectory(dir string, cache map[string]CacheEntry, photoIgnore *PhotoIg
 			return nil
 		}
 		if info.IsDir() {
-			// Don't skip any directories — file extension filter catches non-media files
-			if path != dir && strings.HasPrefix(info.Name(), ".") {
-				return filepath.SkipDir
+			// Skip dotfiles and system/camera folders
+			if path != dir {
+				name := info.Name()
+				if strings.HasPrefix(name, ".") {
+					return filepath.SkipDir
+				}
+				// Skip camera-specific system folders
+				if name == "PRIVATE" || name == "THMBNL" || name == "AVF_INFO" || name == ".fseventsd" {
+					return filepath.SkipDir
+				}
 			}
 			rel, _ := filepath.Rel(dir, path)
 			// Truncate long paths so they don't overflow the line width.
@@ -778,8 +780,10 @@ func scanDirectory(dir string, cache map[string]CacheEntry, photoIgnore *PhotoIg
 		close(workQueue)
 	}()
 
-	// Collect results with explicit index pairing
+	// Collect results with explicit index pairing (must be part of wg)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for i := 0; i < len(raw); i++ {
 			res := <-resultQueue
 			files[res.idx] = res.fi
