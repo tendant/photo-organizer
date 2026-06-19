@@ -2181,34 +2181,21 @@ func runArchiveStatus(args []string) {
 
 		folderPath := filepath.Join(absArchiveDir, entry.Name())
 
-		// Parse timestamp from folder name (format: 2026-06-19-115440-foldername)
-		parts := strings.SplitN(entry.Name(), "-", 4)
-		var timestamp string
-		if len(parts) >= 4 && len(parts[3]) >= 6 {
-			timeStr := parts[3]
-			timestamp = fmt.Sprintf("%s-%s-%s %s:%s:%s", parts[0], parts[1], parts[2],
-				timeStr[0:2], timeStr[2:4], timeStr[4:6])
-		} else {
+		// Parse timestamp from folder name using pure function
+		timestamp, _ := parseArchiveTimestamp(entry.Name())
+		if timestamp == "" {
 			timestamp = "(unknown)"
 		}
 
-		// Calculate folder size and file count
-		var totalSize int64
-		var fileCount int
-		filepath.Walk(folderPath, func(path string, info os.FileInfo, err error) error {
-			if err == nil && !info.IsDir() {
-				totalSize += info.Size()
-				fileCount++
-			}
-			return nil
-		})
+		// Calculate folder metrics using pure function
+		metrics := calculateFolderMetrics(folderPath)
 
 		archived = append(archived, ArchivedFolder{
 			Name:      entry.Name(),
 			Path:      folderPath,
 			ArchivedAt: timestamp,
-			Size:      totalSize,
-			FileCount: fileCount,
+			Size:      metrics.TotalSize,
+			FileCount: metrics.FileCount,
 		})
 	}
 
