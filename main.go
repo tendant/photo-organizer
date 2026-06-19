@@ -1169,8 +1169,17 @@ doneLoading:
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
-	for _, p := range paths {
+
+	// Show progress for large manifests
+	if len(paths) > 1000 {
+		fmt.Fprintf(os.Stderr, "  Writing %d entries to manifest...\n", len(paths))
+	}
+
+	for i, p := range paths {
 		w.Write(existing[p])
+		if len(paths) > 1000 && (i+1)%10000 == 0 {
+			fmt.Fprintf(os.Stderr, "    %d / %d written\n", i+1, len(paths))
+		}
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
@@ -2010,11 +2019,14 @@ func runArchive(args []string) {
 		fmt.Fprintf(os.Stderr, "⚠  Warning: Could not scan archive folder: %v\n", err)
 	} else {
 		fmt.Fprintf(os.Stderr, "Updating manifest for archive location...\n")
+		fmt.Fprintf(os.Stderr, "  Processing %d files...\n", len(files))
 		stats, err := updateManifest(archiveParent, files, manifestFile, machineName, false)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠  Warning: Could not update archive manifest: %v\n", err)
 		} else if stats.New > 0 || stats.Updated > 0 {
-			fmt.Fprintf(os.Stderr, "✓ Updated archive manifest (%d new, %d updated)\n", stats.New, stats.Updated)
+			fmt.Fprintf(os.Stderr, "✓ Updated archive manifest (%d new, %d updated, %d pruned)\n", stats.New, stats.Updated, stats.Pruned)
+		} else {
+			fmt.Fprintf(os.Stderr, "✓ Archive manifest up to date\n")
 		}
 	}
 
