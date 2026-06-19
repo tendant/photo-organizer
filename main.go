@@ -2606,7 +2606,7 @@ func runLookup(args []string) {
 		// Count entries that are under the lookup path
 		for _, row := range src.Rows {
 			fullPath := filepath.Join(row.ScanPath, row.RelativePath)
-			if strings.HasPrefix(filepath.Clean(fullPath), lookupPath) {
+			if pathMatches(fullPath, lookupPath) {
 				matchCount++
 			}
 		}
@@ -2688,7 +2688,7 @@ func runRemoveManifest(args []string) {
 		machine := src.Rows[0].MachineName
 		scanPath := src.Rows[0].ScanPath
 
-		// Check if this manifest's scan path matches the folder
+		// Check if this manifest's scan path matches the folder exactly
 		if filepath.Clean(scanPath) == folderPath {
 			results = append(results, ManifestMatch{
 				manifestPath: manifestPath,
