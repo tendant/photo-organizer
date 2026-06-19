@@ -3621,7 +3621,7 @@ type FileMeta struct {
 	ModTime time.Time
 }
 
-func runFindDuplicatesFromManifest(machineFilter, keepStrategy string, summaryOnly, dryRun bool, excludePattern string) {
+func runFindDuplicatesFromManifest(machineFilter string, summaryOnly bool, excludePattern string) {
 	// Load all manifests
 	manifestRoot := defaultManifestRoot()
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
@@ -3755,58 +3755,13 @@ func runFindDuplicatesFromManifest(machineFilter, keepStrategy string, summaryOn
 			i+1, len(dup.Files), formatBytes(dup.Size/int64(len(dup.Files))), formatBytes(dup.Wasted))
 		fmt.Printf("  Hash: %s\n", dup.Hash[:16]+"...")
 
-		// Select which copies to keep/delete based on strategy
-		toDelete := selectDuplicatesToDelete(dup.Files, keepStrategy)
-
-		for j, f := range dup.Files {
-			action := "keep"
-			if toDelete[j] {
-				action = "DELETE"
-			}
-			fmt.Printf("  [%s] %s (%.1f MB, modified %s)\n",
-				action, f.Path, float64(f.Size)/1024/1024,
+		for _, f := range dup.Files {
+			fmt.Printf("    %s (%.1f MB, modified %s)\n",
+				f.Path, float64(f.Size)/1024/1024,
 				f.ModTime.Format("2006-01-02 15:04"))
-		}
-
-		if dryRun {
-			for j, f := range dup.Files {
-				if toDelete[j] {
-					fmt.Printf("    Would delete: %s\n", f.Path)
-				}
-			}
 		}
 		fmt.Printf("\n")
 	}
-
-	if dryRun {
-		fmt.Printf("Dry-run mode: no files deleted (use manifests only, files on disk not modified)\n")
-		return
-	}
-
-	// Actually delete files if not dry-run (only for files that actually exist)
-	var deletedCount int
-	var deletedSize int64
-	for _, dup := range duplicates {
-		toDelete := selectDuplicatesToDelete(dup.Files, keepStrategy)
-		for j, f := range dup.Files {
-			if toDelete[j] {
-				// Only attempt deletion if file exists
-				if _, err := os.Stat(f.Path); err == nil {
-					if err := os.Remove(f.Path); err != nil {
-						fmt.Fprintf(os.Stderr, "Error deleting %s: %v\n", f.Path, err)
-					} else {
-						deletedCount++
-						deletedSize += f.Size
-						fmt.Printf("Deleted: %s\n", f.Path)
-					}
-				} else {
-					fmt.Fprintf(os.Stderr, "File not found (already deleted?): %s\n", f.Path)
-				}
-			}
-		}
-	}
-
-	fmt.Printf("\n✓ Deleted %d files, freed %s\n", deletedCount, formatBytes(deletedSize))
 }
 
 func runFindDuplicates(args []string) {
@@ -3817,13 +3772,8 @@ func runFindDuplicates(args []string) {
 		if arg == "-m" && i+1 < len(args) {
 			processedArgs = append(processedArgs, "--machine", args[i+1])
 			i++
-		} else if arg == "-k" && i+1 < len(args) {
-			processedArgs = append(processedArgs, "--keep", args[i+1])
-			i++
 		} else if arg == "-s" || arg == "--summary" {
 			processedArgs = append(processedArgs, "--summary")
-		} else if arg == "-d" || arg == "--dry-run" {
-			processedArgs = append(processedArgs, "--dry-run")
 		} else if arg == "-x" && i+1 < len(args) {
 			processedArgs = append(processedArgs, "--exclude", args[i+1])
 			i++
@@ -3834,94 +3784,24 @@ func runFindDuplicates(args []string) {
 
 	fs := flag.NewFlagSet("find-duplicates", flag.ExitOnError)
 	machineFlag := fs.String("machine", "", "find duplicates in manifest from specific machine")
-	keepFlag := fs.String("keep", "first", "keep strategy: first, newest, largest (default: first)")
 	summaryFlag := fs.Bool("summary", false, "show summary only, not individual files")
-	dryRunFlag := fs.Bool("dry-run", false, "preview what would be deleted without actually deleting")
 	excludeFlag := fs.String("exclude", "", "exclude pattern (e.g., .DS_Store, *.tmp)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer find-duplicates [options]\n\n")
-		fmt.Fprintf(os.Stderr, "Find duplicate files using manifest data (no scanning).\n\n")
+		fmt.Fprintf(os.Stderr, "Find and report duplicate files using manifest data.\n")
+		fmt.Fprintf(os.Stderr, "Does not modify or delete any files.\n\n")
 		fmt.Fprintf(os.Stderr, "Find all duplicates across manifests:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates\n\n")
 		fmt.Fprintf(os.Stderr, "Summary view (top duplicates):\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -s\n\n")
 		fmt.Fprintf(os.Stderr, "Find duplicates for specific machine:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -m ubuntu-max\n\n")
-		fmt.Fprintf(os.Stderr, "Preview deletion (keep newest):\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer find-duplicates -k newest -d\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(processedArgs)
 
-	// Use manifest data only
-	runFindDuplicatesFromManifest(*machineFlag, *keepFlag, *summaryFlag, *dryRunFlag, *excludeFlag)
-}
-
-// selectDuplicatesToDelete returns a boolean slice indicating which duplicates should be deleted
-// Uses deterministic tiebreakers (path order) when comparison values are equal
-func selectDuplicatesToDelete(files []FileMeta, keepStrategy string) []bool {
-	toDelete := make([]bool, len(files))
-	if len(files) == 0 {
-		return toDelete
-	}
-
-	// Mark all as delete, then mark one to keep based on strategy
-	for i := range toDelete {
-		toDelete[i] = true
-	}
-
-	switch keepStrategy {
-	case "first":
-		// Deterministic "first": use path order
-		firstIdx := 0
-		for i := 1; i < len(files); i++ {
-			if files[i].Path < files[firstIdx].Path {
-				firstIdx = i
-			}
-		}
-		toDelete[firstIdx] = false
-	case "newest":
-		// Keep newest, use path as tiebreaker for deterministic behavior
-		newestIdx := 0
-		for i := 1; i < len(files); i++ {
-			// If newer, keep this one
-			if files[i].ModTime.After(files[newestIdx].ModTime) {
-				newestIdx = i
-			} else if files[i].ModTime.Equal(files[newestIdx].ModTime) {
-				// Tie: use path order (alphabetically first)
-				if files[i].Path < files[newestIdx].Path {
-					newestIdx = i
-				}
-			}
-		}
-		toDelete[newestIdx] = false
-	case "largest":
-		// Keep largest, use path as tiebreaker for deterministic behavior
-		largestIdx := 0
-		for i := 1; i < len(files); i++ {
-			// If larger, keep this one
-			if files[i].Size > files[largestIdx].Size {
-				largestIdx = i
-			} else if files[i].Size == files[largestIdx].Size {
-				// Tie: use path order (alphabetically first)
-				if files[i].Path < files[largestIdx].Path {
-					largestIdx = i
-				}
-			}
-		}
-		toDelete[largestIdx] = false
-	default:
-		// Default to first (deterministic)
-		firstIdx := 0
-		for i := 1; i < len(files); i++ {
-			if files[i].Path < files[firstIdx].Path {
-				firstIdx = i
-			}
-		}
-		toDelete[firstIdx] = false
-	}
-
-	return toDelete
+	// Use manifest data only - find and report, never delete
+	runFindDuplicatesFromManifest(*machineFlag, *summaryFlag, *excludeFlag)
 }
 
 func runSearch(args []string) {
