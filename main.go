@@ -968,6 +968,7 @@ func backupManifest(manifestFile string) error {
 
 func updateManifest(scanDir string, files []FileInfo, manifestFile string, machineName string, prune bool) (ManifestStats, error) {
 	var mstats ManifestStats
+	fmt.Fprintf(os.Stderr, "Updating manifest: %s\n", filepath.Base(manifestFile))
 	manifestDir := filepath.Dir(manifestFile)
 	if err := os.MkdirAll(manifestDir, 0755); err != nil {
 		return mstats, err
@@ -1009,7 +1010,7 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 		if err != nil {
 			return mstats, fmt.Errorf("read existing manifest %s: %w", manifestFile, err)
 		}
-		if len(records) > 1000 {
+		if len(records) > 1 {
 			fmt.Fprintf(os.Stderr, "  Loaded existing manifest (%d entries) in %v\n", len(records)-1, time.Since(readStart))
 		}
 		if len(records) < 1 {
@@ -1177,14 +1178,13 @@ doneLoading:
 	}
 	sort.Strings(paths)
 
-	// Show progress for large manifests
-	if len(paths) > 1000 {
-		fmt.Fprintf(os.Stderr, "  Writing %d entries to manifest...\n", len(paths))
-	}
+	// Show progress for all manifests
+	fmt.Fprintf(os.Stderr, "  Writing %d entries to manifest...\n", len(paths))
 
 	for i, p := range paths {
 		w.Write(existing[p])
-		if len(paths) > 1000 && (i+1)%10000 == 0 {
+		// Show progress periodically
+		if len(paths) > 100 && (i+1)%10000 == 0 {
 			fmt.Fprintf(os.Stderr, "    %d / %d written\n", i+1, len(paths))
 		}
 	}
