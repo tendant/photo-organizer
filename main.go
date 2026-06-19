@@ -3977,6 +3977,7 @@ func runCollect(args []string) {
 	rootFlag := fs.String("root", "", "local manifest directory (default: ~/manifests)")
 	addFlag := fs.String("add", "", "register a new machine: --add machine_id=user@host")
 	listFlag := fs.Bool("list", false, "list configured machines")
+	syncDeletionsFlag := fs.Bool("sync-deletions", false, "delete local manifests from machine if they don't exist on remote")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect [--from/-f <machine> [--from <machine> ...]]\n\n")
 		fmt.Fprintf(os.Stderr, "Pulls manifests from remote machines into ~/manifests/_Manifest/.\n")
@@ -3986,6 +3987,8 @@ func runCollect(args []string) {
 		fmt.Fprintf(os.Stderr, "  photo-organizer collect\n\n")
 		fmt.Fprintf(os.Stderr, "Collect from specific machines:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer collect -f ubuntu-max -f nas\n\n")
+		fmt.Fprintf(os.Stderr, "Sync deletions (only when --from is specified):\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect -f ubuntu-max --sync-deletions\n\n")
 		fmt.Fprintf(os.Stderr, "Register a machine:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer collect -a ubuntu-max-acb605=ubuntu@192.168.1.100\n\n")
 		fmt.Fprintf(os.Stderr, "List configured machines:\n")
@@ -4100,6 +4103,64 @@ func runCollect(args []string) {
 			}
 		} else {
 			fmt.Printf("Done: %s\n\n", machine)
+
+			// Handle --sync-deletions: delete local manifests from this machine if they don't exist on remote
+			if *syncDeletionsFlag && len(fromMachines) > 0 {
+				// Only sync deletions when collecting from specific machine(s), not from all
+				collectFromAll := false
+				if len(fromMachines) == 1 {
+					// Check if this is the only machine or if collecting from all
+					allMachines := []string{}
+					for id := range cfg {
+						if !strings.Contains(cfg[id], "[removable]") {
+							allMachines = append(allMachines, id)
+						}
+					}
+					if len(fromMachines) < len(allMachines) {
+						collectFromAll = false
+					} else {
+						collectFromAll = true
+					}
+				} else {
+					collectFromAll = false
+				}
+
+				if !collectFromAll {
+					deleteStaleManiests(machine, target, localDir)
+				}
+			}
+		}
+	}
+}
+
+func deleteStaleManiests(machine, target, localDir string) {
+	// Get list of remote manifests for this machine via SSH
+	remoteManifestCmd := fmt.Sprintf("ls -1 ~/manifests/_Manifest/ 2>/dev/null | grep '^photo_manifest_%s' || true", strings.Split(machine, "-")[0])
+	cmd := exec.Command("ssh", target, remoteManifestCmd)
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		// Silently skip if SSH fails
+		return
+	}
+
+	remoteFiles := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		if line != "" {
+			remoteFiles[line] = true
+		}
+	}
+
+	// Find all local manifests for this machine and delete ones not on remote
+	matches, _ := filepath.Glob(filepath.Join(localDir, fmt.Sprintf("photo_manifest_%s*", strings.Split(machine, "-")[0])))
+	for _, localPath := range matches {
+		name := filepath.Base(localPath)
+		if !remoteFiles[name] {
+			if err := os.Remove(localPath); err == nil {
+				fmt.Fprintf(os.Stderr, "  ✓ Deleted stale manifest: %s\n", name)
+			}
 		}
 	}
 }
