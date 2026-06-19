@@ -125,3 +125,64 @@ func parseArchiveTimestamp(folderName string) (string, error) {
 
 	return timestamp, nil
 }
+
+// =============================================================================
+// pruneManifestRecords: Prune Logic for Archive Entries (Pure Function)
+// =============================================================================
+
+// PruneResult represents the output of pruning a manifest.
+type PruneResult struct {
+	ToKeep   [][]string // rows to keep (includes header)
+	ToDelete int        // count of entries deleted
+}
+
+// pruneManifestRecords filters manifest records, keeping only entries whose files exist.
+// Pure: filtering logic is deterministic; file existence check is injected.
+// The fileExists function is called for each entry that matches archivePath.
+func pruneManifestRecords(
+	records [][]string,
+	headerIndex map[string]int,
+	archivePath string,
+	fileExists func(path string) bool,
+) PruneResult {
+	result := PruneResult{
+		ToKeep: make([][]string, 0, len(records)),
+	}
+
+	if len(records) < 1 {
+		return result
+	}
+
+	// Always keep header
+	result.ToKeep = append(result.ToKeep, records[0])
+
+	for _, record := range records[1:] {
+		if len(record) < 2 {
+			// Malformed record, skip it
+			continue
+		}
+
+		fields := extractManifestFields(record, headerIndex, "scan_path", "relative_path")
+		scanPath := fields["scan_path"]
+		relativePath := fields["relative_path"]
+
+		// Only filter entries matching this archive folder
+		if !pathMatches(scanPath, archivePath) {
+			// Entry is for a different archive, keep it
+			result.ToKeep = append(result.ToKeep, record)
+			continue
+		}
+
+		// Entry is for this archive. Check if the file still exists.
+		fullPath := filepath.Join(scanPath, relativePath)
+		if fileExists(fullPath) {
+			// File exists, keep it
+			result.ToKeep = append(result.ToKeep, record)
+		} else {
+			// File was deleted, don't keep it
+			result.ToDelete++
+		}
+	}
+
+	return result
+}

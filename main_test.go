@@ -732,3 +732,103 @@ func TestParseArchiveTimestamp(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// pruneManifestRecords
+// =============================================================================
+
+func TestPruneManifestRecords(t *testing.T) {
+	tests := []struct {
+		name         string
+		records      [][]string
+		headerIndex  map[string]int
+		archivePath  string
+		fileExists   func(string) bool
+		wantKeepLen  int
+		wantDeleteCt int
+	}{
+		{
+			name: "all files exist",
+			records: [][]string{
+				{"scan_path", "relative_path"},
+				{"/archive/2026-06-19-060012-Photos", "photo1.jpg"},
+				{"/archive/2026-06-19-060012-Photos", "photo2.jpg"},
+				{"/data/photos", "photo3.jpg"},
+			},
+			headerIndex: map[string]int{"scan_path": 0, "relative_path": 1},
+			archivePath: "/archive/2026-06-19-060012-Photos",
+			fileExists:  func(s string) bool { return true },
+			wantKeepLen: 4, // header + 3 records
+			wantDeleteCt: 0,
+		},
+		{
+			name: "some files deleted in archive",
+			records: [][]string{
+				{"scan_path", "relative_path"},
+				{"/archive/2026-06-19-060012-Photos", "photo1.jpg"},
+				{"/archive/2026-06-19-060012-Photos", "photo2.jpg"},
+				{"/data/photos", "photo3.jpg"},
+			},
+			headerIndex: map[string]int{"scan_path": 0, "relative_path": 1},
+			archivePath: "/archive/2026-06-19-060012-Photos",
+			fileExists: func(s string) bool {
+				// photo1 exists, photo2 deleted, photo3 (not in archive) exists
+				return s != "/archive/2026-06-19-060012-Photos/photo2.jpg"
+			},
+			wantKeepLen:  3, // header + photo1 + photo3
+			wantDeleteCt: 1, // photo2
+		},
+		{
+			name: "no matching entries in archive",
+			records: [][]string{
+				{"scan_path", "relative_path"},
+				{"/data/photos", "photo1.jpg"},
+				{"/other/data", "photo2.jpg"},
+			},
+			headerIndex: map[string]int{"scan_path": 0, "relative_path": 1},
+			archivePath: "/archive/2026-06-19-060012-Photos",
+			fileExists:  func(s string) bool { return true },
+			wantKeepLen: 3, // all rows kept (none match archive)
+			wantDeleteCt: 0,
+		},
+		{
+			name: "empty records",
+			records: [][]string{
+				{"scan_path", "relative_path"},
+			},
+			headerIndex: map[string]int{"scan_path": 0, "relative_path": 1},
+			archivePath: "/archive/2026-06-19-060012-Photos",
+			fileExists:  func(s string) bool { return true },
+			wantKeepLen: 1, // only header
+			wantDeleteCt: 0,
+		},
+		{
+			name: "malformed records skipped",
+			records: [][]string{
+				{"scan_path", "relative_path"},
+				{"/archive/2026-06-19-060012-Photos", "photo1.jpg"},
+				{}, // malformed: empty
+				{"only_one_field"},
+				{"/archive/2026-06-19-060012-Photos", "photo2.jpg"},
+			},
+			headerIndex: map[string]int{"scan_path": 0, "relative_path": 1},
+			archivePath: "/archive/2026-06-19-060012-Photos",
+			fileExists:  func(s string) bool { return true },
+			wantKeepLen: 3, // header + 2 valid records
+			wantDeleteCt: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := pruneManifestRecords(tt.records, tt.headerIndex, tt.archivePath, tt.fileExists)
+
+			if len(result.ToKeep) != tt.wantKeepLen {
+				t.Errorf("ToKeep length: got %d, want %d", len(result.ToKeep), tt.wantKeepLen)
+			}
+			if result.ToDelete != tt.wantDeleteCt {
+				t.Errorf("ToDelete count: got %d, want %d", result.ToDelete, tt.wantDeleteCt)
+			}
+		})
+	}
+}

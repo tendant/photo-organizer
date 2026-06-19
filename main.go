@@ -2332,41 +2332,42 @@ func runPrune(args []string) {
 			continue
 		}
 
-		var deletedEntries []string
-		for _, record := range records[1:] {
-			if len(record) < 2 {
-				continue
-			}
+		headerIndex := buildHeaderIndex(records[0])
 
-			scanPath := ""
-			relativePath := ""
-			for i, h := range records[0] {
-				if h == "scan_path" && i < len(record) {
-					scanPath = record[i]
+		// Use pure function to identify deleted entries
+		result := pruneManifestRecords(records, headerIndex, archivePath, func(path string) bool {
+			_, err := os.Stat(path)
+			return err == nil
+		})
+
+		if result.ToDelete > 0 {
+			// Collect the deleted entries for preview
+			var deletedEntries []string
+			headerIndex := buildHeaderIndex(records[0])
+			for _, record := range records[1:] {
+				if len(record) < 2 {
+					continue
 				}
-				if h == "relative_path" && i < len(record) {
-					relativePath = record[i]
+				fields := extractManifestFields(record, headerIndex, "scan_path", "relative_path")
+				scanPath := fields["scan_path"]
+				relativePath := fields["relative_path"]
+
+				if !pathMatches(scanPath, archivePath) {
+					continue
+				}
+
+				fullPath := filepath.Join(scanPath, relativePath)
+				if _, err := os.Stat(fullPath); err != nil {
+					deletedEntries = append(deletedEntries, relativePath)
 				}
 			}
 
-			// Only process entries where scan_path matches the archive folder
-			if !strings.HasPrefix(filepath.Clean(scanPath), archivePath) {
-				continue
-			}
-
-			fullPath := filepath.Join(scanPath, relativePath)
-			if _, err := os.Stat(fullPath); err != nil {
-				deletedEntries = append(deletedEntries, relativePath)
-			}
-		}
-
-		if len(deletedEntries) > 0 {
 			deletions = append(deletions, DeletionInfo{
 				manifestPath: manifestPath,
-				count:        len(deletedEntries),
+				count:        result.ToDelete,
 				entries:      deletedEntries,
 			})
-			totalToDelete += len(deletedEntries)
+			totalToDelete += result.ToDelete
 		}
 	}
 
@@ -2419,54 +2420,28 @@ func runPrune(args []string) {
 			continue
 		}
 
-		var validRows [][]string
-		validRows = append(validRows, records[0])
-		prunedCount := 0
+		headerIndex := buildHeaderIndex(records[0])
 
-		for _, record := range records[1:] {
-			if len(record) < 2 {
-				continue
-			}
+		// Use pure function to filter records
+		result := pruneManifestRecords(records, headerIndex, archivePath, func(path string) bool {
+			_, err := os.Stat(path)
+			return err == nil
+		})
 
-			scanPath := ""
-			relativePath := ""
-			for i, h := range records[0] {
-				if h == "scan_path" && i < len(record) {
-					scanPath = record[i]
-				}
-				if h == "relative_path" && i < len(record) {
-					relativePath = record[i]
-				}
-			}
-
-			// Only process entries matching the archive folder
-			if !strings.HasPrefix(filepath.Clean(scanPath), archivePath) {
-				validRows = append(validRows, record)
-				continue
-			}
-
-			fullPath := filepath.Join(scanPath, relativePath)
-			if _, err := os.Stat(fullPath); err == nil {
-				validRows = append(validRows, record)
-			} else {
-				prunedCount++
-			}
-		}
-
-		if prunedCount > 0 {
+		if result.ToDelete > 0 {
 			tmpFile, err := os.CreateTemp(filepath.Dir(manifestPath), ".manifest-tmp-*")
 			if err != nil {
 				continue
 			}
 			writer := csv.NewWriter(tmpFile)
-			writer.WriteAll(validRows)
+			writer.WriteAll(result.ToKeep)
 			writer.Flush()
 			tmpFile.Close()
 
 			os.Rename(tmpFile.Name(), manifestPath)
-			totalPruned += prunedCount
+			totalPruned += result.ToDelete
 
-			fmt.Fprintf(os.Stderr, "  ✓ %s: removed %d entries\n", filepath.Base(manifestPath), prunedCount)
+			fmt.Fprintf(os.Stderr, "  ✓ %s: removed %d entries\n", filepath.Base(manifestPath), result.ToDelete)
 		}
 	}
 
