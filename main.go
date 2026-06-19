@@ -4317,6 +4317,16 @@ func runVerify(args []string) {
 			folderCopies[key] = append(folderCopies[key], item)
 		}
 
+		// Filter: only keep folders with exact same file count as target
+		targetFileCount := len(targetFileSignatures)
+		filteredFolders := make(map[string][]ManifestRowWithMeta)
+		for key, items := range folderCopies {
+			if len(items) == targetFileCount {
+				filteredFolders[key] = items
+			}
+		}
+		folderCopies = filteredFolders
+
 		// Verify each copy
 		for key, items := range folderCopies {
 			// Extract folderPath and machine from key
