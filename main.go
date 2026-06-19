@@ -1806,6 +1806,91 @@ func runRescan(args []string) {
 // Archive and Delete Commands
 // =============================================================================
 
+// pruneManifestEntries removes entries for a folder from a manifest file
+func pruneManifestEntries(manifestPath string, folderPath string) (int, error) {
+	// Read CSV directly to preserve all columns
+	f, err := os.Open(manifestPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	records, err := r.ReadAll()
+	f.Close()
+	if err != nil {
+		return 0, err
+	}
+
+	if len(records) < 1 {
+		return 0, nil // Empty manifest
+	}
+
+	// Get scan_path and relative_path column indices
+	headers := records[0]
+	scanPathIdx, relPathIdx := -1, -1
+	for i, h := range headers {
+		if h == "scan_path" {
+			scanPathIdx = i
+		} else if h == "relative_path" {
+			relPathIdx = i
+		}
+	}
+
+	if scanPathIdx < 0 || relPathIdx < 0 {
+		return 0, fmt.Errorf("missing required columns")
+	}
+
+	// Filter rows: keep only those NOT under the archived folder
+	prunedRecords := [][]string{headers} // Start with header
+	prunedCount := 0
+
+	for _, row := range records[1:] {
+		if len(row) > relPathIdx && len(row) > scanPathIdx {
+			filePath := filepath.Join(row[scanPathIdx], row[relPathIdx])
+			// Keep only entries that are NOT under the folder being archived
+			if strings.HasPrefix(filePath, folderPath+"/") || strings.HasPrefix(filePath, folderPath+string(filepath.Separator)) {
+				prunedCount++
+				continue // Skip this row
+			}
+		}
+		prunedRecords = append(prunedRecords, row)
+	}
+
+	if prunedCount == 0 {
+		return 0, nil // Nothing to prune
+	}
+
+	// Back up first
+	if err := backupManifest(manifestPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not back up manifest: %v\n", err)
+	}
+
+	// Write atomically using temp file
+	tmpFile, err := os.CreateTemp(filepath.Dir(manifestPath), ".manifest-tmp-*")
+	if err != nil {
+		return prunedCount, err
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	w := csv.NewWriter(tmpFile)
+	w.WriteAll(prunedRecords)
+	w.Flush()
+	if err := w.Error(); err != nil {
+		tmpFile.Close()
+		return prunedCount, err
+	}
+	tmpFile.Close()
+
+	// Atomically rename
+	if err := os.Rename(tmpPath, manifestPath); err != nil {
+		return prunedCount, err
+	}
+
+	return prunedCount, nil
+}
+
 func runArchive(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder-path> --dest <archive-dir>\n\n")
@@ -1888,16 +1973,27 @@ func runArchive(args []string) {
 		}
 	}
 
-	// Remove old manifests for the archived folder and its subdirectories
+	// Remove or prune old manifests for the archived folder
+	fmt.Fprintf(os.Stderr, "Cleaning up old manifest entries...\n")
 	manifestDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
 	if matches, err := filepath.Glob(filepath.Join(manifestDir, "*.csv")); err == nil {
-		for _, path := range matches {
+		for _, manifestPath := range matches {
 			// Read manifest to check if it references the old source folder
-			if src, err := readManifest(path); err == nil {
-				// If this manifest scanned the old folder or its subdirectories, remove it
+			if src, err := readManifest(manifestPath); err == nil {
+				// Case 1: Manifest scanned the old folder or its subdirectories - remove it entirely
 				if src.ScanPath == absSourceFolder || strings.HasPrefix(src.ScanPath, absSourceFolder+string(filepath.Separator)) {
-					if err := os.Remove(path); err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: could not remove old manifest %s: %v\n", path, err)
+					if err := os.Remove(manifestPath); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: could not remove old manifest %s: %v\n", manifestPath, err)
+					}
+					continue
+				}
+
+				// Case 2: Manifest scanned a parent directory - prune entries for the old folder
+				if strings.HasPrefix(absSourceFolder, src.ScanPath+string(filepath.Separator)) {
+					if prunedCount, err := pruneManifestEntries(manifestPath, absSourceFolder); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: could not prune manifest %s: %v\n", manifestPath, err)
+					} else if prunedCount > 0 {
+						fmt.Fprintf(os.Stderr, "✓ Pruned %d entries from %s\n", prunedCount, filepath.Base(manifestPath))
 					}
 				}
 			}
