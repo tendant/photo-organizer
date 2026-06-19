@@ -721,9 +721,26 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 			}
 		}(i, rf)
 	}
-	wg.Wait()
-	fmt.Fprintf(os.Stderr, "\r  %-78s\n",
-		fmt.Sprintf("%s / %s processed", formatCount(len(raw)), formatCount(len(raw))))
+
+	// Wait with timeout to detect deadlocks
+	fmt.Fprintf(os.Stderr, "\nWaiting for %d goroutines to complete...\n", len(raw))
+	done := make(chan bool, 1)
+	go func() {
+		wg.Wait()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		fmt.Fprintf(os.Stderr, "\r  %-78s\n",
+			fmt.Sprintf("%s / %s processed", formatCount(len(raw)), formatCount(len(raw))))
+	case <-time.After(60 * time.Second):
+		fmt.Fprintf(os.Stderr, "\n⚠️ TIMEOUT: Goroutines stuck waiting (60s)\n")
+		fmt.Fprintf(os.Stderr, "  Processed so far: %d / %d\n", processed.Load(), len(raw))
+		fmt.Fprintf(os.Stderr, "  Semaphore capacity: %d\n", cap(sem))
+		fmt.Fprintf(os.Stderr, "  This is likely a logical deadlock, not a file processing error\n")
+		os.Exit(1)
+	}
 	stats.Cached = int(cachedCount.Load())
 
 	// Phase 3: compute full hash only for files that share BOTH the same
