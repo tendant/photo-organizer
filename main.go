@@ -41,6 +41,16 @@ func confirmPrompt(message string) bool {
 	return response == "y" || response == "Y"
 }
 
+// userHomeDir returns the user's home directory (cross-platform safe)
+func userHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: cannot determine home directory: %v\n", err)
+		return "."
+	}
+	return home
+}
+
 // =============================================================================
 // Supported File Types
 // =============================================================================
@@ -295,8 +305,12 @@ func shouldSkipFile(path string) bool {
 	if name == ".DS_Store" {
 		return true
 	}
-	// Skip Syncthing sync metadata
-	if strings.Contains(path, "/.stfolder/") || strings.HasPrefix(name, ".stfolder") {
+	// Skip Syncthing sync metadata (cross-platform check)
+	if strings.HasPrefix(name, ".stfolder") {
+		return true
+	}
+	normPath := filepath.ToSlash(path)
+	if strings.Contains(normPath, "/.stfolder/") {
 		return true
 	}
 	return false
@@ -830,7 +844,7 @@ func resolveMachineID(flagValue string) string {
 
 func machineID() string {
 	newPath := machineIDFile()
-	oldPath := filepath.Join(os.Getenv("HOME"), ".photo-organizer-id")
+	oldPath := filepath.Join(userHomeDir(), ".photo-organizer-id")
 
 	// Migrate old dotfile to new location if needed.
 	if _, err := os.Stat(newPath); os.IsNotExist(err) {
@@ -2057,7 +2071,7 @@ func runArchive(args []string) {
 	// Rescan the parent of source folder to remove old entries (with --prune)
 	sourceParent := filepath.Dir(absSourceFolder)
 	fmt.Fprintf(os.Stderr, "\nUpdating manifest for %s (pruning removed files)...\n", sourceParent)
-	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestRoot := filepath.Join(userHomeDir(), "manifests")
 	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, sourceParent))
 
 	files, _, err := scanDirectory(sourceParent, make(map[string]CacheEntry), nil)
@@ -2075,7 +2089,7 @@ func runArchive(args []string) {
 
 	// Remove or prune old manifests for the archived folder
 	fmt.Fprintf(os.Stderr, "Cleaning up old manifest entries...\n")
-	manifestDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
+	manifestDir := filepath.Join(userHomeDir(), "manifests", "_Manifest")
 	if matches, err := filepath.Glob(filepath.Join(manifestDir, "*.csv")); err == nil {
 		for _, manifestPath := range matches {
 			// Read manifest to check if it references the old source folder
@@ -2292,7 +2306,7 @@ func runPrune(args []string) {
 	fmt.Fprintf(os.Stderr, "Archive: %s\n\n", archivePath)
 
 	// Find all manifests in ~/manifests/_Manifest/
-	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestRoot := filepath.Join(userHomeDir(), "manifests")
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
 
@@ -2456,7 +2470,7 @@ func runStalledManifests(args []string) {
 		}
 	}
 
-	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestRoot := filepath.Join(userHomeDir(), "manifests")
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
 
@@ -2562,7 +2576,7 @@ func runLookup(args []string) {
 
 	lookupPath := filepath.Clean(args[0])
 
-	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestRoot := filepath.Join(userHomeDir(), "manifests")
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
 
@@ -2650,7 +2664,7 @@ func runRemoveManifest(args []string) {
 
 	folderPath := filepath.Clean(args[0])
 
-	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestRoot := filepath.Join(userHomeDir(), "manifests")
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
 
@@ -2787,7 +2801,7 @@ func runBackupMissing(args []string) {
 	fmt.Fprintf(os.Stderr, "Step 1: Finding files not backed up...\n")
 
 	// Load all manifests
-	defaultDir := filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest")
+	defaultDir := filepath.Join(userHomeDir(), "manifests", "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(defaultDir, "*.csv"))
 
 	var sources []ManifestSource
@@ -3027,7 +3041,7 @@ func runCleanupManifests(args []string) {
 	fmt.Fprintf(os.Stderr, "Scanning for stale manifests...\n\n")
 
 	// Load all manifests
-	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestRoot := filepath.Join(userHomeDir(), "manifests")
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
 
@@ -3427,7 +3441,7 @@ func runMachines(args []string) {
 // =============================================================================
 
 func defaultManifestRoot() string {
-	return filepath.Join(os.Getenv("HOME"), "manifests")
+	return filepath.Join(userHomeDir(), "manifests")
 }
 
 func machineIDFile() string {
@@ -3584,7 +3598,7 @@ func generateMachinesConfWithPaths(machineNames []string, machineInfo map[string
 func loadMachinesConfig() map[string]string {
 	cfg := make(map[string]string)
 	newPath := machinesConfFile()
-	oldPath := filepath.Join(os.Getenv("HOME"), ".photo-organizer-machines")
+	oldPath := filepath.Join(userHomeDir(), ".photo-organizer-machines")
 
 	// Migrate old dotfile to new location if needed.
 	if _, err := os.Stat(newPath); os.IsNotExist(err) {
