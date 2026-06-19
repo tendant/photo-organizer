@@ -1364,6 +1364,9 @@ func main() {
 		case "lookup":
 			runLookup(os.Args[2:])
 			return
+		case "remove-manifest":
+			runRemoveManifest(os.Args[2:])
+			return
 		case "search":
 			runSearch(os.Args[2:])
 			return
@@ -1410,7 +1413,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  archive-status <archive-dir>    Show archived folders & safe deletion checklist\n")
 	fmt.Fprintf(os.Stderr, "  prune <archive-path>            Clean up manifest entries for archived folder (AFTER manual rm)\n")
 	fmt.Fprintf(os.Stderr, "  stalled-manifests [--all-machines]  Report manifests with missing scan folders\n")
-	fmt.Fprintf(os.Stderr, "  lookup <folder>                 Find which manifests contain this folder\n\n")
+	fmt.Fprintf(os.Stderr, "  lookup <folder>                 Find which manifests contain this folder\n")
+	fmt.Fprintf(os.Stderr, "  remove-manifest <folder>        Delete manifest(s) for a scanned folder\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "ANALYSIS & VERIFICATION\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
@@ -2720,6 +2724,107 @@ func runLookup(args []string) {
 		fmt.Fprintf(os.Stderr, "     To rescan:\n")
 		fmt.Fprintf(os.Stderr, "       photo-organizer scan %s\n\n", match.scanPath)
 	}
+}
+
+// =============================================================================
+// Remove Manifest (Delete manifest file for a scanned folder)
+// =============================================================================
+
+func runRemoveManifest(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "\n🗑️  REMOVE MANIFEST\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer remove-manifest <folder-path>\n\n")
+		fmt.Fprintf(os.Stderr, "Example:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer remove-manifest /tankm1/media/nas/photos\n\n")
+		fmt.Fprintf(os.Stderr, "This deletes the manifest file(s) for a scanned folder.\n")
+		os.Exit(1)
+	}
+
+	folderPath := filepath.Clean(args[0])
+
+	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found\n")
+		return
+	}
+
+	type ManifestMatch struct {
+		manifestPath string
+		manifestName string
+		scanPath     string
+		machine      string
+		entryCount   int
+	}
+	var results []ManifestMatch
+
+	// Find manifests for this folder
+	for _, manifestPath := range matches {
+		src, err := readManifest(manifestPath)
+		if err != nil || len(src.Rows) == 0 {
+			continue
+		}
+
+		machine := src.Rows[0].MachineName
+		scanPath := src.Rows[0].ScanPath
+
+		// Check if this manifest's scan path matches the folder
+		if filepath.Clean(scanPath) == folderPath {
+			results = append(results, ManifestMatch{
+				manifestPath: manifestPath,
+				manifestName: filepath.Base(manifestPath),
+				scanPath:     scanPath,
+				machine:      machine,
+				entryCount:   len(src.Rows),
+			})
+		}
+	}
+
+	if len(results) == 0 {
+		fmt.Fprintf(os.Stderr, "\n🗑️  REMOVE MANIFEST: %s\n\n", folderPath)
+		fmt.Fprintf(os.Stderr, "❌ No manifest found for this folder\n")
+		return
+	}
+
+	// Display what will be deleted
+	fmt.Fprintf(os.Stderr, "\n🗑️  REMOVING MANIFEST\n\n")
+	fmt.Fprintf(os.Stderr, "Found %d manifest(s) to delete:\n\n", len(results))
+
+	for i, match := range results {
+		fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, match.manifestName)
+		fmt.Fprintf(os.Stderr, "     Machine: %s\n", match.machine)
+		fmt.Fprintf(os.Stderr, "     Scan path: %s\n", match.scanPath)
+		fmt.Fprintf(os.Stderr, "     Entries: %d\n\n", match.entryCount)
+	}
+
+	// Ask for confirmation
+	fmt.Fprintf(os.Stderr, "⚠️  This will permanently delete the manifest file(s).\n")
+	fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
+
+	var response string
+	fmt.Scanln(&response)
+	if response != "y" && response != "Y" {
+		fmt.Fprintf(os.Stderr, "Cancelled\n")
+		return
+	}
+
+	// Delete the manifests
+	fmt.Fprintf(os.Stderr, "\n🔄 Deleting manifest(s)...\n\n")
+	deletedCount := 0
+
+	for _, match := range results {
+		err := os.Remove(match.manifestPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  ❌ Failed to delete %s: %v\n", match.manifestName, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "  ✓ Deleted %s\n", match.manifestName)
+			deletedCount++
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "\n✅ Removal complete: deleted %d manifest(s)\n", deletedCount)
 }
 
 // =============================================================================
