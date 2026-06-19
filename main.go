@@ -4148,7 +4148,8 @@ func runCollect(args []string) {
 
 func deleteStaleManiests(machine, target, localDir string) {
 	// Get list of remote manifests for this machine via SSH
-	remoteManifestCmd := fmt.Sprintf("ls -1 ~/manifests/_Manifest/ 2>/dev/null | grep '^photo_manifest_%s' || true", strings.Split(machine, "-")[0])
+	// Use full machine ID in grep pattern to avoid matching other machines
+	remoteManifestCmd := fmt.Sprintf("ls -1 ~/manifests/_Manifest/ 2>/dev/null | grep '^photo_manifest_%s_' || true", machine)
 	cmd := exec.Command("ssh", target, remoteManifestCmd)
 
 	var stdout bytes.Buffer
@@ -4167,7 +4168,7 @@ func deleteStaleManiests(machine, target, localDir string) {
 	}
 
 	// Find all local manifests for this machine and delete ones not on remote
-	matches, _ := filepath.Glob(filepath.Join(localDir, fmt.Sprintf("photo_manifest_%s*", strings.Split(machine, "-")[0])))
+	matches, _ := filepath.Glob(filepath.Join(localDir, fmt.Sprintf("photo_manifest_%s_*", machine)))
 	for _, localPath := range matches {
 		name := filepath.Base(localPath)
 		if !remoteFiles[name] {
