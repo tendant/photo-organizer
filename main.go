@@ -1003,10 +1003,14 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 	existing := make(map[string][]string)
 	if f, err := os.Open(manifestFile); err == nil {
 		r := csv.NewReader(f)
+		readStart := time.Now()
 		records, err := r.ReadAll()
 		f.Close()
 		if err != nil {
 			return mstats, fmt.Errorf("read existing manifest %s: %w", manifestFile, err)
+		}
+		if len(records) > 1000 {
+			fmt.Fprintf(os.Stderr, "  Loaded existing manifest (%d entries) in %v\n", len(records)-1, time.Since(readStart))
 		}
 		if len(records) < 1 {
 			goto doneLoading
@@ -1058,7 +1062,10 @@ func updateManifest(scanDir string, files []FileInfo, manifestFile string, machi
 doneLoading:
 
 	newCount, updatedCount := 0, 0
-	for _, fi := range files {
+	for i, fi := range files {
+		if len(files) > 1000 && (i+1)%10000 == 0 {
+			fmt.Fprintf(os.Stderr, "  Processing: %d / %d files\n", i+1, len(files))
+		}
 		relPath, _ := filepath.Rel(scanDir, fi.Path)
 		if row, exists := existing[relPath]; exists {
 			storedSize, _ := strconv.ParseInt(row[headerIdx["file_size_bytes"]], 10, 64)
@@ -2020,13 +2027,15 @@ func runArchive(args []string) {
 	} else {
 		fmt.Fprintf(os.Stderr, "Updating manifest for archive location...\n")
 		fmt.Fprintf(os.Stderr, "  Processing %d files...\n", len(files))
+		startTime := time.Now()
 		stats, err := updateManifest(archiveParent, files, manifestFile, machineName, false)
+		elapsed := time.Since(startTime)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠  Warning: Could not update archive manifest: %v\n", err)
 		} else if stats.New > 0 || stats.Updated > 0 {
-			fmt.Fprintf(os.Stderr, "✓ Updated archive manifest (%d new, %d updated, %d pruned)\n", stats.New, stats.Updated, stats.Pruned)
+			fmt.Fprintf(os.Stderr, "✓ Updated archive manifest (%d new, %d updated, %d pruned) in %v\n", stats.New, stats.Updated, stats.Pruned, elapsed)
 		} else {
-			fmt.Fprintf(os.Stderr, "✓ Archive manifest up to date\n")
+			fmt.Fprintf(os.Stderr, "✓ Archive manifest up to date in %v\n", elapsed)
 		}
 	}
 
