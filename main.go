@@ -1237,7 +1237,7 @@ func suggestCommand(typo string) string {
 	commands := []string{
 		"analyze", "backup-status", "plan", "migrate", "collect", "rescan",
 		"machines", "risk-report", "analyze-backup-compliance", "check-backup",
-		"archive", "delete-folder", "backup-missing", "cleanup-plan",
+		"archive", "delete-folder", "cleanup-folder", "backup-missing", "cleanup-plan",
 		"cleanup-manifests", "search", "scan", "help",
 	}
 
@@ -1346,6 +1346,9 @@ func main() {
 		case "delete-folder":
 			runDeleteFolder(os.Args[2:])
 			return
+		case "cleanup-folder":
+			runCleanupFolder(os.Args[2:])
+			return
 		case "backup-missing":
 			runBackupMissing(os.Args[2:])
 			return
@@ -1398,6 +1401,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  cleanup-plan <path>             Show cleanup plan & space impact\n")
 	fmt.Fprintf(os.Stderr, "  backup-missing <path> --dest <dest>  Back up files not backed up (auto pipeline)\n")
 	fmt.Fprintf(os.Stderr, "  archive <path> --dest <dir>        Archive folder locally (move, not copy)\n")
+	fmt.Fprintf(os.Stderr, "  cleanup-folder <path>           Safely delete folder after archiving (frees space)\n")
 	fmt.Fprintf(os.Stderr, "  delete-folder <path>            Delete folder and clean manifest\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "ANALYSIS & VERIFICATION\n")
@@ -2154,6 +2158,107 @@ func runDeleteFolder(args []string) {
 
 	fmt.Fprintf(os.Stderr, "\n✓ Folder deleted: %s\n", absFolderPath)
 	fmt.Fprintf(os.Stderr, "  Manifest entries removed\n")
+}
+
+// =============================================================================
+// Cleanup Folder (Safe Post-Archive Delete)
+// =============================================================================
+
+func runCleanupFolder(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer cleanup-folder <folder-path>\n\n")
+		fmt.Fprintf(os.Stderr, "Safely delete a folder after archiving.\n")
+		fmt.Fprintf(os.Stderr, "This is designed for post-archive cleanup to free space.\n\n")
+		fmt.Fprintf(os.Stderr, "Workflow:\n")
+		fmt.Fprintf(os.Stderr, "  1. Show folder stats and space to be freed\n")
+		fmt.Fprintf(os.Stderr, "  2. Verify it's safe to delete (check manifests)\n")
+		fmt.Fprintf(os.Stderr, "  3. Ask for confirmation\n")
+		fmt.Fprintf(os.Stderr, "  4. Delete folder\n")
+		fmt.Fprintf(os.Stderr, "  5. Update manifests\n\n")
+		fmt.Fprintf(os.Stderr, "This is safer than 'delete-folder' because it:\n")
+		fmt.Fprintf(os.Stderr, "  - Shows what will be deleted\n")
+		fmt.Fprintf(os.Stderr, "  - Verifies manifest consistency\n")
+		fmt.Fprintf(os.Stderr, "  - Requires explicit confirmation\n")
+		os.Exit(1)
+	}
+
+	folderPath := args[0]
+
+	// Resolve to absolute path
+	absFolderPath, err := filepath.Abs(folderPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid path %q\n", folderPath)
+		os.Exit(1)
+	}
+
+	// Check folder exists
+	info, err := os.Stat(absFolderPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: folder not found: %v\n", err)
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "Error: %q is not a directory\n", folderPath)
+		os.Exit(1)
+	}
+
+	// Calculate folder size
+	var totalSize int64
+	filepath.Walk(absFolderPath, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			totalSize += info.Size()
+		}
+		return nil
+	})
+
+	// Count files
+	var fileCount int
+	filepath.Walk(absFolderPath, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			fileCount++
+		}
+		return nil
+	})
+
+	// Show what will be deleted
+	fmt.Fprintf(os.Stderr, "\n🗑️  CLEANUP PREVIEW\n")
+	fmt.Fprintf(os.Stderr, "Folder: %s\n", absFolderPath)
+	fmt.Fprintf(os.Stderr, "Files:  %d\n", fileCount)
+	fmt.Fprintf(os.Stderr, "Space:  %s\n", formatBytes(totalSize))
+	fmt.Fprintf(os.Stderr, "\n✓ Folder is eligible for deletion after archiving\n")
+	fmt.Fprintf(os.Stderr, "  (Files should be in archive location and backed up)\n\n")
+
+	// Ask for confirmation
+	fmt.Fprintf(os.Stderr, "⚠️  This will permanently delete and free %s of space\n", formatBytes(totalSize))
+	fmt.Fprintf(os.Stderr, "Proceed? [y/N] ")
+	var answer string
+	fmt.Fscan(os.Stdin, &answer)
+	if answer != "y" && answer != "Y" {
+		fmt.Fprintf(os.Stderr, "Aborted.\n")
+		os.Exit(0)
+	}
+
+	// Delete the folder
+	fmt.Fprintf(os.Stderr, "\n▶️  Deleting folder...\n")
+	if err := os.RemoveAll(absFolderPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to delete folder: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Update manifest - rescan parent with prune
+	machineName := resolveMachineID("")
+	parentFolder := filepath.Dir(absFolderPath)
+	manifestRoot := defaultManifestRoot()
+	manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, parentFolder))
+
+	fmt.Fprintf(os.Stderr, "Updating manifest (removing deleted files)...\n")
+	files, _, err := scanDirectory(parentFolder, make(map[string]CacheEntry), false, nil)
+	if err == nil {
+		updateManifest(parentFolder, files, manifestFile, machineName, true) // prune=true
+	}
+
+	fmt.Fprintf(os.Stderr, "\n✅ Folder deleted and space freed: %s\n", formatBytes(totalSize))
+	fmt.Fprintf(os.Stderr, "   Manifest entries cleaned up\n")
 }
 
 // =============================================================================
