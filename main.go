@@ -1278,7 +1278,7 @@ func main() {
 		case "sync-config":
 			runSyncConfig(os.Args[2:])
 			return
-		case "find-duplicates":
+		case "find-duplicates", "dups", "dup":
 			runFindDuplicates(os.Args[2:])
 			return
 		case "rescan":
