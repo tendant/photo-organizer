@@ -1,42 +1,37 @@
-# Example .photoignore file
+# .photoignore: Exclude files from backup
 #
-# This file controls which folders and files are excluded from backup scanning.
-# Place a .photoignore file in any folder to exclude patterns from that folder
-# and all subfolders (unless overridden by a subfolder's .photoignore).
-#
-# Format:
-#  - One pattern per line
-#  - Glob patterns supported (*, ?, [abc])
-#  - Lines starting with # are comments
-#  - Blank lines are ignored
-#  - Patterns ending with / match directory names
-#  - Patterns without / match file names
+# Patterns:
+#  - *.jpg       Match by extension
+#  - dirname/    Match directory (include trailing /)
+#  - pattern*    Glob patterns supported (*, ?, [abc])
+#  - # comment   Lines starting with # are comments
 
-# Exclude Claude project metadata (if you have .claude folders)
+# Metadata
 .claude/
-
-# Exclude photo-organizer's own manifest storage
 _Manifest/
 
-# Exclude temporary files
+# Temporary files
 *.tmp
 *.cache
 *.lock
+*.swp
+*~
 
-# Exclude system folders (if not handled by OS skip list)
-.DS_Store
+# System files
 Thumbs.db
+.DS_Store
 
-# Exclude editor/IDE metadata
+# IDE/Editor
 .vscode/
 .idea/
-*.swp
+.swp
 
-# Exclude development artifacts
+# Development
 node_modules/
 dist/
 build/
 
-# Exclude video editing projects (optional)
-*.prproj
-*.fcpxml
+# Project-specific (uncomment as needed)
+# *.psd
+# *.xcf
+# .git/
