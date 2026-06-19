@@ -3850,6 +3850,8 @@ func runFindDuplicateFolders(args []string) {
 			i++
 		} else if arg == "-s" || arg == "--summary" {
 			processedArgs = append(processedArgs, "--summary")
+		} else if arg == "-c" || arg == "--by-count" {
+			processedArgs = append(processedArgs, "--by-count")
 		} else {
 			processedArgs = append(processedArgs, arg)
 		}
@@ -3858,12 +3860,15 @@ func runFindDuplicateFolders(args []string) {
 	fs := flag.NewFlagSet("dup-folders", flag.ExitOnError)
 	machineFlag := fs.String("machine", "", "find duplicates in manifest from specific machine")
 	summaryFlag := fs.Bool("summary", false, "show summary only")
+	byCountFlag := fs.Bool("by-count", false, "sort by number of copies (most duplicated first)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer dup-folders [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Find duplicate folders (entire directories with identical contents).\n")
 		fmt.Fprintf(os.Stderr, "Much simpler than individual file duplicates.\n\n")
 		fmt.Fprintf(os.Stderr, "Find all duplicate folders:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders\n\n")
+		fmt.Fprintf(os.Stderr, "Most duplicated folders (sorted by copy count):\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders --by-count -s\n\n")
 		fmt.Fprintf(os.Stderr, "Find duplicate folders on specific machine:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders -m ubuntu-max\n\n")
 		fmt.Fprintf(os.Stderr, "Summary view:\n")
@@ -3977,10 +3982,22 @@ func runFindDuplicateFolders(args []string) {
 		return
 	}
 
-	// Sort by wasted space
-	sort.Slice(duplicates, func(i, j int) bool {
-		return duplicates[i].TotalWasted > duplicates[j].TotalWasted
-	})
+	// Sort by wasted space or copy count
+	if *byCountFlag {
+		// Sort by number of copies (most duplicated first)
+		sort.Slice(duplicates, func(i, j int) bool {
+			if len(duplicates[i].Folders) != len(duplicates[j].Folders) {
+				return len(duplicates[i].Folders) > len(duplicates[j].Folders)
+			}
+			// Tiebreaker: by wasted space
+			return duplicates[i].TotalWasted > duplicates[j].TotalWasted
+		})
+	} else {
+		// Sort by wasted space (default)
+		sort.Slice(duplicates, func(i, j int) bool {
+			return duplicates[i].TotalWasted > duplicates[j].TotalWasted
+		})
+	}
 
 	if *summaryFlag {
 		totalWasted := int64(0)
