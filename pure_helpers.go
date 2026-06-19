@@ -253,3 +253,52 @@ func generateArchiveFolderName(folderName string, timestamp time.Time) string {
 	timeStr := timestamp.Format("2006-01-02-150405")
 	return fmt.Sprintf("%s%s", timeStr, folderName)
 }
+
+// =============================================================================
+// parseCollectArgs: Argument Parsing for Collect Command (Pure Function)
+// =============================================================================
+
+// CollectArgs represents parsed arguments for the collect command.
+type CollectArgs struct {
+	FromMachines []string // machines to collect from
+	Remaining    []string // remaining args for flag parsing (--add, --list, etc)
+}
+
+// parseCollectArgs parses CLI arguments for the collect command.
+// Pure: no side effects, deterministic parsing.
+// Handles: --from/-f machine, --add/-a machine=host, --list/-l, --root/-r dir, --sync-delete
+func parseCollectArgs(args []string) CollectArgs {
+	var fromMachines []string
+	var remaining []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		// Handle short aliases: -f → --from, -a → --add, -l → --list, -r → --root
+		if arg == "-f" && i+1 < len(args) {
+			fromMachines = append(fromMachines, args[i+1])
+			i++
+		} else if arg == "-a" && i+1 < len(args) {
+			remaining = append(remaining, "--add", args[i+1])
+			i++
+		} else if arg == "-l" {
+			remaining = append(remaining, "--list")
+		} else if arg == "-r" && i+1 < len(args) {
+			remaining = append(remaining, "--root", args[i+1])
+			i++
+		} else if (arg == "--from" || arg == "-from") && i+1 < len(args) {
+			fromMachines = append(fromMachines, args[i+1])
+			i++
+		} else if strings.HasPrefix(arg, "--from=") {
+			fromMachines = append(fromMachines, strings.TrimPrefix(arg, "--from="))
+		} else if strings.HasPrefix(arg, "-f=") {
+			fromMachines = append(fromMachines, strings.TrimPrefix(arg, "-f="))
+		} else {
+			remaining = append(remaining, arg)
+		}
+	}
+
+	return CollectArgs{
+		FromMachines: fromMachines,
+		Remaining:    remaining,
+	}
+}

@@ -3832,35 +3832,10 @@ func displayManifestTable(sources []ManifestSource, originMark string) {
 // =============================================================================
 
 func runCollect(args []string) {
-	// Collect all --from/-f values and convert short flags to long form.
-	// (flag package doesn't support repeated string flags natively)
-	var fromMachines []string
-	var remaining []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		// Handle short aliases: -f → --from, -a → --add, -l → --list, -r → --root
-		if arg == "-f" && i+1 < len(args) {
-			fromMachines = append(fromMachines, args[i+1])
-			i++
-		} else if arg == "-a" && i+1 < len(args) {
-			remaining = append(remaining, "--add", args[i+1])
-			i++
-		} else if arg == "-l" {
-			remaining = append(remaining, "--list")
-		} else if arg == "-r" && i+1 < len(args) {
-			remaining = append(remaining, "--root", args[i+1])
-			i++
-		} else if (arg == "--from" || arg == "-from") && i+1 < len(args) {
-			fromMachines = append(fromMachines, args[i+1])
-			i++
-		} else if strings.HasPrefix(arg, "--from=") {
-			fromMachines = append(fromMachines, strings.TrimPrefix(arg, "--from="))
-		} else if strings.HasPrefix(arg, "-f=") {
-			fromMachines = append(fromMachines, strings.TrimPrefix(arg, "-f="))
-		} else {
-			remaining = append(remaining, arg)
-		}
-	}
+	// Use pure function to parse arguments
+	parsed := parseCollectArgs(args)
+	fromMachines := parsed.FromMachines
+	remaining := parsed.Remaining
 
 	fs := flag.NewFlagSet("collect", flag.ExitOnError)
 	rootFlag := fs.String("root", "", "local manifest directory (default: ~/manifests)")

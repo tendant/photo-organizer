@@ -882,6 +882,108 @@ func TestGenerateArchiveFolderName(t *testing.T) {
 // findStalledManifests
 // =============================================================================
 
+// =============================================================================
+// parseCollectArgs
+// =============================================================================
+
+func TestParseCollectArgs(t *testing.T) {
+	tests := []struct {
+		name         string
+		args         []string
+		wantMachines []string
+		wantRemaining []string
+	}{
+		{
+			name:          "simple --from",
+			args:          []string{"--from", "machine1"},
+			wantMachines:  []string{"machine1"},
+			wantRemaining: []string{},
+		},
+		{
+			name:          "short -f",
+			args:          []string{"-f", "machine1"},
+			wantMachines:  []string{"machine1"},
+			wantRemaining: []string{},
+		},
+		{
+			name:          "multiple machines",
+			args:          []string{"-f", "m1", "-f", "m2", "--from", "m3"},
+			wantMachines:  []string{"m1", "m2", "m3"},
+			wantRemaining: []string{},
+		},
+		{
+			name:          "with --add",
+			args:          []string{"-f", "m1", "-a", "m1=user@host"},
+			wantMachines:  []string{"m1"},
+			wantRemaining: []string{"--add", "m1=user@host"},
+		},
+		{
+			name:          "with --list",
+			args:          []string{"-l", "-f", "m1"},
+			wantMachines:  []string{"m1"},
+			wantRemaining: []string{"--list"},
+		},
+		{
+			name:          "--from=value syntax",
+			args:          []string{"--from=m1", "--from=m2"},
+			wantMachines:  []string{"m1", "m2"},
+			wantRemaining: []string{},
+		},
+		{
+			name:          "-f=value syntax",
+			args:          []string{"-f=m1", "-f=m2"},
+			wantMachines:  []string{"m1", "m2"},
+			wantRemaining: []string{},
+		},
+		{
+			name:          "mixed syntax",
+			args:          []string{"-f", "m1", "--from=m2", "-f=m3"},
+			wantMachines:  []string{"m1", "m2", "m3"},
+			wantRemaining: []string{},
+		},
+		{
+			name:          "with --sync-delete",
+			args:          []string{"-f", "m1", "--sync-delete"},
+			wantMachines:  []string{"m1"},
+			wantRemaining: []string{"--sync-delete"},
+		},
+		{
+			name:          "complex case",
+			args:          []string{"-f", "m1", "-l", "-r", "/manifests", "--from=m2", "--sync-delete"},
+			wantMachines:  []string{"m1", "m2"},
+			wantRemaining: []string{"--list", "--root", "/manifests", "--sync-delete"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseCollectArgs(tt.args)
+
+			if len(result.FromMachines) != len(tt.wantMachines) {
+				t.Errorf("FromMachines length: got %d, want %d", len(result.FromMachines), len(tt.wantMachines))
+			}
+			for i, m := range result.FromMachines {
+				if i >= len(tt.wantMachines) || m != tt.wantMachines[i] {
+					t.Errorf("FromMachines[%d]: got %q, want %q", i, m, tt.wantMachines[i])
+				}
+			}
+
+			if len(result.Remaining) != len(tt.wantRemaining) {
+				t.Errorf("Remaining length: got %d, want %d", len(result.Remaining), len(tt.wantRemaining))
+			}
+			for i, arg := range result.Remaining {
+				if i >= len(tt.wantRemaining) || arg != tt.wantRemaining[i] {
+					t.Errorf("Remaining[%d]: got %q, want %q", i, arg, tt.wantRemaining[i])
+				}
+			}
+		})
+	}
+}
+
+// =============================================================================
+// findStalledManifests
+// =============================================================================
+
 func TestFindStalledManifests(t *testing.T) {
 	tests := []struct {
 		name         string
