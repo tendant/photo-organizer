@@ -3977,7 +3977,7 @@ func runCollect(args []string) {
 	rootFlag := fs.String("root", "", "local manifest directory (default: ~/manifests)")
 	addFlag := fs.String("add", "", "register a new machine: --add machine_id=user@host")
 	listFlag := fs.Bool("list", false, "list configured machines")
-	syncDeletionsFlag := fs.Bool("sync-deletions", false, "delete local manifests from machine if they don't exist on remote")
+	syncDeleteFlag := fs.Bool("sync-delete", false, "delete local manifests from machine if they don't exist on remote")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer collect [--from/-f <machine> [--from <machine> ...]]\n\n")
 		fmt.Fprintf(os.Stderr, "Pulls manifests from remote machines into ~/manifests/_Manifest/.\n")
@@ -3988,7 +3988,7 @@ func runCollect(args []string) {
 		fmt.Fprintf(os.Stderr, "Collect from specific machines:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer collect -f ubuntu-max -f nas\n\n")
 		fmt.Fprintf(os.Stderr, "Sync deletions (only when --from is specified):\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer collect -f ubuntu-max --sync-deletions\n\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer collect -f ubuntu-max --sync-delete\n\n")
 		fmt.Fprintf(os.Stderr, "Register a machine:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer collect -a ubuntu-max-acb605=ubuntu@192.168.1.100\n\n")
 		fmt.Fprintf(os.Stderr, "List configured machines:\n")
@@ -4104,8 +4104,8 @@ func runCollect(args []string) {
 		} else {
 			fmt.Printf("Done: %s\n\n", machine)
 
-			// Handle --sync-deletions: delete local manifests from this machine if they don't exist on remote
-			if *syncDeletionsFlag && len(fromMachines) > 0 {
+			// Handle --sync-delete: delete local manifests from this machine if they don't exist on remote
+			if *syncDeleteFlag && len(fromMachines) > 0 {
 				// Only sync deletions when collecting from specific machine(s), not from all
 				collectFromAll := false
 				if len(fromMachines) == 1 {
