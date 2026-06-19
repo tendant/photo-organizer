@@ -2544,19 +2544,16 @@ func runStalledManifests(args []string) {
 		return
 	}
 
-	// Get local machine name from first manifest
+	// Get local machine ID from ~/manifests/machine-id
 	localMachine := ""
-	for _, manifestPath := range matches {
-		src, err := readManifest(manifestPath)
-		if err != nil || len(src.Rows) == 0 {
-			continue
-		}
-		localMachine = src.Rows[0].MachineName
-		break
+	machineIDPath := filepath.Join(manifestRoot, "machine-id")
+	data, err := os.ReadFile(machineIDPath)
+	if err == nil {
+		localMachine = strings.TrimSpace(string(data))
 	}
 
 	if localMachine == "" {
-		fmt.Fprintf(os.Stderr, "Could not determine local machine name\n")
+		fmt.Fprintf(os.Stderr, "Could not determine local machine ID from %s\n", machineIDPath)
 		return
 	}
 
