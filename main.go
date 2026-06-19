@@ -1384,6 +1384,24 @@ func main() {
 		case "prune":
 			runPrune(os.Args[2:])
 			return
+		case "sign-manifest":
+			runSignManifest(os.Args[2:])
+			return
+		case "verify-backup":
+			runVerifyBackup(os.Args[2:])
+			return
+		case "repair-manifest":
+			runRepairManifest(os.Args[2:])
+			return
+		case "backup":
+			runBackup(os.Args[2:])
+			return
+		case "restore":
+			runRestore(os.Args[2:])
+			return
+		case "list-archives", "ls-archives":
+			runListArchives(os.Args[2:])
+			return
 		case "stalled-manifests":
 			runStalledManifests(os.Args[2:])
 			return
