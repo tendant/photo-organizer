@@ -1358,6 +1358,9 @@ func main() {
 		case "prune":
 			runPrune(os.Args[2:])
 			return
+		case "stalled-manifests":
+			runStalledManifests(os.Args[2:])
+			return
 		case "search":
 			runSearch(os.Args[2:])
 			return
@@ -1402,7 +1405,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  backup-missing <path> --dest <dest>  Back up files not backed up (auto pipeline)\n")
 	fmt.Fprintf(os.Stderr, "  archive <path> --dest <dir>        Archive folder locally (move, not copy)\n")
 	fmt.Fprintf(os.Stderr, "  archive-status <archive-dir>    Show archived folders & safe deletion checklist\n")
-	fmt.Fprintf(os.Stderr, "  prune <archive-path>            Clean up manifest entries for archived folder (AFTER manual rm)\n\n")
+	fmt.Fprintf(os.Stderr, "  prune <archive-path>            Clean up manifest entries for archived folder (AFTER manual rm)\n")
+	fmt.Fprintf(os.Stderr, "  stalled-manifests [--all-machines]  Report manifests with missing scan folders\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "ANALYSIS & VERIFICATION\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
@@ -2517,6 +2521,116 @@ func runPrune(args []string) {
 
 	fmt.Fprintf(os.Stderr, "\n✅ Pruning complete: removed %d deleted entries\n", totalPruned)
 	fmt.Fprintf(os.Stderr, "   Manifests are now in sync with archive\n")
+}
+
+// =============================================================================
+// Stalled Manifests (Report manifests with missing scan folders)
+// =============================================================================
+
+func runStalledManifests(args []string) {
+	allMachines := false
+	for _, arg := range args {
+		if arg == "--all-machines" {
+			allMachines = true
+		}
+	}
+
+	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found\n")
+		return
+	}
+
+	// Get local machine name from first manifest
+	localMachine := ""
+	for _, manifestPath := range matches {
+		src, err := readManifest(manifestPath)
+		if err != nil || len(src.Rows) == 0 {
+			continue
+		}
+		localMachine = src.Rows[0].MachineName
+		break
+	}
+
+	if localMachine == "" {
+		fmt.Fprintf(os.Stderr, "Could not determine local machine name\n")
+		return
+	}
+
+	var stalledList []struct {
+		manifestPath string
+		scanPath     string
+		machine      string
+		lastScanned  string
+		entryCount   int
+	}
+
+	// Collect stalled manifests
+	for _, manifestPath := range matches {
+		src, err := readManifest(manifestPath)
+		if err != nil || len(src.Rows) == 0 {
+			continue
+		}
+
+		machine := src.Rows[0].MachineName
+
+		// Filter by machine
+		if !allMachines && machine != localMachine {
+			continue
+		}
+
+		// Get scan path from first entry
+		scanPath := src.Rows[0].ScanPath
+		lastScanned := src.Rows[0].FileModified
+
+		// Check if scan path still exists
+		if _, err := os.Stat(scanPath); err != nil {
+			stalledList = append(stalledList, struct {
+				manifestPath string
+				scanPath     string
+				machine      string
+				lastScanned  string
+				entryCount   int
+			}{
+				manifestPath: manifestPath,
+				scanPath:     scanPath,
+				machine:      machine,
+				lastScanned:  lastScanned,
+				entryCount:   len(src.Rows),
+			})
+		}
+	}
+
+	if len(stalledList) == 0 {
+		if allMachines {
+			fmt.Fprintf(os.Stderr, "✅ No stalled manifests found (all machines)\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "✅ No stalled manifests found on %s\n", localMachine)
+		}
+		return
+	}
+
+	// Display results
+	if allMachines {
+		fmt.Fprintf(os.Stderr, "\n🔍 CHECKING ALL MANIFESTS\n\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "\n🔍 CHECKING LOCAL MANIFESTS (%s)\n\n", localMachine)
+	}
+
+	fmt.Fprintf(os.Stderr, "Found %d stalled manifest(s):\n\n", len(stalledList))
+
+	for i, stalled := range stalledList {
+		fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, filepath.Base(stalled.manifestPath))
+		if allMachines {
+			fmt.Fprintf(os.Stderr, "     Machine: %s\n", stalled.machine)
+		}
+		fmt.Fprintf(os.Stderr, "     Scan path: %s (MISSING)\n", stalled.scanPath)
+		fmt.Fprintf(os.Stderr, "     Last scanned: %s\n", stalled.lastScanned)
+		fmt.Fprintf(os.Stderr, "     Entries: %d\n\n", stalled.entryCount)
+	}
 }
 
 // =============================================================================
