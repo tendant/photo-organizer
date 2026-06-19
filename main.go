@@ -1808,25 +1808,19 @@ func runRescan(args []string) {
 
 func runArchive(args []string) {
 	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder-path> --dest <archive-dir> [options]\n\n")
-		fmt.Fprintf(os.Stderr, "Move folder to local archive directory and update manifests.\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		fmt.Fprintf(os.Stderr, "  --dest <dir>      Archive directory (required)\n")
-		fmt.Fprintf(os.Stderr, "  --force           Overwrite if archive already exists\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder-path> --dest <archive-dir>\n\n")
+		fmt.Fprintf(os.Stderr, "Move folder to local archive directory and update manifests.\n")
 		os.Exit(1)
 	}
 
 	sourceFolder := args[0]
 	var archiveDir string
-	forceFlag := false
 
-	// Parse flags
+	// Parse --dest flag
 	for i := 1; i < len(args); i++ {
 		if args[i] == "--dest" && i+1 < len(args) {
 			archiveDir = args[i+1]
-			i++
-		} else if args[i] == "--force" || args[i] == "-f" {
-			forceFlag = true
+			break
 		}
 	}
 
@@ -1860,25 +1854,10 @@ func runArchive(args []string) {
 		os.Exit(1)
 	}
 
-	// Create timestamped archive folder name
+	// Create timestamped archive folder name (include time to avoid conflicts)
 	folderName := filepath.Base(absSourceFolder)
-	timestamp := time.Now().Format("2006-01-02")
+	timestamp := time.Now().Format("2006-01-02-150405")
 	archiveFolder := filepath.Join(absArchiveDir, fmt.Sprintf("%s-%s", timestamp, folderName))
-
-	// Check if target already exists
-	if _, err := os.Stat(archiveFolder); err == nil {
-		if !forceFlag {
-			fmt.Fprintf(os.Stderr, "Error: archive folder already exists: %s\n", archiveFolder)
-			fmt.Fprintf(os.Stderr, "Use --force to overwrite or choose different --dest\n")
-			os.Exit(1)
-		}
-		// With --force, remove existing archive
-		fmt.Fprintf(os.Stderr, "Removing existing archive: %s\n", archiveFolder)
-		if err := os.RemoveAll(archiveFolder); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: could not remove existing archive: %v\n", err)
-			os.Exit(1)
-		}
-	}
 
 	// Move the folder
 	fmt.Fprintf(os.Stderr, "Moving %s → %s\n", absSourceFolder, archiveFolder)
