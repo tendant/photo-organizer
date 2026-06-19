@@ -4145,7 +4145,13 @@ func runFindDuplicateFolders(args []string) {
 		fmt.Printf("Duplicate Folder Group %d: %d copies (%s each, %s wasted)\n",
 			i+1, len(dup.Folders), formatBytes(dup.Folders[0].TotalSize),
 			formatBytes(dup.TotalWasted))
-		for _, folder := range dup.Folders {
+		// Sort folders by path for consistent output
+		sortedFolders := make([]*FolderInfo, len(dup.Folders))
+		copy(sortedFolders, dup.Folders)
+		sort.Slice(sortedFolders, func(a, b int) bool {
+			return sortedFolders[a].Path < sortedFolders[b].Path
+		})
+		for _, folder := range sortedFolders {
 			fmt.Printf("  - %s (%d files)\n", folder.Path, folder.FileCount)
 		}
 		fmt.Printf("\n")
