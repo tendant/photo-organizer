@@ -1355,8 +1355,8 @@ func main() {
 		case "cleanup-manifests":
 			runCleanupManifests(os.Args[2:])
 			return
-		case "prune-deleted-entries":
-			runPruneDeletedEntries(os.Args[2:])
+		case "prune":
+			runPrune(os.Args[2:])
 			return
 		case "search":
 			runSearch(os.Args[2:])
@@ -1402,7 +1402,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  backup-missing <path> --dest <dest>  Back up files not backed up (auto pipeline)\n")
 	fmt.Fprintf(os.Stderr, "  archive <path> --dest <dir>        Archive folder locally (move, not copy)\n")
 	fmt.Fprintf(os.Stderr, "  archive-status <archive-dir>    Show archived folders & safe deletion checklist\n")
-	fmt.Fprintf(os.Stderr, "  prune-deleted-entries           Clean up manifest entries for deleted files (AFTER manual rm)\n\n")
+	fmt.Fprintf(os.Stderr, "  prune <archive-path>            Clean up manifest entries for archived folder (AFTER manual rm)\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "ANALYSIS & VERIFICATION\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
@@ -2304,16 +2304,16 @@ func runArchiveStatus(args []string) {
 }
 
 // =============================================================================
-// Prune Deleted Entries (Clean manifests after manual deletion)
+// Prune (Clean manifests for archived folder)
 // =============================================================================
 
-func runPruneDeletedEntries(args []string) {
+func runPrune(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "\n🧹 PRUNE MANIFEST ENTRIES FOR DELETED FILES\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer prune-deleted-entries <archive-folder>\n\n")
+		fmt.Fprintf(os.Stderr, "\n🧹 PRUNE MANIFEST ENTRIES FOR ARCHIVED FOLDER\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer prune <archive-folder>\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  rm -rf /archive/location/2026-06-19-*\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer prune-deleted-entries /archive/location\n\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer prune /archive/location\n\n")
 		fmt.Fprintf(os.Stderr, "This removes manifest entries for files that no longer exist in the archive.\n")
 		os.Exit(1)
 	}
