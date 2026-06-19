@@ -681,7 +681,12 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 		sem <- struct{}{}
 		go func(i int, rf rawFile) {
 			defer wg.Done()
-			defer func() { <-sem }()
+			defer func() {
+				<-sem
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "\n⚠ Goroutine panic while processing %s: %v\n", rf.path, r)
+				}
+			}()
 
 			relPath, _ := filepath.Rel(dir, rf.path)
 			fi := FileInfo{Path: rf.path, Size: rf.size, ModTime: rf.modTime}
@@ -693,8 +698,19 @@ func scanDirectory(dir string, cache map[string]CacheEntry, fullHash bool, photo
 				fi.CaptureDate = entry.CaptureDate
 				cachedCount.Add(1)
 			} else {
-				fi.PartialHash, fi.CaptureDate = processFile(rf.path)
-				fi.FullHash = ""
+				// Add timeout protection - if processFile hangs, log and skip
+				done := make(chan bool, 1)
+				go func() {
+					fi.PartialHash, fi.CaptureDate = processFile(rf.path)
+					done <- true
+				}()
+				select {
+				case <-done:
+					fi.FullHash = ""
+				case <-time.After(30 * time.Second):
+					fmt.Fprintf(os.Stderr, "\n⚠ Timeout processing file (30s): %s\n", rf.path)
+					fi.FullHash = ""
+				}
 			}
 			files[i] = fi
 
