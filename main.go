@@ -1361,6 +1361,9 @@ func main() {
 		case "stalled-manifests":
 			runStalledManifests(os.Args[2:])
 			return
+		case "lookup":
+			runLookup(os.Args[2:])
+			return
 		case "search":
 			runSearch(os.Args[2:])
 			return
@@ -1406,7 +1409,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  archive <path> --dest <dir>        Archive folder locally (move, not copy)\n")
 	fmt.Fprintf(os.Stderr, "  archive-status <archive-dir>    Show archived folders & safe deletion checklist\n")
 	fmt.Fprintf(os.Stderr, "  prune <archive-path>            Clean up manifest entries for archived folder (AFTER manual rm)\n")
-	fmt.Fprintf(os.Stderr, "  stalled-manifests [--all-machines]  Report manifests with missing scan folders\n\n")
+	fmt.Fprintf(os.Stderr, "  stalled-manifests [--all-machines]  Report manifests with missing scan folders\n")
+	fmt.Fprintf(os.Stderr, "  lookup <folder>                 Find which manifests contain this folder\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "ANALYSIS & VERIFICATION\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
@@ -2627,6 +2631,94 @@ func runStalledManifests(args []string) {
 		fmt.Fprintf(os.Stderr, "     Scan path: %s (MISSING)\n", stalled.scanPath)
 		fmt.Fprintf(os.Stderr, "     Last scanned: %s\n", stalled.lastScanned)
 		fmt.Fprintf(os.Stderr, "     Entries: %d\n\n", stalled.entryCount)
+	}
+}
+
+// =============================================================================
+// Lookup (Find manifests containing a folder)
+// =============================================================================
+
+func runLookup(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "\n🔍 LOOKUP FOLDER IN MANIFESTS\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer lookup <folder-path>\n\n")
+		fmt.Fprintf(os.Stderr, "Example:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer lookup /tankm1/media/nas/photos/videos/segate/original/osmo-action4\n\n")
+		fmt.Fprintf(os.Stderr, "This finds which manifests contain this folder and shows rescan instructions.\n")
+		os.Exit(1)
+	}
+
+	lookupPath := filepath.Clean(args[0])
+
+	manifestRoot := filepath.Join(os.Getenv("HOME"), "manifests")
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found\n")
+		return
+	}
+
+	type ManifestMatch struct {
+		manifestPath string
+		manifestName string
+		scanPath     string
+		machine      string
+		matchCount   int
+		lastScanned  string
+	}
+	var results []ManifestMatch
+
+	// Search manifests for this folder
+	for _, manifestPath := range matches {
+		src, err := readManifest(manifestPath)
+		if err != nil || len(src.Rows) == 0 {
+			continue
+		}
+
+		machine := src.Rows[0].MachineName
+		scanPath := src.Rows[0].ScanPath
+		lastScanned := src.Rows[0].FileModified
+		matchCount := 0
+
+		// Count entries that are under the lookup path
+		for _, row := range src.Rows {
+			fullPath := filepath.Join(row.ScanPath, row.RelativePath)
+			if strings.HasPrefix(filepath.Clean(fullPath), lookupPath) {
+				matchCount++
+			}
+		}
+
+		if matchCount > 0 {
+			results = append(results, ManifestMatch{
+				manifestPath: manifestPath,
+				manifestName: filepath.Base(manifestPath),
+				scanPath:     scanPath,
+				machine:      machine,
+				matchCount:   matchCount,
+				lastScanned:  lastScanned,
+			})
+		}
+	}
+
+	if len(results) == 0 {
+		fmt.Fprintf(os.Stderr, "\n🔍 LOOKUP: %s\n\n", lookupPath)
+		fmt.Fprintf(os.Stderr, "❌ Folder not found in any manifests\n")
+		return
+	}
+
+	// Display results
+	fmt.Fprintf(os.Stderr, "\n🔍 LOOKUP: %s\n\n", lookupPath)
+	fmt.Fprintf(os.Stderr, "Found in %d manifest(s):\n\n", len(results))
+
+	for i, match := range results {
+		fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, match.manifestName)
+		fmt.Fprintf(os.Stderr, "     Machine: %s\n", match.machine)
+		fmt.Fprintf(os.Stderr, "     Scan path: %s\n", match.scanPath)
+		fmt.Fprintf(os.Stderr, "     Matching entries: %d\n", match.matchCount)
+		fmt.Fprintf(os.Stderr, "     Last scanned: %s\n\n", match.lastScanned)
+		fmt.Fprintf(os.Stderr, "     To rescan:\n")
+		fmt.Fprintf(os.Stderr, "       photo-organizer scan %s --dest <backup-path>\n\n", match.scanPath)
 	}
 }
 
