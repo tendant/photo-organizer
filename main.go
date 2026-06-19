@@ -4252,7 +4252,7 @@ func runVerify(args []string) {
 
 	var allMatchingRows []ManifestRowWithMeta
 
-	// Step 1: Find all files in target folder and collect their signatures (size + partial hash)
+	// Step 1: Collect file signatures from target folder
 	type FileSignature struct {
 		size        int64
 		partialHash string
@@ -4285,7 +4285,14 @@ func runVerify(args []string) {
 		os.Exit(1)
 	}
 
-	// Step 2: Find all files with matching signatures (potential duplicates)
+	// Step 2: Group all files by folder, then find folders containing all target signatures
+	type FolderKey struct {
+		path    string
+		machine string
+	}
+	folderFileSignatures := make(map[FolderKey]map[FileSignature]bool)
+	folderRows := make(map[FolderKey][]ManifestRow)
+
 	for _, manifestPath := range matches {
 		src, err := readManifest(manifestPath)
 		if err != nil {
@@ -4293,14 +4300,39 @@ func runVerify(args []string) {
 		}
 
 		for _, row := range src.Rows {
+			folderPath := filepath.Join(row.ScanPath, filepath.Dir(row.RelativePath))
+			key := FolderKey{path: folderPath, machine: src.MachineName}
+
+			if _, exists := folderFileSignatures[key]; !exists {
+				folderFileSignatures[key] = make(map[FileSignature]bool)
+			}
+
 			sig := FileSignature{
 				size:        row.SizeBytes,
 				partialHash: row.PartialHash,
 			}
-			if targetFileSignatures[sig] {
+			folderFileSignatures[key][sig] = true
+			folderRows[key] = append(folderRows[key], row)
+		}
+	}
+
+	// Now find folders that contain all target file signatures
+	for key, folderSigs := range folderFileSignatures {
+		// Check if this folder contains all target signatures
+		hasAllTargets := true
+		for targetSig := range targetFileSignatures {
+			if !folderSigs[targetSig] {
+				hasAllTargets = false
+				break
+			}
+		}
+
+		// If folder contains all target files, collect them
+		if hasAllTargets {
+			for _, row := range folderRows[key] {
 				allMatchingRows = append(allMatchingRows, ManifestRowWithMeta{
 					row:      row,
-					machine:  src.MachineName,
+					machine:  key.machine,
 					fullPath: filepath.Join(row.ScanPath, row.RelativePath),
 				})
 			}
@@ -4316,16 +4348,6 @@ func runVerify(args []string) {
 			key := folderPath + ":" + item.machine
 			folderCopies[key] = append(folderCopies[key], item)
 		}
-
-		// Filter: only keep folders with exact same file count as target
-		targetFileCount := len(targetFileSignatures)
-		filteredFolders := make(map[string][]ManifestRowWithMeta)
-		for key, items := range folderCopies {
-			if len(items) == targetFileCount {
-				filteredFolders[key] = items
-			}
-		}
-		folderCopies = filteredFolders
 
 		// Verify each copy
 		for key, items := range folderCopies {
