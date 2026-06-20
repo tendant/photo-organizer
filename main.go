@@ -4070,23 +4070,31 @@ func runCollect(args []string) {
 		} else {
 			fmt.Printf("Done: %s\n", machine)
 
-			// Check for skipped files (local files newer than remote with --update flag)
-			// rsync --itemize-changes outputs: ">f.s......" (position 3 is 's' for size mismatch)
-			// This pattern indicates a file that would be skipped due to --update flag
+			// Report overwritten files (remote data replaced local data)
+			// rsync --itemize-changes outputs: ">f+++++++++ filename" (> = receiving, f = file)
+			// Lines starting with > indicate files transferred from remote
 			output := stdout.String()
-			skippedCount := 0
+			var overwrites []string
 			for _, line := range strings.Split(output, "\n") {
-				if len(line) > 3 && strings.HasPrefix(line, ">") && line[3:4] == "s" {
-					skippedCount++
+				if len(line) > 11 && strings.HasPrefix(line, ">") {
+					// Extract filename (skip the 11-char itemize codes and space)
+					filename := strings.TrimSpace(line[11:])
+					if filename != "" && !strings.HasSuffix(filename, "/") {
+						overwrites = append(overwrites, filename)
+					}
 				}
 			}
 
-			if skippedCount > 0 {
-				fmt.Fprintf(os.Stderr, "\n⚠️  WARNING: %d files SKIPPED (local files newer than remote)\n", skippedCount)
-				fmt.Fprintf(os.Stderr, "   This usually means local manifests are corrupted/outdated.\n")
-				fmt.Fprintf(os.Stderr, "   To force update from remote, run:\n")
-				fmt.Fprintf(os.Stderr, "     rm ~/manifests/_Manifest/photo_manifest_%s*.csv\n", machine)
-				fmt.Fprintf(os.Stderr, "     photo-organizer collect --from %s\n\n", machine)
+			if len(overwrites) > 0 {
+				fmt.Fprintf(os.Stderr, "\n⚠️  %d files overwritten from remote:\n", len(overwrites))
+				for i, f := range overwrites {
+					if i >= 20 {
+						fmt.Fprintf(os.Stderr, "   ... and %d more\n", len(overwrites)-20)
+						break
+					}
+					fmt.Fprintf(os.Stderr, "   %s\n", f)
+				}
+				fmt.Fprintf(os.Stderr, "\n")
 			} else {
 				fmt.Printf("\n")
 			}
