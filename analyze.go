@@ -4083,6 +4083,30 @@ func MonitorDiskSpace(path string) bool {
 	return true
 }
 
+// extractDeviceInfo extracts human-readable device info from config
+func extractDeviceInfo(machineInfo string) string {
+	if strings.Contains(machineInfo, "[removable]") {
+		// Extract device type from config string
+		if strings.Contains(machineInfo, "scanned from:") {
+			parts := strings.Split(machineInfo, "scanned from:")
+			if len(parts) > 0 {
+				path := strings.TrimSpace(parts[1])
+				deviceName := filepath.Base(path)
+
+				if strings.Contains(machineInfo, "camera") || strings.Contains(deviceName, "Untitled") {
+					return fmt.Sprintf("Camera/USB: %s", deviceName)
+				}
+				if strings.Contains(deviceName, "SD") || strings.Contains(deviceName, "Card") {
+					return fmt.Sprintf("SD Card: %s", deviceName)
+				}
+				return fmt.Sprintf("Removable: %s", deviceName)
+			}
+		}
+		return "Removable media"
+	}
+	return ""
+}
+
 // =============================================================================
 // Storage Status - Machine & Device Level Storage Analysis
 // =============================================================================
