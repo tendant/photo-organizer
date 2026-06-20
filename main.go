@@ -4043,12 +4043,12 @@ func runCollect(args []string) {
 		remoteDir := target + ":~/manifests/_Manifest/"
 		fmt.Printf("Collecting from %s (%s)...\n", machine, target)
 
-		var stderr, stdout bytes.Buffer
+		var output bytes.Buffer
 		cmd := exec.Command("rsync", "-av", "--itemize-changes", remoteDir, localDir)
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+		cmd.Stdout = &output
+		cmd.Stderr = &output
 		if err := cmd.Run(); err != nil {
-			errMsg := strings.ToLower(stderr.String() + err.Error())
+			errMsg := strings.ToLower(output.String() + err.Error())
 			fmt.Fprintf(os.Stderr, "⚠  Collect from %s failed\n", machine)
 
 			switch {
@@ -4073,9 +4073,9 @@ func runCollect(args []string) {
 			// Report overwritten files (remote data replaced local data)
 			// rsync --itemize-changes outputs: ">f+++++++++ filename" (> = receiving, f = file)
 			// Lines starting with > indicate files transferred from remote
-			output := stdout.String()
+			rsyncOutput := output.String()
 			var overwrites []string
-			for _, line := range strings.Split(output, "\n") {
+			for _, line := range strings.Split(rsyncOutput, "\n") {
 				if len(line) > 11 && strings.HasPrefix(line, ">") {
 					// Extract filename (skip the 11-char itemize codes and space)
 					filename := strings.TrimSpace(line[11:])
@@ -4096,7 +4096,7 @@ func runCollect(args []string) {
 				}
 				fmt.Fprintf(os.Stderr, "\n")
 			} else {
-				fmt.Printf("\n")
+				fmt.Printf("(already in sync)\n")
 			}
 
 			// Handle --sync-delete: delete local manifests from this machine if they don't exist on remote
