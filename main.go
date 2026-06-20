@@ -1315,83 +1315,11 @@ func main() {
 	if len(os.Args) >= 2 {
 		cmd := os.Args[1]
 		switch cmd {
-		case "analyze":
+		// Core workflow commands (14 total)
+		case "scan":
+			os.Args = append(os.Args[:1], os.Args[2:]...)
+		case "dups", "analyze", "find-duplicates", "dup", "dup-folders":
 			runAnalyze(os.Args[2:])
-			return
-		case "backup-status":
-			runBackupStatus(os.Args[2:])
-			return
-		case "plan":
-			runPlan(os.Args[2:])
-			return
-		case "migrate":
-			runMigrate(os.Args[2:])
-			return
-		case "collect":
-			runCollect(os.Args[2:])
-			return
-		case "collect-config":
-			runCollectConfig(os.Args[2:])
-			return
-		case "push-config":
-			runPushConfig(os.Args[2:])
-			return
-		case "sync-config":
-			runSyncConfig(os.Args[2:])
-			return
-		case "find-duplicates", "dups", "dup":
-			runFindDuplicates(os.Args[2:])
-			return
-		case "dup-folders":
-			runFindDuplicateFolders(os.Args[2:])
-			return
-		case "verify":
-			runVerify(os.Args[2:])
-			return
-		case "rescan":
-			runRescan(os.Args[2:])
-			return
-		case "machines":
-			runMachines(os.Args[2:])
-			return
-		case "manifests":
-			runManifests(os.Args[2:])
-			return
-		case "risk-report":
-			runRiskReport(os.Args[2:])
-			return
-		case "analyze-backup-compliance":
-			runAnalyzeBackupCompliance(os.Args[2:])
-			return
-		case "check-backup":
-			runCheckBackup(os.Args[2:])
-			return
-		case "archive":
-			runArchive(os.Args[2:])
-			return
-		case "archive-status":
-			runArchiveStatus(os.Args[2:])
-			return
-		case "backup-missing":
-			runBackupMissing(os.Args[2:])
-			return
-		case "cleanup-plan":
-			runCleanupPlan(os.Args[2:])
-			return
-		case "cleanup-manifests":
-			runCleanupManifests(os.Args[2:])
-			return
-		case "prune":
-			runPrune(os.Args[2:])
-			return
-		case "sign-manifest":
-			runSignManifest(os.Args[2:])
-			return
-		case "verify-backup":
-			runVerifyBackup(os.Args[2:])
-			return
-		case "repair-manifest":
-			runRepairManifest(os.Args[2:])
 			return
 		case "backup":
 			runBackup(os.Args[2:])
@@ -1399,24 +1327,45 @@ func main() {
 		case "restore":
 			runRestore(os.Args[2:])
 			return
-		case "list-archives", "ls-archives":
+		case "list", "list-archives", "ls-archives":
 			runListArchives(os.Args[2:])
 			return
-		case "stalled-manifests":
-			runStalledManifests(os.Args[2:])
+		case "check", "verify-backup", "check-backup":
+			runVerifyBackup(os.Args[2:])
+			return
+		case "sign", "sign-manifest":
+			runSignManifest(os.Args[2:])
+			return
+		case "fix", "repair-manifest":
+			runRepairManifest(os.Args[2:])
+			return
+		case "archive":
+			runArchive(os.Args[2:])
+			return
+		case "manifests":
+			runManifests(os.Args[2:])
+			return
+		case "machines":
+			runMachines(os.Args[2:])
 			return
 		case "lookup":
 			runLookup(os.Args[2:])
 			return
-		case "remove-manifest":
-			runRemoveManifest(os.Args[2:])
-			return
 		case "search":
 			runSearch(os.Args[2:])
 			return
-		case "scan":
-			// Strip the subcommand word and fall through to runScan
-			os.Args = append(os.Args[:1], os.Args[2:]...)
+		case "verify":
+			runVerify(os.Args[2:])
+			return
+
+		// Deprecated/hidden commands (maintained for backward compatibility)
+		case "backup-status", "plan", "migrate", "collect", "collect-config",
+			"push-config", "sync-config", "cleanup-plan", "cleanup-manifests",
+			"prune", "rescan", "risk-report", "analyze-backup-compliance",
+			"archive-status", "backup-missing", "stalled-manifests", "remove-manifest":
+			fmt.Fprintf(os.Stderr, "Command %q is deprecated. Run 'photo-organizer help' for current commands.\n", cmd)
+			os.Exit(1)
+
 		case "help", "--help", "-h":
 			printUsage()
 			return
@@ -1441,76 +1390,61 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, "photo-organizer — track and manage photo backups across machines\n\n")
+	fmt.Fprintf(os.Stderr, "photo-organizer — backup, deduplicate, and manage photos across devices\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
-	fmt.Fprintf(os.Stderr, "CORE WORKFLOW - Archive & Cleanup\n")
+	fmt.Fprintf(os.Stderr, "CORE WORKFLOW (8 commands)\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
-	fmt.Fprintf(os.Stderr, "  scan [directory]                Scan folder and create manifest\n")
-	fmt.Fprintf(os.Stderr, "  rescan                          Re-scan previously scanned folders\n")
-	fmt.Fprintf(os.Stderr, "  collect [--from <machine>]      Pull manifests from remote machines\n")
-	fmt.Fprintf(os.Stderr, "  manifests                       List all manifests and show origin (local/remote)\n")
-	fmt.Fprintf(os.Stderr, "  cleanup-manifests               Remove stale manifests (scan paths no longer exist)\n")
-	fmt.Fprintf(os.Stderr, "  check-backup <path>             Check if folder is backed up elsewhere\n")
-	fmt.Fprintf(os.Stderr, "  cleanup-plan <path>             Show cleanup plan & space impact\n")
-	fmt.Fprintf(os.Stderr, "  backup-missing <path> --dest <dest>  Back up files not backed up (auto pipeline)\n")
-	fmt.Fprintf(os.Stderr, "  archive <path> --dest <dir>        Archive folder locally (move, not copy)\n")
-	fmt.Fprintf(os.Stderr, "  archive-status <archive-dir>    Show archived folders & safe deletion checklist\n")
-	fmt.Fprintf(os.Stderr, "  prune <archive-path>            Clean up manifest entries for archived folder (AFTER manual rm)\n")
-	fmt.Fprintf(os.Stderr, "  stalled-manifests [--all-machines]  Report manifests with missing scan folders\n")
-	fmt.Fprintf(os.Stderr, "  lookup <folder>                 Find which manifests contain this folder\n")
-	fmt.Fprintf(os.Stderr, "  remove-manifest <folder>        Delete manifest(s) for a scanned folder\n\n")
+	fmt.Fprintf(os.Stderr, "  scan <folder>                   Scan folder and create internal manifest\n")
+	fmt.Fprintf(os.Stderr, "  dups                            Find duplicate files across scanned folders\n")
+	fmt.Fprintf(os.Stderr, "  backup <folder> <archive>       Back up folder to timestamped archive\n")
+	fmt.Fprintf(os.Stderr, "    [--new-only]                    Only backup files not already backed up\n")
+	fmt.Fprintf(os.Stderr, "  restore <archive> <destination> Recover files from archive\n")
+	fmt.Fprintf(os.Stderr, "  list <archive-root>             Show all available backups\n")
+	fmt.Fprintf(os.Stderr, "  check <folder>                  Verify backup integrity\n")
+	fmt.Fprintf(os.Stderr, "  sign <folder> --key <secret>    Sign backup cryptographically\n")
+	fmt.Fprintf(os.Stderr, "  fix <folder> [<archive>]        Repair corrupted backup\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
-	fmt.Fprintf(os.Stderr, "ANALYSIS & VERIFICATION\n")
+	fmt.Fprintf(os.Stderr, "UTILITIES (6 commands)\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
-	fmt.Fprintf(os.Stderr, "  analyze                         Find duplicates across machines\n")
-	fmt.Fprintf(os.Stderr, "  search [manifests...]           Search files by name, path, hash, size, date\n")
-	fmt.Fprintf(os.Stderr, "  risk-report                     Find files only on one machine\n")
-	fmt.Fprintf(os.Stderr, "  backup-status --from <name>     Show copy count and coverage\n")
-	fmt.Fprintf(os.Stderr, "  machines [--write-conf]         List all machines\n\n")
+	fmt.Fprintf(os.Stderr, "  archive <folder>                Move folder to timestamped archive (cleanup)\n")
+	fmt.Fprintf(os.Stderr, "  manifests                       List all scanned folders with status\n")
+	fmt.Fprintf(os.Stderr, "    [--stalled]                     Show folders where source no longer exists\n")
+	fmt.Fprintf(os.Stderr, "    [--cleanup]                     Remove stalled folders (interactive)\n")
+	fmt.Fprintf(os.Stderr, "    [--remove <folder>]             Remove specific folder\n")
+	fmt.Fprintf(os.Stderr, "  machines                        List all machines that have scanned\n")
+	fmt.Fprintf(os.Stderr, "  lookup <name-or-path>           Find item and show complete details\n")
+	fmt.Fprintf(os.Stderr, "  search <pattern>                Broad search by pattern (simple list)\n")
+	fmt.Fprintf(os.Stderr, "  verify <folder>                 Verify folder is backed up\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
-	fmt.Fprintf(os.Stderr, "ADVANCED\n")
+	fmt.Fprintf(os.Stderr, "FLAGS\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
-	fmt.Fprintf(os.Stderr, "  analyze-backup-compliance       3-2-1 backup rule compliance analysis\n")
-	fmt.Fprintf(os.Stderr, "  plan --keep <machine>           Generate safe-delete script\n")
-	fmt.Fprintf(os.Stderr, "  migrate --from <machine>        Migrate unique files to backup\n\n")
-	fmt.Fprintf(os.Stderr, "machines config: ~/manifests/machines.conf  (machine_id = user@host)\n\n")
 	fmt.Fprintf(os.Stderr, "scan flags:\n")
-	fmt.Fprintf(os.Stderr, "  --root dir       write manifest to dir/_Manifest/ (default: ~/manifests)\n")
-	fmt.Fprintf(os.Stderr, "  --machine name   machine label embedded in manifest (default: stable machine ID)\n")
-	fmt.Fprintf(os.Stderr, "  --media-id id    stable ID for removable media (same across different machines)\n")
-	fmt.Fprintf(os.Stderr, "  --full-hash      hash all files fully, not just colliding ones (rarely needed)\n")
-	fmt.Fprintf(os.Stderr, "  --no-cache       recompute all hashes, ignoring cached values\n")
-	fmt.Fprintf(os.Stderr, "  --prune          remove manifest entries for files no longer on disk\n")
-	fmt.Fprintf(os.Stderr, "  --no-report      skip file type coverage report (report shown by default)\n")
-	fmt.Fprintf(os.Stderr, "  --auto-identify-folders  sample subdirectories and score by media ratio + path signals\n")
-	fmt.Fprintf(os.Stderr, "  --score-threshold N      minimum folder score (0-100) to qualify (default: 30)\n")
-	fmt.Fprintf(os.Stderr, "  --detect-only    with --auto-identify-folders: show results and exit without scanning\n\n")
-	fmt.Fprintf(os.Stderr, "plan flags:\n")
-	fmt.Fprintf(os.Stderr, "  --keep <machine>      keep copies on this machine, move others to quarantine\n")
-	fmt.Fprintf(os.Stderr, "  --intra <machine>     find duplicates within a single machine\n")
-	fmt.Fprintf(os.Stderr, "  --keep-under <path>   with --intra: keep copies under this path\n")
-	fmt.Fprintf(os.Stderr, "  --ssh <user@host>     verify backup files exist on remote machine\n")
-	fmt.Fprintf(os.Stderr, "  --ssh-timeout <dur>   timeout for SSH verification (default: 30s, e.g., 60s)\n")
-	fmt.Fprintf(os.Stderr, "  --delete              generate rm commands instead of mv to quarantine\n")
-	fmt.Fprintf(os.Stderr, "  --out <file>          write script to file instead of stdout\n\n")
-	fmt.Fprintf(os.Stderr, "analyze flags:\n")
-	fmt.Fprintf(os.Stderr, "  --csv prefix     also write CSV output files with this filename prefix\n")
-	fmt.Fprintf(os.Stderr, "  --threshold n    folder coverage %% to flag as nearly-redundant (default: 0.9)\n\n")
+	fmt.Fprintf(os.Stderr, "  --root <dir>              write manifest to dir/_Manifest/ (default: ~/manifests)\n")
+	fmt.Fprintf(os.Stderr, "  --machine <name>          machine label in manifest (default: stable machine ID)\n")
+	fmt.Fprintf(os.Stderr, "  --media-id <id>           stable ID for removable media\n")
+	fmt.Fprintf(os.Stderr, "  --full-hash               hash all files fully (rarely needed)\n")
+	fmt.Fprintf(os.Stderr, "  --no-cache                recompute all hashes\n")
+	fmt.Fprintf(os.Stderr, "  --prune                   remove entries for files no longer on disk\n\n")
 	fmt.Fprintf(os.Stderr, "search flags:\n")
-	fmt.Fprintf(os.Stderr, "  -name <pattern>          filename glob/regex pattern (e.g., IMG_* or \\.jpg$)\n")
-	fmt.Fprintf(os.Stderr, "  -path <substring>        path contains substring\n")
-	fmt.Fprintf(os.Stderr, "  -hash <hash>             find by full hash (shows all copies)\n")
-	fmt.Fprintf(os.Stderr, "  -size <size>             exact size (e.g., 5MB) or range (e.g., 100MB-500MB)\n")
-	fmt.Fprintf(os.Stderr, "  -date <date>             date range: YYYY-MM-DD or YYYY-MM-DD:YYYY-MM-DD\n")
-	fmt.Fprintf(os.Stderr, "  -machine <id>            filter by machine_id\n")
-	fmt.Fprintf(os.Stderr, "  -duplicates-only         only files with >1 copy\n")
-	fmt.Fprintf(os.Stderr, "  -group                   show results grouped by hash\n")
-	fmt.Fprintf(os.Stderr, "  -csv <file>              export to CSV instead of table\n\n")
+	fmt.Fprintf(os.Stderr, "  -name <pattern>           filename glob/regex pattern\n")
+	fmt.Fprintf(os.Stderr, "  -path <substring>         path contains substring\n")
+	fmt.Fprintf(os.Stderr, "  -hash <hash>              find by full hash\n")
+	fmt.Fprintf(os.Stderr, "  -size <size>              exact size or range (e.g., 100MB-500MB)\n")
+	fmt.Fprintf(os.Stderr, "  -date <date>              date range: YYYY-MM-DD or YYYY-MM-DD:YYYY-MM-DD\n")
+	fmt.Fprintf(os.Stderr, "  -machine <id>             filter by machine_id\n")
+	fmt.Fprintf(os.Stderr, "  -duplicates-only          only files with >1 copy\n")
+	fmt.Fprintf(os.Stderr, "  -group                    show results grouped by hash\n\n")
 	fmt.Fprintf(os.Stderr, "Examples:\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer scan /Volumes/SSD          # manifest → ~/manifests/\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer scan ~/Photos\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer analyze ~/manifests/_Manifest/*.csv\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer analyze ~/manifests/_Manifest/*.csv --csv report\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer scan ~/iPhone --machine iphone\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer dups\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos /mnt/archive\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/iPhone /mnt/archive --new-only\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer list /mnt/archive\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer restore /mnt/archive/2026-06-20-143022-Photos ~/Recovered\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer check ~/Photos\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer lookup \"vacation.jpg\"\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer search \"*.raw\"\n\n")
 }
 
 func runScan(args []string) {

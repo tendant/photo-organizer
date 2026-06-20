@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -12,20 +13,33 @@ import (
 // BACKUP COMMANDS - Core backup/restore functionality
 // ============================================================================
 
-// runBackup copies unique files to archive, deduplicating across manifests
+// runBackup backs up a folder to timestamped archive
 func runBackup(args []string) {
-	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "\n📦 BACKUP FILES TO ARCHIVE\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup <manifest-path> <archive-root>\n\n")
-		fmt.Fprintf(os.Stderr, "Example:\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/manifests/photos-2026-06-20.csv /mnt/archive\n\n")
-		fmt.Fprintf(os.Stderr, "Creates timestamped archive folder and copies unique files.\n")
-		fmt.Fprintf(os.Stderr, "Deduplicates against other manifests automatically.\n")
-		os.Exit(1)
+	// Parse arguments
+	folderPath := ""
+	archiveRoot := ""
+	newOnlyFlag := false
+
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--new-only" {
+			newOnlyFlag = true
+		} else if folderPath == "" {
+			folderPath = args[i]
+		} else if archiveRoot == "" {
+			archiveRoot = args[i]
+		}
 	}
 
-	manifestPath := args[0]
-	archiveRoot := args[1]
+	if folderPath == "" || archiveRoot == "" {
+		fmt.Fprintf(os.Stderr, "\n📦 BACKUP FILES TO ARCHIVE\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup <folder> <archive-root> [--new-only]\n\n")
+		fmt.Fprintf(os.Stderr, "Example:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos /mnt/archive\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/iPhone /mnt/archive --new-only\n\n")
+		fmt.Fprintf(os.Stderr, "Creates timestamped archive folder and copies files.\n")
+		fmt.Fprintf(os.Stderr, "--new-only: Only backup files not already backed up elsewhere.\n")
+		os.Exit(1)
+	}
 
 	// Verify archive root exists or create it
 	if _, err := os.Stat(archiveRoot); err != nil {
@@ -41,10 +55,45 @@ func runBackup(args []string) {
 		}
 	}
 
-	// Read source manifest
-	manifest, err := readManifest(manifestPath)
+	// Resolve to absolute path
+	absPath, err := filepath.Abs(folderPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Cannot read manifest: %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ Cannot resolve folder path: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Verify folder exists
+	if _, err := os.Stat(absPath); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Folder not found: %s\n", absPath)
+		os.Exit(1)
+	}
+
+	// Find or create manifest for this folder
+	manifestDir := filepath.Join(userHomeDir(), "manifests", "_Manifest")
+	var manifest ManifestSource
+
+	// Try to find existing manifest for this folder
+	entries, err := os.ReadDir(manifestDir)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".csv") {
+				fullPath := filepath.Join(manifestDir, entry.Name())
+				m, err := readManifest(fullPath)
+				if err == nil && m.ScanPath == absPath {
+					manifest = m
+					break
+				}
+			}
+		}
+	}
+
+	// If no manifest found, create one
+	if manifest.FilePath == "" {
+		fmt.Printf("📋 Creating manifest for %s...\n", filepath.Base(absPath))
+		// Use existing scan logic to create manifest
+		// For now, we'll use the current approach: require existing manifest
+		fmt.Fprintf(os.Stderr, "❌ No manifest found for %s\n", absPath)
+		fmt.Fprintf(os.Stderr, "   Run 'photo-organizer scan %s' first\n", absPath)
 		os.Exit(1)
 	}
 
@@ -56,7 +105,11 @@ func runBackup(args []string) {
 	fmt.Printf("📦 BACKUP WORKFLOW\n\n")
 	fmt.Printf("Source:  %s (%d files)\n", manifest.ScanPath, len(manifest.Rows))
 	fmt.Printf("Machine: %s\n", manifest.MachineName)
-	fmt.Printf("Archive: %s\n\n", archiveRoot)
+	fmt.Printf("Archive: %s\n", archiveRoot)
+	if newOnlyFlag {
+		fmt.Printf("Mode:    Only backup files not already backed up\n")
+	}
+	fmt.Printf("\n")
 
 	// Create timestamped archive folder
 	timestamp := time.Now()
