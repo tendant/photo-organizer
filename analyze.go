@@ -4560,10 +4560,12 @@ func runCheckBackupStatus(args []string) {
 		return
 	}
 
-	// Count files per machine
+	// Count files per machine (separate backed up vs removable)
 	machinesCfg := loadMachinesConfig()
-	machineCount := make(map[string]int)
-	machineBytes := make(map[string]int64)
+	machineCount := make(map[string]int)      // machines with proper backups
+	machineBytes := make(map[string]int64)    // machines with proper backups
+	removableCount := make(map[string]int)    // removable media
+	removableBytes := make(map[string]int64)  // removable media
 	atRiskFiles := 0
 	atRiskBytes := int64(0)
 
@@ -4575,15 +4577,21 @@ func runCheckBackupStatus(args []string) {
 
 		// Find which machines have this file
 		machinesHaveFile := make(map[string]bool)
+		removableHaveFile := make(map[string]bool)
 		if hash != "" && len(hashIndex[hash]) > 0 {
 			for _, remoteRow := range hashIndex[hash] {
-				machinesHaveFile[remoteRow.MachineName] = true
+				cfg := machinesCfg[remoteRow.MachineName]
+				if strings.Contains(cfg, "[removable]") {
+					removableHaveFile[remoteRow.MachineName] = true
+				} else {
+					machinesHaveFile[remoteRow.MachineName] = true
+				}
 			}
 		}
 
-		// Count coverage
+		// Count coverage (only non-removable machines count as "backed up")
 		if len(machinesHaveFile) == 0 {
-			// File not found anywhere
+			// File not found on proper backup machines
 			atRiskFiles++
 			atRiskBytes += localRow.SizeBytes
 		} else {
@@ -4591,6 +4599,12 @@ func runCheckBackupStatus(args []string) {
 				machineCount[machine]++
 				machineBytes[machine] += localRow.SizeBytes
 			}
+		}
+
+		// Track removable media separately
+		for machine := range removableHaveFile {
+			removableCount[machine]++
+			removableBytes[machine] += localRow.SizeBytes
 		}
 	}
 
@@ -4609,37 +4623,57 @@ func runCheckBackupStatus(args []string) {
 	}
 	sort.Strings(machines)
 
-	// Show per-machine coverage
-	fmt.Printf("Coverage by machine:\n\n")
-	for _, machine := range machines {
-		count := machineCount[machine]
-		bytes := machineBytes[machine]
-		coverage := float64(count) / float64(totalFiles) * 100
+	// Show per-machine coverage (only proper backups)
+	if len(machines) > 0 {
+		fmt.Printf("BACKED UP on reliable machines:\n\n")
+		for _, machine := range machines {
+			count := machineCount[machine]
+			bytes := machineBytes[machine]
+			coverage := float64(count) / float64(totalFiles) * 100
 
-		cfg := machinesCfg[machine]
-		machineLabel := machine
-		if strings.Contains(cfg, "[removable]") {
-			machineLabel = "📷 " + machine
-		} else if cfg != "" && !strings.Contains(cfg, "[") {
-			machineLabel = "🌐 " + machine
-		} else {
-			machineLabel = "💻 " + machine
+			cfg := machinesCfg[machine]
+			machineLabel := machine
+			if cfg != "" && !strings.Contains(cfg, "[") {
+				machineLabel = "🌐 " + machine
+			} else {
+				machineLabel = "💻 " + machine
+			}
+
+			fmt.Printf("  %s\n", machineLabel)
+			fmt.Printf("    %s files (%.1f%%) | %s\n", formatCount(count), coverage, formatSize(bytes))
 		}
+		fmt.Printf("\n")
+	}
 
-		fmt.Printf("  %s\n", machineLabel)
-		fmt.Printf("    %s files (%.1f%%) | %s\n", formatCount(count), coverage, formatSize(bytes))
+	// Show removable media separately (doesn't count toward backup status)
+	var removableMedia []string
+	for m := range removableCount {
+		removableMedia = append(removableMedia, m)
+	}
+	sort.Strings(removableMedia)
+
+	if len(removableMedia) > 0 {
+		fmt.Printf("Also found on removable media (not counted as backup):\n\n")
+		for _, machine := range removableMedia {
+			count := removableCount[machine]
+			bytes := removableBytes[machine]
+			coverage := float64(count) / float64(totalFiles) * 100
+
+			fmt.Printf("  📷 %s\n", machine)
+			fmt.Printf("    %s files (%.1f%%) | %s\n", formatCount(count), coverage, formatSize(bytes))
+		}
+		fmt.Printf("\n")
 	}
 
 	// Show at-risk files
-	fmt.Printf("\n")
 	if atRiskFiles > 0 {
 		atRiskCoverage := float64(atRiskFiles) / float64(totalFiles) * 100
 		fmt.Printf("⚠️  AT-RISK: %s files (%.1f%%) | %s\n", formatCount(atRiskFiles), atRiskCoverage, formatSize(atRiskBytes))
-		fmt.Printf("   Only on this machine, not backed up elsewhere\n")
+		fmt.Printf("   Not backed up on reliable machines\n")
 		fmt.Printf("   Run: photo-organizer backup %s <archive-path>\n", folderPath)
 	} else {
 		fmt.Printf("✓ ALL FILES BACKED UP\n")
-		fmt.Printf("   Every file has copies on other machines\n")
+		fmt.Printf("   Every file has copies on reliable machines\n")
 	}
 	fmt.Printf("\n")
 }
