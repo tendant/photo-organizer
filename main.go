@@ -684,16 +684,19 @@ func scanDirectory(dir string, cache map[string]CacheEntry, photoIgnore *PhotoIg
 			return nil
 		}
 		if info.IsDir() {
+			// Skip root directory and all other directories
+			if path == dir {
+				// Skip the root directory itself (don't process as a file)
+				return nil
+			}
 			// Skip dotfiles and system/camera folders
-			if path != dir {
-				name := info.Name()
-				if strings.HasPrefix(name, ".") {
-					return filepath.SkipDir
-				}
-				// Skip camera-specific system folders
-				if name == "PRIVATE" || name == "THMBNL" || name == "AVF_INFO" || name == ".fseventsd" {
-					return filepath.SkipDir
-				}
+			name := info.Name()
+			if strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			// Skip camera-specific system folders
+			if name == "PRIVATE" || name == "THMBNL" || name == "AVF_INFO" || name == ".fseventsd" {
+				return filepath.SkipDir
 			}
 			rel, _ := filepath.Rel(dir, path)
 			// Truncate long paths so they don't overflow the line width.
