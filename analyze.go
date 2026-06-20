@@ -4297,6 +4297,193 @@ func runStorageStatus(args []string) {
 	fmt.Printf("\n")
 }
 
+// runStoragePlan recommends backup priorities and storage planning
+func runStoragePlan(args []string) {
+	// Load all manifests
+	manifestRoot := filepath.Join(userHomeDir(), "manifests")
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found\n")
+		return
+	}
+
+	var sources []ManifestSource
+	for _, path := range matches {
+		src, err := readManifest(path)
+		if err != nil || len(src.Rows) == 0 {
+			continue
+		}
+		sources = append(sources, src)
+	}
+
+	if len(sources) == 0 {
+		fmt.Fprintf(os.Stderr, "No valid manifests found\n")
+		return
+	}
+
+	// Build hash index for deduplication analysis
+	idx := buildHashIndex(sources)
+	uniqueByMachine := findUnique(sources, idx)
+
+	// Calculate unique files per machine
+	type MachineInfo struct {
+		Machine      string
+		UniqueFiles  int
+		UniqueBytes  int64
+		TotalFiles   int
+		TotalBytes   int64
+	}
+
+	machineMap := make(map[string]*MachineInfo)
+	for _, src := range sources {
+		if _, ok := machineMap[src.MachineName]; !ok {
+			machineMap[src.MachineName] = &MachineInfo{Machine: src.MachineName}
+		}
+
+		m := machineMap[src.MachineName]
+		for _, row := range src.Rows {
+			m.TotalFiles++
+			m.TotalBytes += row.SizeBytes
+		}
+	}
+
+	// Count unique files per machine
+	for machine, rows := range uniqueByMachine {
+		if m, ok := machineMap[machine]; ok {
+			for _, row := range rows {
+				m.UniqueFiles++
+				m.UniqueBytes += row.SizeBytes
+			}
+		}
+	}
+
+	// Sort machines by unique bytes (highest first)
+	var machines []*MachineInfo
+	for _, m := range machineMap {
+		machines = append(machines, m)
+	}
+	sort.Slice(machines, func(i, j int) bool {
+		return machines[i].UniqueBytes > machines[j].UniqueBytes
+	})
+
+	// Load machines config
+	machinesConfig := loadMachinesConfig()
+
+	// Print report
+	fmt.Printf("═══════════════════════════════════════════════════════════════════\n")
+	fmt.Printf("STORAGE PLANNING REPORT\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════════\n\n")
+
+	// 1. Priority backups - at-risk files (unique to single machine)
+	fmt.Printf("1️⃣  PRIORITY BACKUPS (At-Risk Files)\n")
+	fmt.Printf("   Back up these FIRST - they exist on only one machine:\n\n")
+
+	totalAtRisk := int64(0)
+	for _, m := range machines {
+		if m.UniqueBytes > 0 {
+			coverage := 100.0 - (float64(m.UniqueBytes) / float64(m.TotalBytes) * 100)
+			config := machinesConfig[m.Machine]
+			machineLabel := m.Machine
+			if strings.Contains(config, "[removable]") {
+				machineLabel = "📷 " + machineLabel
+			} else if config != "" && !strings.Contains(config, "[") {
+				machineLabel = "🌐 " + machineLabel
+			} else {
+				machineLabel = "💻 " + machineLabel
+			}
+
+			fmt.Printf("   ⚠️  %s\n", machineLabel)
+			fmt.Printf("       Unique:  %s (%s)\n", formatCount(m.UniqueFiles), formatSize(m.UniqueBytes))
+			fmt.Printf("       Backed:  %.1f%% (on other machines)\n\n", coverage)
+			totalAtRisk += m.UniqueBytes
+		}
+	}
+
+	if totalAtRisk == 0 {
+		fmt.Printf("   ✓ Everything is backed up!\n\n")
+	} else {
+		fmt.Printf("   Total at-risk: %s\n\n", formatSize(totalAtRisk))
+	}
+
+	// 2. Storage gaps - show capacity differences
+	fmt.Printf("2️⃣  STORAGE GAPS (Backup Capacity)\n")
+	fmt.Printf("   Which machines can back up which:\n\n")
+
+	// Calculate available space on backup targets (assume duplicated files can be deleted)
+	for _, m := range machines {
+		if m.UniqueFiles == 0 {
+			continue
+		}
+		duplicatedBytes := m.TotalBytes - m.UniqueBytes
+		fmt.Printf("   📤 %s has %s unique files\n", m.Machine, formatSize(m.UniqueBytes))
+		fmt.Printf("      Needs backup target with ≥ %s free space\n", formatSize(m.UniqueBytes))
+		fmt.Printf("      (can free up %s by deleting duplicates locally)\n\n", formatSize(duplicatedBytes))
+	}
+
+	// 3. Backup targets calculation
+	fmt.Printf("3️⃣  BACKUP TARGETS\n")
+	fmt.Printf("   Recommended backup order:\n\n")
+
+	for i, m := range machines {
+		if m.UniqueBytes == 0 {
+			continue
+		}
+		fmt.Printf("   %d. Back up %s to a machine with ≥ %s free space\n",
+			i+1, m.Machine, formatSize(m.UniqueBytes))
+		fmt.Printf("      %s files, %.1f%% unprotected\n",
+			formatCount(m.UniqueFiles),
+			float64(m.UniqueBytes)/float64(m.TotalBytes)*100)
+		fmt.Printf("\n")
+	}
+
+	// 4. Cleanup opportunities
+	fmt.Printf("4️⃣  CLEANUP OPPORTUNITIES\n")
+	fmt.Printf("   Free up space by deleting backed-up duplicates:\n\n")
+
+	totalCleanup := int64(0)
+	for _, m := range machines {
+		duplicatedBytes := m.TotalBytes - m.UniqueBytes
+		if duplicatedBytes > 0 {
+			config := machinesConfig[m.Machine]
+			machineLabel := m.Machine
+			if strings.Contains(config, "[removable]") {
+				machineLabel = "📷 " + machineLabel
+			} else if config != "" && !strings.Contains(config, "[") {
+				machineLabel = "🌐 " + machineLabel
+			} else {
+				machineLabel = "💻 " + machineLabel
+			}
+
+			coverage := float64(m.TotalFiles-m.UniqueFiles) / float64(m.TotalFiles) * 100
+			fmt.Printf("   🧹 %s\n", machineLabel)
+			fmt.Printf("       Can delete: %s (%s backed up elsewhere)\n", formatSize(duplicatedBytes), formatCount(m.TotalFiles-m.UniqueFiles))
+			fmt.Printf("       Coverage:   %.1f%% backed elsewhere\n\n", coverage)
+			totalCleanup += duplicatedBytes
+		}
+	}
+
+	if totalCleanup > 0 {
+		fmt.Printf("   Total freeable space: %s\n\n", formatSize(totalCleanup))
+	}
+
+	// Summary
+	fmt.Printf("═══════════════════════════════════════════════════════════════════\n")
+	fmt.Printf("SUMMARY\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════════\n\n")
+	fmt.Printf("Files at-risk:     %s\n", formatSize(totalAtRisk))
+	fmt.Printf("Freeable space:    %s (duplicates)\n", formatSize(totalCleanup))
+
+	// Calculate total bytes
+	var totalCapacity int64
+	for _, m := range machineMap {
+		totalCapacity += m.TotalBytes
+	}
+	fmt.Printf("Total capacity:    %s across %d machines\n", formatSize(totalCapacity), len(machines))
+	fmt.Printf("\n")
+}
+
 // detectMountPoint returns the likely mount point for a given path
 // by walking up the directory tree
 func detectMountPoint(path string) string {

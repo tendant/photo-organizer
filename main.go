@@ -1327,6 +1327,9 @@ func main() {
 		case "storage-status", "status":
 			runStorageStatus(os.Args[2:])
 			return
+		case "storage-plan", "plan":
+			runStoragePlan(os.Args[2:])
+			return
 		case "backup":
 			runBackup(os.Args[2:])
 			return
@@ -1368,7 +1371,7 @@ func main() {
 			return
 
 		// Deprecated/hidden commands (maintained for backward compatibility)
-		case "backup-status", "plan", "migrate", "collect-config",
+		case "backup-status", "migrate", "collect-config",
 			"push-config", "sync-config", "cleanup-plan", "cleanup-manifests",
 			"prune", "rescan", "risk-report", "analyze-backup-compliance",
 			"archive-status", "backup-missing", "stalled-manifests", "remove-manifest":
@@ -1401,10 +1404,11 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "photo-organizer — backup, deduplicate, and manage photos across devices\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
-	fmt.Fprintf(os.Stderr, "CORE WORKFLOW (10 commands)\n")
+	fmt.Fprintf(os.Stderr, "CORE WORKFLOW (11 commands)\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
 	fmt.Fprintf(os.Stderr, "  scan <folder>                   Scan folder and create internal manifest\n")
 	fmt.Fprintf(os.Stderr, "  storage-status                  Show storage breakdown by machine & device\n")
+	fmt.Fprintf(os.Stderr, "  storage-plan                    Recommend what to back up next (priority plan)\n")
 	fmt.Fprintf(os.Stderr, "  dups [--top N]                  Find duplicate files across folders\n")
 	fmt.Fprintf(os.Stderr, "  dup-folders [--top N] [-s]      Find duplicate folders (BEST for cleanup!)\n")
 	fmt.Fprintf(os.Stderr, "  backup <folder> <archive>       Back up folder to timestamped archive\n")
