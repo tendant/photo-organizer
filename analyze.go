@@ -4579,6 +4579,14 @@ func runCheckBackupStatus(args []string) {
 	}
 	folderStats := make(map[string]*FolderStats)
 
+	// Track remote backup locations
+	type RemoteLocation struct {
+		Machine string
+		Path    string
+		Count   int
+	}
+	remoteLocations := make(map[string]map[string]int) // machine -> path -> count
+
 	atRiskFiles := 0
 	atRiskBytes := int64(0)
 
@@ -4624,6 +4632,24 @@ func runCheckBackupStatus(args []string) {
 			for machine := range machinesHaveFile {
 				machineCount[machine]++
 				machineBytes[machine] += localRow.SizeBytes
+			}
+
+			// Track where files are backed up (find actual remote paths)
+			if hash != "" && len(hashIndex[hash]) > 0 {
+				for _, remoteRow := range hashIndex[hash] {
+					cfg := machinesCfg[remoteRow.MachineName]
+					if !strings.Contains(cfg, "[removable]") && remoteRow.MachineName != currentMachine {
+						// Track this remote location
+						if remoteLocations[remoteRow.MachineName] == nil {
+							remoteLocations[remoteRow.MachineName] = make(map[string]int)
+						}
+						remotePath := filepath.Dir(remoteRow.RelativePath)
+						if remotePath == "." {
+							remotePath = "/"
+						}
+						remoteLocations[remoteRow.MachineName][remotePath]++
+					}
+				}
 			}
 		}
 
@@ -4745,6 +4771,43 @@ func runCheckBackupStatus(args []string) {
 				fmt.Printf("  %d. %s\n", i+1, f.Path)
 				fmt.Printf("     At-risk: %s files | Coverage: %.1f%%\n", formatCount(f.AtRisk), f.Coverage)
 			}
+		}
+		fmt.Printf("\n")
+	}
+
+	// Show top 3 backup locations on remote servers
+	type LocationRank struct {
+		Machine string
+		Path    string
+		Count   int
+	}
+	var allLocations []LocationRank
+	for machine, paths := range remoteLocations {
+		for path, count := range paths {
+			allLocations = append(allLocations, LocationRank{
+				Machine: machine,
+				Path:    path,
+				Count:   count,
+			})
+		}
+	}
+
+	// Sort by count (descending)
+	sort.Slice(allLocations, func(i, j int) bool {
+		return allLocations[i].Count > allLocations[j].Count
+	})
+
+	// Show top 3
+	topLocations := allLocations
+	if len(topLocations) > 3 {
+		topLocations = topLocations[:3]
+	}
+
+	if len(topLocations) > 0 {
+		fmt.Printf("TOP BACKUP LOCATIONS (remote servers):\n\n")
+		for i, loc := range topLocations {
+			fmt.Printf("  %d. %s:%s\n", i+1, loc.Machine, loc.Path)
+			fmt.Printf("     %s backed-up files\n", formatCount(loc.Count))
 		}
 		fmt.Printf("\n")
 	}
