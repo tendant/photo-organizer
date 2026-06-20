@@ -2918,11 +2918,30 @@ func runBackupMissing(args []string) {
 			os.Exit(1)
 		}
 	} else {
-		// Assume it's just a hostname, try to match as machine-id
-		fmt.Fprintf(os.Stderr, "Error: '%s' not found in machines.conf\n", destIdentifier)
-		fmt.Fprintf(os.Stderr, "Use full format: user@host:/path or configure machine-id first\n")
-		fmt.Fprintf(os.Stderr, "Example: photo-organizer backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
-		os.Exit(1)
+		// Try reverse lookup: check if destIdentifier is a known SSH host
+		found := false
+		for machID, sshHost := range machines {
+			if sshHost == destIdentifier {
+				remoteMachineID = machID
+				remoteUserHost = sshHost
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Fprintf(os.Stderr, "Error: '%s' not found in machines.conf\n", destIdentifier)
+			fmt.Fprintf(os.Stderr, "Available options:\n")
+			for machID, sshHost := range machines {
+				if !strings.HasPrefix(sshHost, "[removable]") {
+					fmt.Fprintf(os.Stderr, "  - %s (machine-id: %s)\n", sshHost, machID)
+				}
+			}
+			fmt.Fprintf(os.Stderr, "\nUsage examples:\n")
+			fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max-acb605:/backups\n")
+			fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max:/backups\n")
+			fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
+			os.Exit(1)
+		}
 	}
 
 	// Step 2: Create temporary file list for rsync
