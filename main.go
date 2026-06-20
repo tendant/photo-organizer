@@ -1369,12 +1369,15 @@ func main() {
 		case "collect":
 			runCollect(os.Args[2:])
 			return
+		case "backup-missing":
+			runBackupMissing(os.Args[2:])
+			return
 
 		// Deprecated/hidden commands (maintained for backward compatibility)
 		case "backup-status", "migrate", "collect-config",
 			"push-config", "sync-config", "cleanup-plan", "cleanup-manifests",
 			"prune", "rescan", "risk-report", "analyze-backup-compliance",
-			"archive-status", "backup-missing", "stalled-manifests", "remove-manifest",
+			"archive-status", "stalled-manifests", "remove-manifest",
 			"analyze", "find-duplicates", "dup", "status", "plan",
 			"list-archives", "ls-archives", "check", "verify-backup",
 			"sign-manifest", "repair-manifest", "verify":
@@ -1423,9 +1426,11 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  sign <folder> --key <secret>    Sign manifest cryptographically\n")
 	fmt.Fprintf(os.Stderr, "  fix <folder> [<archive>]        Repair corrupted backup\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
-	fmt.Fprintf(os.Stderr, "UTILITIES (6 commands)\n")
+	fmt.Fprintf(os.Stderr, "UTILITIES (7 commands)\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
 	fmt.Fprintf(os.Stderr, "  archive <folder>                Move folder to timestamped archive (cleanup)\n")
+	fmt.Fprintf(os.Stderr, "  backup-missing <folder> --dest <user@host:/path>\n")
+	fmt.Fprintf(os.Stderr, "                                  Back up only files not yet backed up\n")
 	fmt.Fprintf(os.Stderr, "  manifests                       List all scanned folders with status\n")
 	fmt.Fprintf(os.Stderr, "    [--stalled]                     Show folders where source no longer exists\n")
 	fmt.Fprintf(os.Stderr, "    [--cleanup]                     Remove stalled folders (interactive)\n")
