@@ -4043,9 +4043,9 @@ func runCollect(args []string) {
 		remoteDir := target + ":~/manifests/_Manifest/"
 		fmt.Printf("Collecting from %s (%s)...\n", machine, target)
 
-		var stderr bytes.Buffer
-		cmd := exec.Command("rsync", "-av", remoteDir, localDir)
-		cmd.Stdout = os.Stdout
+		var stderr, stdout bytes.Buffer
+		cmd := exec.Command("rsync", "-av", "--itemize-changes", remoteDir, localDir)
+		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
 			errMsg := strings.ToLower(stderr.String() + err.Error())
@@ -4068,7 +4068,28 @@ func runCollect(args []string) {
 				fmt.Fprintf(os.Stderr, "   %s\n", err)
 			}
 		} else {
-			fmt.Printf("Done: %s\n\n", machine)
+			fmt.Printf("Done: %s\n", machine)
+
+			// Check for skipped files (local files newer than remote with --update flag)
+			// rsync --itemize-changes outputs: ">f.s......" (position 3 is 's' for size mismatch)
+			// This pattern indicates a file that would be skipped due to --update flag
+			output := stdout.String()
+			skippedCount := 0
+			for _, line := range strings.Split(output, "\n") {
+				if len(line) > 3 && strings.HasPrefix(line, ">") && line[3:4] == "s" {
+					skippedCount++
+				}
+			}
+
+			if skippedCount > 0 {
+				fmt.Fprintf(os.Stderr, "\n⚠️  WARNING: %d files SKIPPED (local files newer than remote)\n", skippedCount)
+				fmt.Fprintf(os.Stderr, "   This usually means local manifests are corrupted/outdated.\n")
+				fmt.Fprintf(os.Stderr, "   To force update from remote, run:\n")
+				fmt.Fprintf(os.Stderr, "     rm ~/manifests/_Manifest/photo_manifest_%s*.csv\n", machine)
+				fmt.Fprintf(os.Stderr, "     photo-organizer collect --from %s\n\n", machine)
+			} else {
+				fmt.Printf("\n")
+			}
 
 			// Handle --sync-delete: delete local manifests from this machine if they don't exist on remote
 			if *syncDeleteFlag && len(fromMachines) > 0 {
