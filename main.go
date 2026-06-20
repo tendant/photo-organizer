@@ -4044,7 +4044,7 @@ func runCollect(args []string) {
 		fmt.Printf("Collecting from %s (%s)...\n", machine, target)
 
 		var stderr bytes.Buffer
-		cmd := exec.Command("rsync", "-av", "--update", remoteDir, localDir)
+		cmd := exec.Command("rsync", "-av", remoteDir, localDir)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
