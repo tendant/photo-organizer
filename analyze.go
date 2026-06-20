@@ -4579,15 +4579,6 @@ func runCheckBackupStatus(args []string) {
 	}
 	folderStats := make(map[string]*FolderStats)
 
-	// Track remote backup locations
-	type RemoteLocation struct {
-		Machine  string
-		Path     string
-		FullPath string
-		Count    int
-	}
-	remoteLocations := make(map[string]map[string]*RemoteLocation) // machine -> path -> RemoteLocation
-
 	atRiskFiles := 0
 	atRiskBytes := int64(0)
 
@@ -4633,34 +4624,6 @@ func runCheckBackupStatus(args []string) {
 			for machine := range machinesHaveFile {
 				machineCount[machine]++
 				machineBytes[machine] += localRow.SizeBytes
-			}
-
-			// Track where files are backed up (find actual remote paths)
-			if hash != "" && len(hashIndex[hash]) > 0 {
-				for _, remoteRow := range hashIndex[hash] {
-					cfg := machinesCfg[remoteRow.MachineName]
-					if !strings.Contains(cfg, "[removable]") && remoteRow.MachineName != currentMachine {
-						// Track this remote location
-						if remoteLocations[remoteRow.MachineName] == nil {
-							remoteLocations[remoteRow.MachineName] = make(map[string]*RemoteLocation)
-						}
-						remotePath := filepath.Dir(remoteRow.RelativePath)
-						if remotePath == "." {
-							remotePath = "/"
-						}
-						fullPath := filepath.Join(remoteRow.ScanPath, remotePath)
-
-						if remoteLocations[remoteRow.MachineName][remotePath] == nil {
-							remoteLocations[remoteRow.MachineName][remotePath] = &RemoteLocation{
-								Machine:  remoteRow.MachineName,
-								Path:     remotePath,
-								FullPath: fullPath,
-								Count:    0,
-							}
-						}
-						remoteLocations[remoteRow.MachineName][remotePath].Count++
-					}
-				}
 			}
 		}
 
@@ -4786,34 +4749,6 @@ func runCheckBackupStatus(args []string) {
 		fmt.Printf("\n")
 	}
 
-	// Show top 3 backup locations on remote servers
-	var allLocations []*RemoteLocation
-	for _, paths := range remoteLocations {
-		for _, loc := range paths {
-			allLocations = append(allLocations, loc)
-		}
-	}
-
-	// Sort by count (descending)
-	sort.Slice(allLocations, func(i, j int) bool {
-		return allLocations[i].Count > allLocations[j].Count
-	})
-
-	// Show top 3
-	topLocations := allLocations
-	if len(topLocations) > 3 {
-		topLocations = topLocations[:3]
-	}
-
-	if len(topLocations) > 0 {
-		fmt.Printf("TOP BACKUP LOCATIONS (remote servers):\n\n")
-		for i, loc := range topLocations {
-			fmt.Printf("  %d. %s:%s\n", i+1, loc.Machine, loc.FullPath)
-			fmt.Printf("     %s backed-up files\n", formatCount(loc.Count))
-			fmt.Printf("     Verify: ssh %s ls -la %s\n", loc.Machine, loc.FullPath)
-		}
-		fmt.Printf("\n")
-	}
 }
 
 // detectMountPoint returns the likely mount point for a given path
