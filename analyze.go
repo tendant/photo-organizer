@@ -4484,6 +4484,120 @@ func runStoragePlan(args []string) {
 	fmt.Printf("\n")
 }
 
+// runCheckBackupStatus checks if a folder is backed up
+func runCheckBackupStatus(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "\n✓ CHECK BACKUP STATUS\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer check-backup <folder>\n\n")
+		fmt.Fprintf(os.Stderr, "Example:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer check-backup ~/Photos\n\n")
+		fmt.Fprintf(os.Stderr, "Shows if folder is backed up and where copies exist.\n")
+		os.Exit(1)
+	}
+
+	folderPath := args[0]
+
+	// Resolve to absolute path
+	absPath, err := filepath.Abs(folderPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Cannot resolve folder path: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Load all manifests
+	manifestRoot := filepath.Join(userHomeDir(), "manifests")
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found\n")
+		return
+	}
+
+	var sources []ManifestSource
+	for _, path := range matches {
+		src, err := readManifest(path)
+		if err != nil || len(src.Rows) == 0 {
+			continue
+		}
+		sources = append(sources, src)
+	}
+
+	if len(sources) == 0 {
+		fmt.Fprintf(os.Stderr, "No valid manifests found\n")
+		return
+	}
+
+	// Find manifests for this folder
+	machinesWithFolder := make(map[string]int64)
+	totalFiles := 0
+	totalBytes := int64(0)
+
+	for _, src := range sources {
+		if src.ScanPath == absPath {
+			totalFiles += len(src.Rows)
+			var folderBytes int64
+			for _, row := range src.Rows {
+				folderBytes += row.SizeBytes
+			}
+			machinesWithFolder[src.MachineName] = folderBytes
+			totalBytes += folderBytes
+		}
+	}
+
+	// Print results
+	fmt.Printf("═══════════════════════════════════════════════════════════════════\n")
+	fmt.Printf("BACKUP STATUS: %s\n", absPath)
+	fmt.Printf("═══════════════════════════════════════════════════════════════════\n\n")
+
+	if totalFiles == 0 {
+		fmt.Printf("❌ NOT SCANNED\n")
+		fmt.Printf("   This folder has not been scanned yet.\n")
+		fmt.Printf("   Run: photo-organizer scan %s\n", folderPath)
+		return
+	}
+
+	// Check if backed up on other machines
+	machinesCfg := loadMachinesConfig()
+	currentMachine := resolveMachineID("")
+	backupMachines := 0
+	for m := range machinesWithFolder {
+		if m != currentMachine {
+			backupMachines++
+		}
+	}
+
+	fmt.Printf("Files:   %s (%s)\n", formatCount(totalFiles), formatSize(totalBytes))
+	fmt.Printf("Scanned: %d machine(s)\n", len(machinesWithFolder))
+	fmt.Printf("\n")
+
+	if backupMachines == 0 {
+		fmt.Printf("⚠️  NOT BACKED UP\n")
+		fmt.Printf("   Copies only exist on current machine.\n")
+		fmt.Printf("   Run: photo-organizer backup %s <archive-path>\n", folderPath)
+	} else {
+		fmt.Printf("✓ BACKED UP on %d machine(s):\n\n", backupMachines)
+		for machine, bytes := range machinesWithFolder {
+			cfg := machinesCfg[machine]
+			machineLabel := machine
+			if strings.Contains(cfg, "[removable]") {
+				machineLabel = "📷 " + machine
+			} else if cfg != "" && !strings.Contains(cfg, "[") {
+				machineLabel = "🌐 " + machine
+			} else {
+				machineLabel = "💻 " + machine
+			}
+
+			if machine == currentMachine {
+				fmt.Printf("   %s (local)\n", machineLabel)
+			} else {
+				fmt.Printf("   %s - %s\n", machineLabel, formatSize(bytes))
+			}
+		}
+	}
+	fmt.Printf("\n")
+}
+
 // detectMountPoint returns the likely mount point for a given path
 // by walking up the directory tree
 func detectMountPoint(path string) string {

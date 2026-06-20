@@ -1318,16 +1318,16 @@ func main() {
 		// Core workflow commands (14 total)
 		case "scan":
 			os.Args = append(os.Args[:1], os.Args[2:]...)
-		case "dups", "analyze", "find-duplicates", "dup":
+		case "dups":
 			runAnalyze(os.Args[2:])
 			return
 		case "dup-folders":
 			runFindDuplicateFolders(os.Args[2:])
 			return
-		case "storage-status", "status":
+		case "storage-status":
 			runStorageStatus(os.Args[2:])
 			return
-		case "storage-plan", "plan":
+		case "storage-plan":
 			runStoragePlan(os.Args[2:])
 			return
 		case "backup":
@@ -1336,16 +1336,19 @@ func main() {
 		case "restore":
 			runRestore(os.Args[2:])
 			return
-		case "list", "list-archives", "ls-archives":
+		case "list":
 			runListArchives(os.Args[2:])
 			return
-		case "check", "verify-backup", "check-backup":
+		case "verify-archive":
 			runVerifyBackup(os.Args[2:])
 			return
-		case "sign", "sign-manifest":
+		case "check-backup":
+			runCheckBackupStatus(os.Args[2:])
+			return
+		case "sign":
 			runSignManifest(os.Args[2:])
 			return
-		case "fix", "repair-manifest":
+		case "fix":
 			runRepairManifest(os.Args[2:])
 			return
 		case "archive":
@@ -1363,9 +1366,6 @@ func main() {
 		case "search":
 			runSearch(os.Args[2:])
 			return
-		case "verify":
-			runVerify(os.Args[2:])
-			return
 		case "collect":
 			runCollect(os.Args[2:])
 			return
@@ -1374,7 +1374,10 @@ func main() {
 		case "backup-status", "migrate", "collect-config",
 			"push-config", "sync-config", "cleanup-plan", "cleanup-manifests",
 			"prune", "rescan", "risk-report", "analyze-backup-compliance",
-			"archive-status", "backup-missing", "stalled-manifests", "remove-manifest":
+			"archive-status", "backup-missing", "stalled-manifests", "remove-manifest",
+			"analyze", "find-duplicates", "dup", "status", "plan",
+			"list-archives", "ls-archives", "check", "verify-backup",
+			"sign-manifest", "repair-manifest", "verify":
 			fmt.Fprintf(os.Stderr, "Command %q is deprecated. Run 'photo-organizer help' for current commands.\n", cmd)
 			os.Exit(1)
 
@@ -1404,7 +1407,7 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "photo-organizer — backup, deduplicate, and manage photos across devices\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
-	fmt.Fprintf(os.Stderr, "CORE WORKFLOW (11 commands)\n")
+	fmt.Fprintf(os.Stderr, "CORE WORKFLOW (12 commands)\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
 	fmt.Fprintf(os.Stderr, "  scan <folder>                   Scan folder and create internal manifest\n")
 	fmt.Fprintf(os.Stderr, "  storage-status                  Show storage breakdown by machine & device\n")
@@ -1415,8 +1418,9 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "    [--new-only]                    Only backup files not already backed up\n")
 	fmt.Fprintf(os.Stderr, "  restore <archive> <destination> Recover files from archive\n")
 	fmt.Fprintf(os.Stderr, "  list <archive-root>             Show all available backups\n")
-	fmt.Fprintf(os.Stderr, "  check <folder>                  Verify backup integrity\n")
-	fmt.Fprintf(os.Stderr, "  sign <folder> --key <secret>    Sign backup cryptographically\n")
+	fmt.Fprintf(os.Stderr, "  check-backup <folder>           Check if folder is backed up (and where)\n")
+	fmt.Fprintf(os.Stderr, "  verify-archive <manifest>       Verify archive integrity (no corruption)\n")
+	fmt.Fprintf(os.Stderr, "  sign <folder> --key <secret>    Sign manifest cryptographically\n")
 	fmt.Fprintf(os.Stderr, "  fix <folder> [<archive>]        Repair corrupted backup\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "UTILITIES (6 commands)\n")
@@ -1429,7 +1433,6 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  machines                        List all machines that have scanned\n")
 	fmt.Fprintf(os.Stderr, "  lookup <name-or-path>           Find item and show complete details\n")
 	fmt.Fprintf(os.Stderr, "  search <pattern>                Broad search by pattern (simple list)\n")
-	fmt.Fprintf(os.Stderr, "  verify <folder>                 Verify folder is backed up\n")
 	fmt.Fprintf(os.Stderr, "  collect [--from MACHINE]        Collect manifests from remote machines\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "FLAGS\n")
