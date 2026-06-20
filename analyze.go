@@ -4229,9 +4229,25 @@ func runStorageStatus(args []string) {
 	}
 	sort.Strings(machines)
 
+	// Load machines config for enhanced labels
+	machinesConfig := loadMachinesConfig()
+
 	for _, machine := range machines {
 		stats := machineStats[machine]
-		fmt.Printf("Machine: %s\n", machine)
+		config := machinesConfig[machine]
+
+		// Print machine with type info
+		if strings.Contains(config, "[removable]") {
+			deviceInfo := extractDeviceInfo(config)
+			fmt.Printf("📷 REMOVABLE: %s\n", machine)
+			if deviceInfo != "" {
+				fmt.Printf("   (%s)\n", deviceInfo)
+			}
+		} else if config != "" && !strings.Contains(config, "[") {
+			fmt.Printf("🌐 REMOTE: %s (%s)\n", machine, config)
+		} else {
+			fmt.Printf("💻 LOCAL: %s\n", machine)
+		}
 
 		// Sort devices
 		var devices []string
