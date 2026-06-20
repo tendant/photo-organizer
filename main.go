@@ -2881,32 +2881,7 @@ func runBackupMissing(args []string) {
 
 	fmt.Fprintf(os.Stderr, "Found %d files to backup (%.1f GB)\n\n", missingCount, float64(missingSize)/(1024*1024*1024))
 
-	// Step 2: Create temporary file list for rsync
-	tmpFile, err := os.CreateTemp("", "backup-missing-*.txt")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot create temp file: %v\n", err)
-		os.Exit(1)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	for _, f := range missingFiles {
-		fmt.Fprintln(tmpFile, f)
-	}
-	tmpFile.Close()
-
-	// Step 3: Use rsync with --files-from to copy only missing files
-	fmt.Fprintf(os.Stderr, "Step 2: Copying missing files via rsync...\n")
-	rsyncCmd := exec.Command("rsync", "-avz", "--progress", "--files-from="+tmpFile.Name(), absSourceFolder+"/", destLocation+"/")
-	rsyncCmd.Stdout = os.Stderr
-	rsyncCmd.Stderr = os.Stderr
-	if err := rsyncCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: rsync failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Fprintf(os.Stderr, "\n✓ Missing files copied via rsync\n")
-
-	// Parse remote destination (can be machine-id:/path or user@host:/path)
+	// Parse remote destination FIRST (can be machine-id:/path or user@host:/path)
 	parts := strings.Split(destLocation, ":")
 	if len(parts) != 2 {
 		fmt.Fprintf(os.Stderr, "Error: invalid destination format. Use: machine-id:/path or user@host:/path\n")
@@ -2949,6 +2924,31 @@ func runBackupMissing(args []string) {
 		fmt.Fprintf(os.Stderr, "Example: photo-organizer backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
 		os.Exit(1)
 	}
+
+	// Step 2: Create temporary file list for rsync
+	tmpFile, err := os.CreateTemp("", "backup-missing-*.txt")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot create temp file: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	for _, f := range missingFiles {
+		fmt.Fprintln(tmpFile, f)
+	}
+	tmpFile.Close()
+
+	// Step 3: Use rsync with --files-from to copy only missing files
+	fmt.Fprintf(os.Stderr, "Step 2: Copying missing files via rsync...\n")
+	rsyncCmd := exec.Command("rsync", "-avz", "--progress", "--files-from="+tmpFile.Name(), absSourceFolder+"/", remoteUserHost+":"+remotePath+"/")
+	rsyncCmd.Stdout = os.Stderr
+	rsyncCmd.Stderr = os.Stderr
+	if err := rsyncCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: rsync failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "\n✓ Missing files copied via rsync\n")
 
 	// Step 3: SSH to remote and scan
 	fmt.Fprintf(os.Stderr, "\nStep 3: Scanning remote location...\n")
