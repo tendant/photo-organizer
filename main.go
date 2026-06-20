@@ -1363,9 +1363,12 @@ func main() {
 		case "verify":
 			runVerify(os.Args[2:])
 			return
+		case "collect":
+			runCollect(os.Args[2:])
+			return
 
 		// Deprecated/hidden commands (maintained for backward compatibility)
-		case "backup-status", "plan", "migrate", "collect", "collect-config",
+		case "backup-status", "plan", "migrate", "collect-config",
 			"push-config", "sync-config", "cleanup-plan", "cleanup-manifests",
 			"prune", "rescan", "risk-report", "analyze-backup-compliance",
 			"archive-status", "backup-missing", "stalled-manifests", "remove-manifest":
@@ -1422,7 +1425,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  machines                        List all machines that have scanned\n")
 	fmt.Fprintf(os.Stderr, "  lookup <name-or-path>           Find item and show complete details\n")
 	fmt.Fprintf(os.Stderr, "  search <pattern>                Broad search by pattern (simple list)\n")
-	fmt.Fprintf(os.Stderr, "  verify <folder>                 Verify folder is backed up\n\n")
+	fmt.Fprintf(os.Stderr, "  verify <folder>                 Verify folder is backed up\n")
+	fmt.Fprintf(os.Stderr, "  collect [--from MACHINE]        Collect manifests from remote machines\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "FLAGS\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
