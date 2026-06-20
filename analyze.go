@@ -4484,14 +4484,14 @@ func runStoragePlan(args []string) {
 	fmt.Printf("\n")
 }
 
-// runCheckBackupStatus checks if a folder is backed up
+// runCheckBackupStatus checks if a folder is backed up and shows per-machine coverage
 func runCheckBackupStatus(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "\n✓ CHECK BACKUP STATUS\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer check-backup <folder>\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer check-backup ~/Photos\n\n")
-		fmt.Fprintf(os.Stderr, "Shows if folder is backed up and where copies exist.\n")
+		fmt.Fprintf(os.Stderr, "Shows backup coverage per machine and at-risk files.\n")
 		os.Exit(1)
 	}
 
@@ -4528,72 +4528,118 @@ func runCheckBackupStatus(args []string) {
 		return
 	}
 
-	// Find manifests for this folder
-	machinesWithFolder := make(map[string]int64)
-	totalFiles := 0
-	totalBytes := int64(0)
+	// Find local manifest for this folder and build hash index
+	var localRows []ManifestRow
+	hashIndex := make(map[string][]ManifestRow) // hash -> rows across all machines
 
 	for _, src := range sources {
 		if src.ScanPath == absPath {
-			totalFiles += len(src.Rows)
-			var folderBytes int64
-			for _, row := range src.Rows {
-				folderBytes += row.SizeBytes
+			localRows = src.Rows
+		}
+		// Build hash index for all files across all machines
+		for _, row := range src.Rows {
+			hash := row.FullHash
+			if hash == "" {
+				hash = row.PartialHash
 			}
-			machinesWithFolder[src.MachineName] = folderBytes
-			totalBytes += folderBytes
+			if hash != "" {
+				hashIndex[hash] = append(hashIndex[hash], row)
+			}
 		}
 	}
 
-	// Print results
+	// Print header
 	fmt.Printf("═══════════════════════════════════════════════════════════════════\n")
-	fmt.Printf("BACKUP STATUS: %s\n", absPath)
+	fmt.Printf("BACKUP COVERAGE: %s\n", absPath)
 	fmt.Printf("═══════════════════════════════════════════════════════════════════\n\n")
 
-	if totalFiles == 0 {
+	if len(localRows) == 0 {
 		fmt.Printf("❌ NOT SCANNED\n")
 		fmt.Printf("   This folder has not been scanned yet.\n")
 		fmt.Printf("   Run: photo-organizer scan %s\n", folderPath)
 		return
 	}
 
-	// Check if backed up on other machines
+	// Count files per machine
 	machinesCfg := loadMachinesConfig()
-	currentMachine := resolveMachineID("")
-	backupMachines := 0
-	for m := range machinesWithFolder {
-		if m != currentMachine {
-			backupMachines++
+	machineCount := make(map[string]int)
+	machineBytes := make(map[string]int64)
+	atRiskFiles := 0
+	atRiskBytes := int64(0)
+
+	for _, localRow := range localRows {
+		hash := localRow.FullHash
+		if hash == "" {
+			hash = localRow.PartialHash
+		}
+
+		// Find which machines have this file
+		machinesHaveFile := make(map[string]bool)
+		if hash != "" && len(hashIndex[hash]) > 0 {
+			for _, remoteRow := range hashIndex[hash] {
+				machinesHaveFile[remoteRow.MachineName] = true
+			}
+		}
+
+		// Count coverage
+		if len(machinesHaveFile) == 0 {
+			// File not found anywhere
+			atRiskFiles++
+			atRiskBytes += localRow.SizeBytes
+		} else {
+			for machine := range machinesHaveFile {
+				machineCount[machine]++
+				machineBytes[machine] += localRow.SizeBytes
+			}
 		}
 	}
 
-	fmt.Printf("Files:   %s (%s)\n", formatCount(totalFiles), formatSize(totalBytes))
-	fmt.Printf("Scanned: %d machine(s)\n", len(machinesWithFolder))
-	fmt.Printf("\n")
+	totalFiles := len(localRows)
+	totalBytes := int64(0)
+	for _, row := range localRows {
+		totalBytes += row.SizeBytes
+	}
 
-	if backupMachines == 0 {
-		fmt.Printf("⚠️  NOT BACKED UP\n")
-		fmt.Printf("   Copies only exist on current machine.\n")
+	fmt.Printf("Total:   %s (%s)\n\n", formatCount(totalFiles), formatSize(totalBytes))
+
+	// Sort machines by name for consistent output
+	var machines []string
+	for m := range machineCount {
+		machines = append(machines, m)
+	}
+	sort.Strings(machines)
+
+	// Show per-machine coverage
+	fmt.Printf("Coverage by machine:\n\n")
+	for _, machine := range machines {
+		count := machineCount[machine]
+		bytes := machineBytes[machine]
+		coverage := float64(count) / float64(totalFiles) * 100
+
+		cfg := machinesCfg[machine]
+		machineLabel := machine
+		if strings.Contains(cfg, "[removable]") {
+			machineLabel = "📷 " + machine
+		} else if cfg != "" && !strings.Contains(cfg, "[") {
+			machineLabel = "🌐 " + machine
+		} else {
+			machineLabel = "💻 " + machine
+		}
+
+		fmt.Printf("  %s\n", machineLabel)
+		fmt.Printf("    %s files (%.1f%%) | %s\n", formatCount(count), coverage, formatSize(bytes))
+	}
+
+	// Show at-risk files
+	fmt.Printf("\n")
+	if atRiskFiles > 0 {
+		atRiskCoverage := float64(atRiskFiles) / float64(totalFiles) * 100
+		fmt.Printf("⚠️  AT-RISK: %s files (%.1f%%) | %s\n", formatCount(atRiskFiles), atRiskCoverage, formatSize(atRiskBytes))
+		fmt.Printf("   Only on this machine, not backed up elsewhere\n")
 		fmt.Printf("   Run: photo-organizer backup %s <archive-path>\n", folderPath)
 	} else {
-		fmt.Printf("✓ BACKED UP on %d machine(s):\n\n", backupMachines)
-		for machine, bytes := range machinesWithFolder {
-			cfg := machinesCfg[machine]
-			machineLabel := machine
-			if strings.Contains(cfg, "[removable]") {
-				machineLabel = "📷 " + machine
-			} else if cfg != "" && !strings.Contains(cfg, "[") {
-				machineLabel = "🌐 " + machine
-			} else {
-				machineLabel = "💻 " + machine
-			}
-
-			if machine == currentMachine {
-				fmt.Printf("   %s (local)\n", machineLabel)
-			} else {
-				fmt.Printf("   %s - %s\n", machineLabel, formatSize(bytes))
-			}
-		}
+		fmt.Printf("✓ ALL FILES BACKED UP\n")
+		fmt.Printf("   Every file has copies on other machines\n")
 	}
 	fmt.Printf("\n")
 }
