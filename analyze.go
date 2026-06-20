@@ -4247,6 +4247,10 @@ func runStorageStatus(args []string) {
 			fmt.Printf("🌐 REMOTE: %s (%s)\n", machine, config)
 		} else {
 			fmt.Printf("💻 LOCAL: %s\n", machine)
+			// Show disk space for local machine
+			if diskUsage := getDiskUsageLocal(); diskUsage != "" {
+				fmt.Printf("   %s\n", diskUsage)
+			}
 		}
 
 		// Sort devices
@@ -4318,4 +4322,75 @@ func detectMountPoint(path string) string {
 // rowBelongsToSource checks if a manifest row belongs to a specific source
 func rowBelongsToSource(row ManifestRow, src ManifestSource, srcIdx int) bool {
 	return row.ScanPath == src.ScanPath && row.MachineName == src.MachineName
+}
+
+// getDiskUsageLocal returns disk usage info for the local machine
+func getDiskUsageLocal() string {
+	// Use 'df' to get disk usage for the home directory
+	homeDir := userHomeDir()
+	cmd := exec.Command("df", "-h", homeDir)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) < 2 {
+		return ""
+	}
+
+	// Parse df output: Filesystem Size Used Avail Use% Mounted on
+	fields := strings.Fields(lines[1])
+	if len(fields) >= 4 {
+		available := fields[3]
+		total := fields[1]
+		used := fields[2]
+		return fmt.Sprintf("Disk: %s used / %s total (%s available)", used, total, available)
+	}
+	return ""
+}
+
+// getDiskUsageRemote returns disk usage info for a remote machine via SSH
+func getDiskUsageRemote(machineID, sshTarget string) string {
+	// Parse user@host from config
+	parts := strings.Fields(sshTarget)
+	if len(parts) < 1 {
+		return ""
+	}
+
+	hostInfo := parts[0]
+	if !strings.Contains(hostInfo, "@") {
+		return ""
+	}
+
+	// Use SSH to run 'df' on remote machine home directory
+	// Use -StrictHostKeyChecking=no to avoid prompts for new hosts
+	cmd := exec.Command("ssh", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=no", hostInfo, "df -h ~ 2>/dev/null || echo 'no-data'")
+	var out, err_buf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &err_buf
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+
+	output := strings.TrimSpace(out.String())
+	if output == "" {
+		return ""
+	}
+
+	lines := strings.Split(output, "\n")
+	if len(lines) < 2 {
+		return ""
+	}
+
+	// Parse df output: Filesystem Size Used Avail Use% Mounted on
+	fields := strings.Fields(lines[1])
+	if len(fields) >= 4 {
+		available := fields[3]
+		total := fields[1]
+		used := fields[2]
+		return fmt.Sprintf("Disk: %s used / %s total (%s available)", used, total, available)
+	}
+	return ""
 }
