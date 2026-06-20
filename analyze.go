@@ -890,7 +890,7 @@ func fileType(ext string) string {
 
 const sep = "================================================================="
 
-func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
+func printReport(sources []ManifestSource, threshold float64, topN int, w io.Writer) {
 	overlaps := overlappingPairs(sources)
 	idx := buildHashIndex(sources)
 	duplicates := findDuplicates(sources, idx)
@@ -898,6 +898,15 @@ func printReport(sources []ManifestSource, threshold float64, w io.Writer) {
 	intraDups := findIntraMachine(sources, idx)
 	folderStats := computeFolderRedundancy(sources, idx)
 	summaries := computeSummaries(sources, idx)
+
+	// Filter to top N most duplicated folders if requested
+	if topN > 0 && len(folderStats) > topN {
+		// Sort by coverage (descending) to get most duplicated first
+		sort.Slice(folderStats, func(i, j int) bool {
+			return folderStats[i].Coverage > folderStats[j].Coverage
+		})
+		folderStats = folderStats[:topN]
+	}
 
 	fmt.Fprintln(w, sep)
 	fmt.Fprintf(w, " PHOTO DUPLICATE ANALYSIS — %d manifest(s)\n", len(sources))
@@ -1271,7 +1280,7 @@ func runAnalyze(args []string) {
 			flagArgs = append(flagArgs, a)
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && !strings.Contains(a, "=") {
 				name := strings.TrimLeft(a, "-")
-				if name == "csv" || name == "threshold" {
+				if name == "csv" || name == "threshold" || name == "top" {
 					i++
 					flagArgs = append(flagArgs, args[i])
 				}
@@ -1284,8 +1293,9 @@ func runAnalyze(args []string) {
 	fs := flag.NewFlagSet("analyze", flag.ExitOnError)
 	csvPrefix := fs.String("csv", "", "write CSV output files with this filename prefix")
 	threshold := fs.Float64("threshold", 0.9, "folder coverage fraction to flag as nearly-redundant (e.g. 0.9 = 90%)")
+	topN := fs.Int("top", 0, "show only top N most duplicated folders (0 = all)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer analyze [--csv prefix] [--threshold 0.9] manifest1.csv manifest2.csv ...\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer dups [--csv prefix] [--threshold 0.9] [--top N] [manifest1.csv ...]\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(flagArgs)
@@ -1343,7 +1353,7 @@ func runAnalyze(args []string) {
 	fmt.Fprintf(os.Stderr, "Machines: %s\n", strings.Join(machineNames, ", "))
 	fmt.Fprintf(os.Stderr, "Tip: photo-organizer plan --keep <machine> to generate a safe-delete script\n\n")
 
-	printReport(sources, *threshold, os.Stdout)
+	printReport(sources, *threshold, *topN, os.Stdout)
 
 	if *csvPrefix != "" {
 		fmt.Fprintln(os.Stdout)
