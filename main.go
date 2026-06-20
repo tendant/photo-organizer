@@ -3617,7 +3617,47 @@ func saveMachinesConfig(cfg map[string]string) error {
 // =============================================================================
 
 func runManifests(args []string) {
-	fmt.Fprintf(os.Stderr, "Listing all manifests and their origin...\n\n")
+	// Parse flags
+	showStalled := false
+	doCleanup := false
+	removeFolder := ""
+
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--stalled" {
+			showStalled = true
+		} else if args[i] == "--cleanup" {
+			doCleanup = true
+		} else if args[i] == "--remove" && i+1 < len(args) {
+			removeFolder = args[i+1]
+			i++
+		}
+	}
+
+	// Handle --remove flag
+	if removeFolder != "" {
+		absPath, _ := filepath.Abs(removeFolder)
+		manifestRoot := defaultManifestRoot()
+		manifestDir := filepath.Join(manifestRoot, "_Manifest")
+		matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+		removed := 0
+		for _, path := range matches {
+			src, err := readManifest(path)
+			if err == nil && src.ScanPath == absPath {
+				if err := os.Remove(path); err == nil {
+					fmt.Printf("✓ Removed manifest: %s\n", filepath.Base(path))
+					removed++
+				}
+			}
+		}
+
+		if removed == 0 {
+			fmt.Fprintf(os.Stderr, "No manifest found for: %s\n", absPath)
+		} else {
+			fmt.Printf("\n✓ Removed %d manifest(s)\n", removed)
+		}
+		return
+	}
 
 	// Load all manifests
 	manifestRoot := defaultManifestRoot()
@@ -3639,8 +3679,76 @@ func runManifests(args []string) {
 		}
 		// Mark as local or remote
 		markManifestOrigin(&src, currentMachineID)
+		// Check if stalled (source path no longer exists)
+		if _, err := os.Stat(src.ScanPath); err != nil {
+			src.IsStale = true
+		}
 		sources = append(sources, src)
 	}
+
+	// Handle --stalled flag
+	if showStalled {
+		var stalledSources []ManifestSource
+		for _, src := range sources {
+			if src.IsStale {
+				stalledSources = append(stalledSources, src)
+			}
+		}
+
+		if len(stalledSources) == 0 {
+			fmt.Fprintf(os.Stderr, "✅ No stalled manifests found\n")
+			return
+		}
+
+		fmt.Fprintf(os.Stderr, "📋 STALLED MANIFESTS (source paths no longer exist)\n\n")
+		for _, src := range stalledSources {
+			fmt.Printf("  %s\n", filepath.Base(src.FilePath))
+			fmt.Printf("    Scan path: %s (missing)\n", src.ScanPath)
+			fmt.Printf("    Machine:   %s\n", src.MachineName)
+			fmt.Printf("    Files:     %d\n\n", len(src.Rows))
+		}
+		return
+	}
+
+	// Handle --cleanup flag
+	if doCleanup {
+		var stalledSources []ManifestSource
+		var stalledPaths []string
+		for i, src := range sources {
+			if src.IsStale {
+				stalledSources = append(stalledSources, src)
+				stalledPaths = append(stalledPaths, matches[i])
+			}
+		}
+
+		if len(stalledSources) == 0 {
+			fmt.Fprintf(os.Stderr, "✅ No stalled manifests to clean up\n")
+			return
+		}
+
+		fmt.Fprintf(os.Stderr, "Found %d stalled manifest(s):\n\n", len(stalledSources))
+		for _, src := range stalledSources {
+			fmt.Fprintf(os.Stderr, "  %s (%s - missing)\n", filepath.Base(src.FilePath), src.ScanPath)
+		}
+		fmt.Fprintf(os.Stderr, "\n")
+
+		if !confirmPrompt("Remove stalled manifests?") {
+			fmt.Fprintf(os.Stderr, "Cancelled.\n")
+			return
+		}
+
+		removed := 0
+		for _, path := range stalledPaths {
+			if err := os.Remove(path); err == nil {
+				fmt.Printf("✓ Removed: %s\n", filepath.Base(path))
+				removed++
+			}
+		}
+		fmt.Printf("\n✓ Removed %d stalled manifest(s)\n", removed)
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "Listing all manifests and their origin...\n\n")
 
 	// Sort by origin (local first), then by machine name, then scan path
 	sort.Slice(sources, func(i, j int) bool {
