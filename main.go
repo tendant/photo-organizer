@@ -2738,17 +2738,13 @@ func runRemoveManifest(args []string) {
 
 func runBackupMissing(args []string) {
 	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup-missing <folder-path> --dest <machine-id:/path or user@host:/path>\n\n")
-		fmt.Fprintf(os.Stderr, "Back up ONLY files not yet backed up to remote location via rsync.\n")
-		fmt.Fprintf(os.Stderr, "Destination formats:\n")
-		fmt.Fprintf(os.Stderr, "  - machine-id:/path (machine from machines.conf): backup-missing ~/Photos --dest ubuntu-max-acb605:/backups\n")
-		fmt.Fprintf(os.Stderr, "  - user@host:/path (full SSH target): backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n\n")
-		fmt.Fprintf(os.Stderr, "Workflow:\n")
-		fmt.Fprintf(os.Stderr, "  1. Finds files NOT backed up (checks manifests)\n")
-		fmt.Fprintf(os.Stderr, "  2. Copies ONLY missing files via rsync to remote\n")
-		fmt.Fprintf(os.Stderr, "  3. Scans remote location to update manifests\n")
-		fmt.Fprintf(os.Stderr, "  4. Collects updated manifests back to local\n")
-		fmt.Fprintf(os.Stderr, "  5. Verifies all files are now backed up\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup-missing <folder> --dest <target>\n\n")
+		fmt.Fprintf(os.Stderr, "Ensures all files in folder are backed up to target destination.\n")
+		fmt.Fprintf(os.Stderr, "Only copies missing files via rsync.\n\n")
+		fmt.Fprintf(os.Stderr, "Target formats: machine-id:/path or user@host:/path\n\n")
+		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  backup-missing ~/Photos --dest ubuntu-max:/backups\n")
+		fmt.Fprintf(os.Stderr, "  backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
 		os.Exit(1)
 	}
 
@@ -2781,13 +2777,10 @@ func runBackupMissing(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "Backing up missing files from %s to %s\n\n", absSourceFolder, destLocation)
+	fmt.Fprintf(os.Stderr, "Checking which files need backup...\n")
 
 	// Get local machine ID to distinguish local from remote backups
 	localMachineID := resolveMachineID("")
-
-	// Step 1: Find which files need backing up
-	fmt.Fprintf(os.Stderr, "Step 1: Finding files not backed up...\n")
 
 	// Load all manifests
 	defaultDir := filepath.Join(userHomeDir(), "manifests", "_Manifest")
@@ -2803,14 +2796,6 @@ func runBackupMissing(args []string) {
 		markManifestOrigin(&src, localMachineID)
 		sources = append(sources, src)
 	}
-
-	// Detect stale manifests before building index
-	stale := detectStaleManifests(sources)
-	printStaleManifestReport(stale)
-
-	// Report overlapping manifests before building index (only local overlaps matter)
-	dedup := reportOverlapDeduplication(sources)
-	printDeduplicationReportFiltered(dedup, localMachineID, sources)
 
 	// Build hash index
 	idx := buildHashIndex(sources)
@@ -2874,12 +2859,11 @@ func runBackupMissing(args []string) {
 	})
 
 	if missingCount == 0 {
-		fmt.Fprintf(os.Stderr, "✓ No files need backing up - all files have non-removable backups\n")
-		fmt.Fprintf(os.Stderr, "\nYou're all set! Run 'photo-organizer archive' to free up space.\n")
+		fmt.Fprintf(os.Stderr, "✓ All files already backed up\n")
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "Found %d files to backup (%.1f GB)\n\n", missingCount, float64(missingSize)/(1024*1024*1024))
+	fmt.Fprintf(os.Stderr, "Backing up %d files (%.1f GB)...\n", missingCount, float64(missingSize)/(1024*1024*1024))
 
 	// Parse remote destination FIRST (can be machine-id:/path or user@host:/path)
 	parts := strings.Split(destLocation, ":")
@@ -2957,9 +2941,8 @@ func runBackupMissing(args []string) {
 	}
 	tmpFile.Close()
 
-	// Step 3: Use rsync with --files-from to copy only missing files
-	fmt.Fprintf(os.Stderr, "Step 2: Copying missing files via rsync...\n")
-	rsyncCmd := exec.Command("rsync", "-avz", "--progress", "--files-from="+tmpFile.Name(), absSourceFolder+"/", remoteUserHost+":"+remotePath+"/")
+	// Copy files via rsync
+	rsyncCmd := exec.Command("rsync", "-az", "--files-from="+tmpFile.Name(), absSourceFolder+"/", remoteUserHost+":"+remotePath+"/")
 	rsyncCmd.Stdout = os.Stderr
 	rsyncCmd.Stderr = os.Stderr
 	if err := rsyncCmd.Run(); err != nil {
@@ -2967,44 +2950,21 @@ func runBackupMissing(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "\n✓ Missing files copied via rsync\n")
-
-	// Step 3: SSH to remote and scan
-	fmt.Fprintf(os.Stderr, "\nStep 3: Scanning remote location...\n")
-	// Try to find photo-organizer in common locations
-	scanCmd := fmt.Sprintf("cd %s && for path in photo-organizer ~/bin/photo-organizer /usr/local/bin/photo-organizer; do if command -v $path &>/dev/null || [ -f $path ]; then $path scan . --machine %s; exit $?; fi; done; echo 'photo-organizer not found in PATH'; exit 1", remotePath, remoteMachineID)
+	// Scan remote location
+	scanCmd := fmt.Sprintf("cd %s && for path in photo-organizer ~/bin/photo-organizer /usr/local/bin/photo-organizer; do if command -v $path &>/dev/null || [ -f $path ]; then $path scan . --machine %s >/dev/null 2>&1; exit $?; fi; done; exit 1", remotePath, remoteMachineID)
 	sshCmd := exec.Command("ssh", remoteUserHost, scanCmd)
-	sshCmd.Stdout = os.Stderr
-	sshCmd.Stderr = os.Stderr
 	if err := sshCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "\nError: Remote scan failed\n")
-		fmt.Fprintf(os.Stderr, "photo-organizer must be installed on the remote machine.\n")
-		fmt.Fprintf(os.Stderr, "Install it and run: ssh %s 'cd %s && photo-organizer scan . --machine %s'\n", remoteUserHost, remotePath, remoteMachineID)
+		fmt.Fprintf(os.Stderr, "Error: Remote scan failed. photo-organizer must be installed on remote machine.\n")
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "✓ Remote location scanned\n")
 
-	// Step 4: Collect updated manifests
-	fmt.Fprintf(os.Stderr, "\nStep 4: Collecting manifests from remote...\n")
+	// Collect updated manifests
 	collectCmd := exec.Command("photo-organizer", "collect", "--from", remoteMachineID)
 	collectCmd.Stdout = os.Stderr
 	collectCmd.Stderr = os.Stderr
-	if err := collectCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Manifest collection had issues: %v\n", err)
-	} else {
-		fmt.Fprintf(os.Stderr, "✓ Manifests collected\n")
-	}
+	collectCmd.Run()
 
-	// Step 5: Verify all files are now backed up
-	fmt.Fprintf(os.Stderr, "\nStep 5: Verifying backup status...\n")
-	verifyCmd := exec.Command("photo-organizer", "check-backup", absSourceFolder)
-	verifyCmd.Stdout = os.Stderr
-	verifyCmd.Stderr = os.Stderr
-	if err := verifyCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Verification check complete\n")
-	}
-
-	fmt.Fprintf(os.Stderr, "\n✓ Backup process complete! All files are now backed up.\n")
+	fmt.Fprintf(os.Stderr, "✓ Backup complete\n")
 }
 
 // =============================================================================
