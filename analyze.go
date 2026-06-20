@@ -4534,7 +4534,17 @@ func runCheckBackupStatus(args []string) {
 
 	for _, src := range sources {
 		if src.ScanPath == absPath {
+			// Exact match
 			localRows = src.Rows
+		} else if strings.HasPrefix(absPath, src.ScanPath+string(filepath.Separator)) {
+			// Check if absPath is a subfolder of src.ScanPath
+			// Filter rows to only include files in this subfolder
+			for _, row := range src.Rows {
+				filePath := filepath.Join(src.ScanPath, row.RelativePath)
+				if strings.HasPrefix(filePath, absPath+string(filepath.Separator)) || filePath == absPath {
+					localRows = append(localRows, row)
+				}
+			}
 		}
 		// Build hash index for all files across all machines
 		for _, row := range src.Rows {
