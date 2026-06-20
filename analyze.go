@@ -4560,10 +4560,13 @@ func runCheckBackupStatus(args []string) {
 		return
 	}
 
-	// Count files per machine (separate backed up vs removable)
+	// Get current machine to exclude it from backup count
+	currentMachine := resolveMachineID("")
+
+	// Count files per machine (separate backed up vs removable vs local)
 	machinesCfg := loadMachinesConfig()
-	machineCount := make(map[string]int)      // machines with proper backups
-	machineBytes := make(map[string]int64)    // machines with proper backups
+	machineCount := make(map[string]int)      // remote machines with proper backups
+	machineBytes := make(map[string]int64)    // remote machines with proper backups
 	removableCount := make(map[string]int)    // removable media
 	removableBytes := make(map[string]int64)  // removable media
 	atRiskFiles := 0
@@ -4575,7 +4578,7 @@ func runCheckBackupStatus(args []string) {
 			hash = localRow.PartialHash
 		}
 
-		// Find which machines have this file
+		// Find which machines have this file (excluding current machine and removable)
 		machinesHaveFile := make(map[string]bool)
 		removableHaveFile := make(map[string]bool)
 		if hash != "" && len(hashIndex[hash]) > 0 {
@@ -4583,15 +4586,16 @@ func runCheckBackupStatus(args []string) {
 				cfg := machinesCfg[remoteRow.MachineName]
 				if strings.Contains(cfg, "[removable]") {
 					removableHaveFile[remoteRow.MachineName] = true
-				} else {
+				} else if remoteRow.MachineName != currentMachine {
+					// Only count OTHER machines as backups (not current machine)
 					machinesHaveFile[remoteRow.MachineName] = true
 				}
 			}
 		}
 
-		// Count coverage (only non-removable machines count as "backed up")
+		// Count coverage (only remote non-removable machines count as "backed up")
 		if len(machinesHaveFile) == 0 {
-			// File not found on proper backup machines
+			// File not found on remote backup machines
 			atRiskFiles++
 			atRiskBytes += localRow.SizeBytes
 		} else {
