@@ -4082,3 +4082,200 @@ func MonitorDiskSpace(path string) bool {
 	defer os.Remove(testFile)
 	return true
 }
+
+// =============================================================================
+// Storage Status - Machine & Device Level Storage Analysis
+// =============================================================================
+
+func runStorageStatus(args []string) {
+	// Load all manifests
+	manifestRoot := filepath.Join(userHomeDir(), "manifests")
+	manifestDir := filepath.Join(manifestRoot, "_Manifest")
+	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
+
+	if len(matches) == 0 {
+		fmt.Fprintf(os.Stderr, "No manifests found\n")
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "Loading manifests...\n\n")
+
+	var sources []ManifestSource
+	for _, path := range matches {
+		src, err := readManifest(path)
+		if err != nil || len(src.Rows) == 0 {
+			continue
+		}
+		sources = append(sources, src)
+	}
+
+	if len(sources) == 0 {
+		fmt.Fprintf(os.Stderr, "No valid manifests found\n")
+		return
+	}
+
+	// Build hash index for deduplication analysis
+	idx := buildHashIndex(sources)
+	duplicates := findDuplicates(sources, idx)
+	uniqueByMachine := findUnique(sources, idx)
+
+	// Group by machine, then by device/mount point
+	type DeviceStats struct {
+		MountPoint   string
+		ScanPaths    []string
+		TotalFiles   int
+		TotalBytes   int64
+		UniqueFiles  int
+		UniqueBytes  int64
+		DupFiles     int
+		DupBytes     int64
+		BackedFiles  int
+		BackedBytes  int64
+	}
+
+	type MachineStats struct {
+		Machine string
+		Devices map[string]*DeviceStats
+	}
+
+	machineStats := make(map[string]*MachineStats)
+
+	// Process each source
+	for i, src := range sources {
+		if _, ok := machineStats[src.MachineName]; !ok {
+			machineStats[src.MachineName] = &MachineStats{
+				Machine: src.MachineName,
+				Devices: make(map[string]*DeviceStats),
+			}
+		}
+
+		// Auto-detect mount point from scan path
+		mountPoint := detectMountPoint(src.ScanPath)
+		if _, ok := machineStats[src.MachineName].Devices[mountPoint]; !ok {
+			machineStats[src.MachineName].Devices[mountPoint] = &DeviceStats{
+				MountPoint: mountPoint,
+				ScanPaths:  []string{},
+			}
+		}
+
+		device := machineStats[src.MachineName].Devices[mountPoint]
+		device.ScanPaths = append(device.ScanPaths, src.ScanPath)
+
+		// Calculate stats for this source
+		totalFiles := len(src.Rows)
+		var totalBytes int64
+		for _, row := range src.Rows {
+			totalBytes += row.SizeBytes
+		}
+
+		device.TotalFiles += totalFiles
+		device.TotalBytes += totalBytes
+
+		// Count unique files for this machine
+		uniqueRows := uniqueByMachine[src.MachineName]
+		uniqueCount := 0
+		var uniqueBytes int64
+		for _, row := range uniqueRows {
+			if rowBelongsToSource(row, src, i) {
+				uniqueCount++
+				uniqueBytes += row.SizeBytes
+			}
+		}
+
+		device.UniqueFiles += uniqueCount
+		device.UniqueBytes += uniqueBytes
+
+		// Count duplicated files
+		device.DupFiles = device.TotalFiles - device.UniqueFiles
+		device.DupBytes = device.TotalBytes - device.UniqueBytes
+	}
+
+	// Print report
+	fmt.Printf("═══════════════════════════════════════════════════════════════════\n")
+	fmt.Printf("STORAGE STATUS REPORT\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════════\n\n")
+
+	var totalGlobalFiles int
+	var totalGlobalBytes int64
+
+	// Sort machines for consistent output
+	var machines []string
+	for m := range machineStats {
+		machines = append(machines, m)
+	}
+	sort.Strings(machines)
+
+	for _, machine := range machines {
+		stats := machineStats[machine]
+		fmt.Printf("Machine: %s\n", machine)
+
+		// Sort devices
+		var devices []string
+		for d := range stats.Devices {
+			devices = append(devices, d)
+		}
+		sort.Strings(devices)
+
+		var machineTotal int64
+		var machineUnique int64
+
+		for _, device := range devices {
+			dev := stats.Devices[device]
+			machineTotal += dev.TotalBytes
+			machineUnique += dev.UniqueBytes
+
+			coverage := 0.0
+			if dev.TotalFiles > 0 {
+				coverage = float64(dev.TotalFiles-dev.UniqueFiles) / float64(dev.TotalFiles) * 100
+			}
+
+			fmt.Printf("  Device: %s\n", dev.MountPoint)
+			fmt.Printf("    Paths:        %v\n", dev.ScanPaths)
+			fmt.Printf("    Total:        %s files (%s)\n", formatCount(dev.TotalFiles), formatSize(dev.TotalBytes))
+			fmt.Printf("    Unique:       %s files (%s) - only on this machine\n", formatCount(dev.UniqueFiles), formatSize(dev.UniqueBytes))
+			fmt.Printf("    Duplicated:   %s files (%s) - %.1f%% backed elsewhere\n", formatCount(dev.DupFiles), formatSize(dev.DupBytes), coverage)
+			fmt.Printf("\n")
+		}
+
+		totalGlobalFiles += len(stats.Devices)
+		totalGlobalBytes += machineTotal
+
+		fmt.Printf("\n")
+	}
+
+	// Print summary
+	fmt.Printf("═══════════════════════════════════════════════════════════════════\n")
+	fmt.Printf("SUMMARY\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════════\n\n")
+	fmt.Printf("Machines scanned: %d\n", len(machines))
+	fmt.Printf("Total files:      %s (%s)\n", formatCount(len(idx)), formatSize(totalGlobalBytes))
+	fmt.Printf("Duplicated files: %s\n", formatCount(len(duplicates)))
+	fmt.Printf("\n")
+}
+
+// detectMountPoint returns the likely mount point for a given path
+// by walking up the directory tree
+func detectMountPoint(path string) string {
+	// For now, use a simple heuristic: the first component after root
+	// This works for most cases like /data, /tankm1, /mnt, /Volumes
+	path = filepath.Clean(path)
+	parts := strings.Split(path, string(filepath.Separator))
+
+	if len(parts) <= 2 {
+		return path
+	}
+
+	// Return root + first component: /data, /tankm1, /mnt, etc.
+	if parts[0] == "" {
+		// Unix-style absolute path
+		return string(filepath.Separator) + parts[1]
+	}
+
+	// Windows-style path
+	return parts[0]
+}
+
+// rowBelongsToSource checks if a manifest row belongs to a specific source
+func rowBelongsToSource(row ManifestRow, src ManifestSource, srcIdx int) bool {
+	return row.ScanPath == src.ScanPath && row.MachineName == src.MachineName
+}
