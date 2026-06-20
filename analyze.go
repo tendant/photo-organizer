@@ -4530,7 +4530,7 @@ func runCheckBackupStatus(args []string) {
 
 	// Find local manifest for this folder and build hash index
 	var localRows []ManifestRow
-	hashIndex := make(map[string][]ManifestRow) // hash -> rows across all machines
+	hashIndex := make(map[string][]ManifestRow) // hash|size -> rows across all machines
 
 	for _, src := range sources {
 		if src.ScanPath == absPath {
@@ -4538,13 +4538,11 @@ func runCheckBackupStatus(args []string) {
 		}
 		// Build hash index for all files across all machines
 		for _, row := range src.Rows {
-			hash := row.FullHash
-			if hash == "" {
-				hash = row.PartialHash
+			if row.PartialHash == "" {
+				continue
 			}
-			if hash != "" {
-				hashIndex[hash] = append(hashIndex[hash], row)
-			}
+			key := indexKey(row.PartialHash, row.SizeBytes)
+			hashIndex[key] = append(hashIndex[key], row)
 		}
 	}
 
@@ -4583,9 +4581,9 @@ func runCheckBackupStatus(args []string) {
 	atRiskBytes := int64(0)
 
 	for _, localRow := range localRows {
-		hash := localRow.FullHash
-		if hash == "" {
-			hash = localRow.PartialHash
+		// Always use PartialHash for key consistency (even if FullHash exists)
+		if localRow.PartialHash == "" {
+			continue
 		}
 
 		// Get folder from path
@@ -4601,8 +4599,9 @@ func runCheckBackupStatus(args []string) {
 		// Find which machines have this file (excluding current machine and removable)
 		machinesHaveFile := make(map[string]bool)
 		removableHaveFile := make(map[string]bool)
-		if hash != "" && len(hashIndex[hash]) > 0 {
-			for _, remoteRow := range hashIndex[hash] {
+		key := indexKey(localRow.PartialHash, localRow.SizeBytes)
+		if len(hashIndex[key]) > 0 {
+			for _, remoteRow := range hashIndex[key] {
 				cfg := machinesCfg[remoteRow.MachineName]
 				if strings.Contains(cfg, "[removable]") {
 					removableHaveFile[remoteRow.MachineName] = true
