@@ -4695,7 +4695,12 @@ func runCheckBackupStatus(args []string) {
 	if atRiskFiles > 0 {
 		atRiskCoverage := float64(atRiskFiles) / float64(totalFiles) * 100
 		fmt.Printf("⚠️  NOT ON PRIMARY BACKUPS: %s files (%.1f%%) | %s\n", formatCount(atRiskFiles), atRiskCoverage, formatSize(atRiskBytes))
-		fmt.Printf("   Not found on configured backup machines (ubuntu-max, ubuntu-nas)\n")
+		if len(machines) > 0 {
+			machineList := strings.Join(machines, ", ")
+			fmt.Printf("   Not found on configured backup machines (%s)\n", machineList)
+		} else {
+			fmt.Printf("   Not found on any configured backup machines\n")
+		}
 		fmt.Printf("   May exist on other machines or need explicit backup\n")
 		fmt.Printf("   Run: photo-organizer backup %s <archive-path>\n", folderPath)
 	} else {
