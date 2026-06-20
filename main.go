@@ -2738,9 +2738,11 @@ func runRemoveManifest(args []string) {
 
 func runBackupMissing(args []string) {
 	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup-missing <folder-path> --dest <user@host:/path>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup-missing <folder-path> --dest <machine-id:/path or user@host:/path>\n\n")
 		fmt.Fprintf(os.Stderr, "Back up ONLY files not yet backed up to remote location via rsync.\n")
-		fmt.Fprintf(os.Stderr, "Supports remote SSH destinations: user@host:/path\n\n")
+		fmt.Fprintf(os.Stderr, "Destination formats:\n")
+		fmt.Fprintf(os.Stderr, "  - machine-id:/path (machine from machines.conf): backup-missing ~/Photos --dest ubuntu-max-acb605:/backups\n")
+		fmt.Fprintf(os.Stderr, "  - user@host:/path (full SSH target): backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n\n")
 		fmt.Fprintf(os.Stderr, "Workflow:\n")
 		fmt.Fprintf(os.Stderr, "  1. Finds files NOT backed up (checks manifests)\n")
 		fmt.Fprintf(os.Stderr, "  2. Copies ONLY missing files via rsync to remote\n")
@@ -2904,32 +2906,47 @@ func runBackupMissing(args []string) {
 
 	fmt.Fprintf(os.Stderr, "\n✓ Missing files copied via rsync\n")
 
-	// Parse remote destination (user@host:/path)
+	// Parse remote destination (can be machine-id:/path or user@host:/path)
 	parts := strings.Split(destLocation, ":")
 	if len(parts) != 2 {
-		fmt.Fprintf(os.Stderr, "Error: invalid destination format. Use: user@host:/path\n")
+		fmt.Fprintf(os.Stderr, "Error: invalid destination format. Use: machine-id:/path or user@host:/path\n")
 		os.Exit(1)
 	}
 
-	remoteUserHost := parts[0]
+	destIdentifier := parts[0]
 	remotePath := parts[1]
 
-	// Look up remote machine ID from machines.conf
-	// machines map is machine-id -> ssh-host, so we need to reverse-lookup
+	// Look up remote machine config
 	machines := loadMachinesConfig()
 
-	remoteMachineID := ""
-	for machID, sshHost := range machines {
-		if sshHost == remoteUserHost {
-			remoteMachineID = machID
-			break
-		}
-	}
+	var remoteUserHost string
+	var remoteMachineID string
 
-	if remoteMachineID == "" {
-		fmt.Fprintf(os.Stderr, "Error: Remote host '%s' not found in machines.conf\n", remoteUserHost)
-		fmt.Fprintf(os.Stderr, "Add it with: photo-organizer collect --add <machine-id>=%s\n", remoteUserHost)
-		fmt.Fprintf(os.Stderr, "Example: photo-organizer collect --add ubuntu-backup=ubuntu-max\n")
+	// Check if destIdentifier is a machine-id (in our config) or already user@host
+	if sshHost, exists := machines[destIdentifier]; exists {
+		// It's a machine-id we know about
+		remoteMachineID = destIdentifier
+		remoteUserHost = sshHost
+	} else if strings.Contains(destIdentifier, "@") {
+		// It's already user@host format
+		remoteUserHost = destIdentifier
+		// Try to find the machine ID for this host
+		for machID, sshHost := range machines {
+			if sshHost == remoteUserHost {
+				remoteMachineID = machID
+				break
+			}
+		}
+		if remoteMachineID == "" {
+			fmt.Fprintf(os.Stderr, "Error: Remote host '%s' not found in machines.conf\n", remoteUserHost)
+			fmt.Fprintf(os.Stderr, "Configure it with: photo-organizer collect --add <machine-id>=%s\n", remoteUserHost)
+			os.Exit(1)
+		}
+	} else {
+		// Assume it's just a hostname, try to match as machine-id
+		fmt.Fprintf(os.Stderr, "Error: '%s' not found in machines.conf\n", destIdentifier)
+		fmt.Fprintf(os.Stderr, "Use full format: user@host:/path or configure machine-id first\n")
+		fmt.Fprintf(os.Stderr, "Example: photo-organizer backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
 		os.Exit(1)
 	}
 
