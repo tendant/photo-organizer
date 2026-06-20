@@ -4906,10 +4906,26 @@ func runFindDuplicateFolders(args []string) {
 	var duplicates []DupFolderGroup
 	for hash, folders := range dupMap {
 		if len(folders) > 1 {
+			// Calculate wasted space: only count copies that are safely deletable
+			// Count copies per machine
+			copiesByMachine := make(map[string]int)
+			for _, folder := range folders {
+				copiesByMachine[folder.MachineName]++
+			}
+
+			// Wasted = extra copies (keep 1 copy per machine, delete the rest)
+			var wasted int64
+			for _, count := range copiesByMachine {
+				if count > 1 {
+					// Keep 1 copy, delete (count - 1) copies
+					wasted += folders[0].TotalSize * int64(count-1)
+				}
+			}
+
 			group := DupFolderGroup{
 				FolderHash:  hash,
 				Folders:     folders,
-				TotalWasted: folders[0].TotalSize * int64(len(folders)-1),
+				TotalWasted: wasted,
 			}
 			duplicates = append(duplicates, group)
 		}
