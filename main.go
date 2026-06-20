@@ -1395,10 +1395,11 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "photo-organizer — backup, deduplicate, and manage photos across devices\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
-	fmt.Fprintf(os.Stderr, "CORE WORKFLOW (8 commands)\n")
+	fmt.Fprintf(os.Stderr, "CORE WORKFLOW (9 commands)\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
 	fmt.Fprintf(os.Stderr, "  scan <folder>                   Scan folder and create internal manifest\n")
-	fmt.Fprintf(os.Stderr, "  dups                            Find duplicate files across scanned folders\n")
+	fmt.Fprintf(os.Stderr, "  dups [--top N]                  Find duplicate files across folders\n")
+	fmt.Fprintf(os.Stderr, "  dup-folders [--top N] [-s]      Find duplicate folders (BEST for cleanup!)\n")
 	fmt.Fprintf(os.Stderr, "  backup <folder> <archive>       Back up folder to timestamped archive\n")
 	fmt.Fprintf(os.Stderr, "    [--new-only]                    Only backup files not already backed up\n")
 	fmt.Fprintf(os.Stderr, "  restore <archive> <destination> Recover files from archive\n")
@@ -1439,15 +1440,12 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  -group                    show results grouped by hash\n\n")
 	fmt.Fprintf(os.Stderr, "Examples:\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer scan ~/Photos\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer scan ~/iPhone --machine iphone\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders --top 10 -s              (Find biggest wasted space!)\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer dups\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos /mnt/archive\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/iPhone /mnt/archive --new-only\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer list /mnt/archive\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer restore /mnt/archive/2026-06-20-143022-Photos ~/Recovered\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer check ~/Photos\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer lookup \"vacation.jpg\"\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer search \"*.raw\"\n\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer lookup \"vacation.jpg\"\n\n")
 }
 
 func runScan(args []string) {
