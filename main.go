@@ -1318,8 +1318,11 @@ func main() {
 		// Core workflow commands (14 total)
 		case "scan":
 			os.Args = append(os.Args[:1], os.Args[2:]...)
-		case "dups", "analyze", "find-duplicates", "dup", "dup-folders":
+		case "dups", "analyze", "find-duplicates", "dup":
 			runAnalyze(os.Args[2:])
+			return
+		case "dup-folders":
+			runFindDuplicateFolders(os.Args[2:])
 			return
 		case "backup":
 			runBackup(os.Args[2:])
