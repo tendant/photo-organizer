@@ -4971,10 +4971,18 @@ func runFindDuplicateFolders(args []string) {
 			fmt.Printf("\n")
 		}
 		fmt.Printf("Total wasted space: %s\n\n", formatBytes(totalWasted))
+		fmt.Printf("%-4s %-8s %-12s %-12s %s\n", "Rank", "Copies", "Size/copy", "Wasted", "Machines")
+		fmt.Printf("%-4s %-8s %-12s %-12s %s\n", "----", "------", "---------", "-------", "--------")
 		for i, dup := range displayDuplicates {
-			fmt.Printf("  %d. %d copies of folder (%s each) → %s wasted\n",
+			// Count unique machines for this folder
+			machineSet := make(map[string]bool)
+			for _, folder := range dup.Folders {
+				machineSet[folder.MachineName] = true
+			}
+			machineCount := len(machineSet)
+			fmt.Printf("%-4d %-8d %-12s %-12s %d\n",
 				i+1, len(dup.Folders), formatBytes(dup.Folders[0].TotalSize),
-				formatBytes(dup.TotalWasted))
+				formatBytes(dup.TotalWasted), machineCount)
 		}
 		return
 	}
