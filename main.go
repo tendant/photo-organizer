@@ -4796,6 +4796,7 @@ func runFindDuplicateFolders(args []string) {
 	summaryFlag := fs.Bool("summary", false, "show summary only")
 	byCountFlag := fs.Bool("by-count", false, "sort by number of copies (most duplicated first)")
 	topFlag := fs.Int("top", 0, "show only top N duplicate folders (0 = all)")
+	minCopiesFlag := fs.Int("min-copies", 0, "only show folders with at least N copies (filter)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer dup-folders [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Find duplicate folders (entire directories with identical contents).\n")
@@ -4804,6 +4805,8 @@ func runFindDuplicateFolders(args []string) {
 		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders\n\n")
 		fmt.Fprintf(os.Stderr, "Top 20 folders by wasted space:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders --top 20 -s\n\n")
+		fmt.Fprintf(os.Stderr, "Top 20 by size, only folders with 3+ copies:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders --top 20 -s --min-copies 3\n\n")
 		fmt.Fprintf(os.Stderr, "Most duplicated folders (sorted by copy count):\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders --by-count -s\n\n")
 		fmt.Fprintf(os.Stderr, "Find duplicate folders on specific machine:\n")
@@ -4953,18 +4956,33 @@ func runFindDuplicateFolders(args []string) {
 		})
 	}
 
+	// Filter by minimum copies if specified
+	filteredDuplicates := duplicates
+	if *minCopiesFlag > 0 {
+		var filtered []DupFolderGroup
+		for _, dup := range duplicates {
+			if len(dup.Folders) >= *minCopiesFlag {
+				filtered = append(filtered, dup)
+			}
+		}
+		filteredDuplicates = filtered
+	}
+
 	// Limit results if --top is specified
-	displayDuplicates := duplicates
-	if *topFlag > 0 && *topFlag < len(duplicates) {
-		displayDuplicates = duplicates[:*topFlag]
+	displayDuplicates := filteredDuplicates
+	if *topFlag > 0 && *topFlag < len(filteredDuplicates) {
+		displayDuplicates = filteredDuplicates[:*topFlag]
 	}
 
 	if *summaryFlag {
 		totalWasted := int64(0)
-		for _, dup := range duplicates {
+		for _, dup := range filteredDuplicates {
 			totalWasted += dup.TotalWasted
 		}
 		fmt.Printf("Found %d duplicate folders", len(duplicates))
+		if *minCopiesFlag > 0 {
+			fmt.Printf(" (%d with %d+ copies)", len(filteredDuplicates), *minCopiesFlag)
+		}
 		if *topFlag > 0 {
 			fmt.Printf(" (showing top %d)\n", *topFlag)
 		} else {
@@ -4989,10 +5007,13 @@ func runFindDuplicateFolders(args []string) {
 
 	// Full output
 	totalWasted := int64(0)
-	for _, dup := range duplicates {
+	for _, dup := range filteredDuplicates {
 		totalWasted += dup.TotalWasted
 	}
 	fmt.Printf("Found %d duplicate folders", len(duplicates))
+	if *minCopiesFlag > 0 {
+		fmt.Printf(" (%d with %d+ copies)", len(filteredDuplicates), *minCopiesFlag)
+	}
 	if *topFlag > 0 {
 		fmt.Printf(" (showing top %d)\n", *topFlag)
 	} else {
