@@ -4569,6 +4569,16 @@ func runCheckBackupStatus(args []string) {
 	machineBytes := make(map[string]int64)    // remote machines with proper backups
 	removableCount := make(map[string]int)    // removable media
 	removableBytes := make(map[string]int64)  // removable media
+
+	// Track folder-level stats
+	type FolderStats struct {
+		Path         string
+		BackedUpFiles int
+		AtRiskFiles  int
+		TotalFiles   int
+	}
+	folderStats := make(map[string]*FolderStats)
+
 	atRiskFiles := 0
 	atRiskBytes := int64(0)
 
@@ -4577,6 +4587,16 @@ func runCheckBackupStatus(args []string) {
 		if hash == "" {
 			hash = localRow.PartialHash
 		}
+
+		// Get folder from path
+		folderPath := filepath.Dir(localRow.RelativePath)
+		if folderPath == "." {
+			folderPath = "/"
+		}
+		if _, ok := folderStats[folderPath]; !ok {
+			folderStats[folderPath] = &FolderStats{Path: folderPath}
+		}
+		folderStats[folderPath].TotalFiles++
 
 		// Find which machines have this file (excluding current machine and removable)
 		machinesHaveFile := make(map[string]bool)
@@ -4598,7 +4618,9 @@ func runCheckBackupStatus(args []string) {
 			// File not found on remote backup machines
 			atRiskFiles++
 			atRiskBytes += localRow.SizeBytes
+			folderStats[folderPath].AtRiskFiles++
 		} else {
+			folderStats[folderPath].BackedUpFiles++
 			for machine := range machinesHaveFile {
 				machineCount[machine]++
 				machineBytes[machine] += localRow.SizeBytes
@@ -4680,6 +4702,52 @@ func runCheckBackupStatus(args []string) {
 		fmt.Printf("   Every file has copies on reliable machines\n")
 	}
 	fmt.Printf("\n")
+
+	// Show top 3 folders by at-risk files or by size
+	type FolderRank struct {
+		Path      string
+		BackedUp  int
+		AtRisk    int
+		Total     int
+		Coverage  float64
+	}
+
+	var folderRanks []FolderRank
+	for _, stats := range folderStats {
+		coverage := 0.0
+		if stats.TotalFiles > 0 {
+			coverage = float64(stats.BackedUpFiles) / float64(stats.TotalFiles) * 100
+		}
+		folderRanks = append(folderRanks, FolderRank{
+			Path:     stats.Path,
+			BackedUp: stats.BackedUpFiles,
+			AtRisk:   stats.AtRiskFiles,
+			Total:    stats.TotalFiles,
+			Coverage: coverage,
+		})
+	}
+
+	// Sort by at-risk files (descending)
+	sort.Slice(folderRanks, func(i, j int) bool {
+		return folderRanks[i].AtRisk > folderRanks[j].AtRisk
+	})
+
+	// Show top 3 folders with at-risk files
+	topAtRisk := folderRanks
+	if len(topAtRisk) > 3 {
+		topAtRisk = topAtRisk[:3]
+	}
+
+	if len(topAtRisk) > 0 && topAtRisk[0].AtRisk > 0 {
+		fmt.Printf("TOP FOLDERS TO BACK UP:\n\n")
+		for i, f := range topAtRisk {
+			if f.AtRisk > 0 {
+				fmt.Printf("  %d. %s\n", i+1, f.Path)
+				fmt.Printf("     At-risk: %s files | Coverage: %.1f%%\n", formatCount(f.AtRisk), f.Coverage)
+			}
+		}
+		fmt.Printf("\n")
+	}
 }
 
 // detectMountPoint returns the likely mount point for a given path
