@@ -4,11 +4,17 @@
 
 ```
 photo-organizer/
-├── main.go              # CLI dispatch and scan command implementation
-├── analyze.go           # Duplicate, storage, search, and backup analysis
+├── main.go              # CLI dispatch and remaining legacy command helpers
+├── analyze.go           # Plan, migration, search, risk, and compliance helpers
+├── duplicate_analysis.go # Duplicate index, reports, CSV exports, dups command
+├── storage.go           # Storage status, storage plan, and check-backup commands
+├── commands_scan.go     # Scan command
+├── commands_collect.go  # Remote manifest/config collection commands
+├── commands_dup_folders.go # Duplicate-folder command
 ├── manifest_read.go     # Manifest CSV loading and validation
 ├── checkpoint.go        # Scan checkpoint storage and startup hints
 ├── config_paths.go      # Shared manifest/config path helpers
+├── machines_config.go   # Machine listing, removable detection, config IO
 ├── commands_backup.go   # Backup, restore, and archive listing commands
 ├── commands_integrity.go # Manifest/archive integrity commands
 ├── integrity.go         # Integrity verification helpers
