@@ -1,8 +1,8 @@
 # Photo Organizer
 
-**Scan multiple machines, find duplicates across your photo library, and safely organize/migrate files.**
+**Scan multiple machines, find duplicates across your photo library, and safely verify backups.**
 
-A command-line tool that discovers duplicate photos across machines, generates safe cleanup scripts, and helps you migrate unique files to backups.
+A command-line tool that discovers duplicate photos across machines, checks backup coverage, and copies missing files to archives.
 
 ## Quick Start
 

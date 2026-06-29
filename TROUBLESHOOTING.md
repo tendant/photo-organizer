@@ -1,308 +1,215 @@
 # Troubleshooting Guide
 
-## Common Issues & Solutions
+Common issues and current commands to diagnose them.
 
-### SSH Connection Issues
+## SSH And Collection
 
-#### "Connection refused"
-```
-⚠  Error: Connection refused (host not reachable or SSH not running)
-   Try: ping nas.local  or  ssh -v nas.local
-```
+### Connection Refused
 
-**Solutions**:
-- Verify host is reachable: `ping nas.local`
-- Check SSH is running: `ssh -v nas.local echo ok`
-- Verify machine is in config: `photo-organizer collect --list`
-- Add missing machine: `photo-organizer collect --add nas=user@nas.local`
-
-#### "Permission denied"
-```
-⚠  Error: Permission denied (authentication failed)
-   Try: ssh-keygen -t ed25519  or  ssh-copy-id nas.local
+```text
+Error: Cannot connect to nas.local
 ```
 
-**Solutions**:
-- Generate SSH key (if missing): `ssh-keygen -t ed25519`
-- Add key to remote: `ssh-copy-id user@nas.local`
-- Verify key works: `ssh user@nas.local echo ok`
+Check that the host is reachable and SSH is running:
 
-#### "Connection timeout"
-```
-⚠  SSH verification timeout for nas.local (exceeded 30s)
-   Tip: Set PHOTO_ORGANIZER_SSH_TIMEOUT=60s for slower networks
-```
-
-**Solutions**:
-- Increase timeout: `export PHOTO_ORGANIZER_SSH_TIMEOUT=60s`
-- Check network: `ping -c 10 nas.local` (check for packet loss)
-- Use explicit timeout in plan: `photo-organizer plan --ssh-timeout 90s`
-
----
-
-### Disk Space Issues
-
-#### "Cannot write to destination"
-```
-⚠  Disk space for destination: cannot write to destination (need 500GB)
-   → Check disk space and permissions
-```
-
-**Solutions**:
-- Check available space: `df -h /path/to/destination`
-- Free up space: `rm -rf /path/to/old/files`
-- Use different destination with more space
-- Split migration: migrate in multiple batches
-
-#### "Low disk space warning"
-```
-⚠  Warning: Low disk space on /photos
-   Cannot write 10MB test file
-```
-
-**Solutions**:
-- Free up at least 100GB before large operations
-- Check what's using space: `du -sh /photos/*`
-- Archive old data before cleanup/migration
-
----
-
-### Manifest Issues
-
-#### "Manifest is 520 days old"
-```
-⚠  laptop @ /Photos: manifest is 520 days old (last scanned 2025-01-01)
-```
-
-**Meaning**: Manifest hasn't been updated in over 30 days—files may have changed.
-
-**Solution**: Rescan to update:
 ```bash
-photo-organizer rescan
+ping nas.local
+ssh -v nas.local echo ok
+photo-organizer collect --list
 ```
 
-#### "Skipped invalid rows"
-```
-⚠  test.csv: skipped 3 invalid row(s)
-   row 3: empty relative_path
-   row 4: invalid size "-1000"
-```
+Register missing machines:
 
-**Meaning**: Some rows in the manifest are corrupted.
-
-**Solution**: 
-- Data is still usable with valid rows only
-- Try regenerating manifest if many rows are corrupted:
 ```bash
-rm /path/to/manifest.csv
+photo-organizer collect --add nas=user@nas.local
+```
+
+### Permission Denied
+
+```text
+Permission denied when connecting
+```
+
+Fix SSH authentication:
+
+```bash
+ssh-keygen -t ed25519
+ssh-copy-id user@nas.local
+ssh user@nas.local echo ok
+```
+
+### Slow Or Timing Out SSH
+
+Increase the timeout for remote operations:
+
+```bash
+export PHOTO_ORGANIZER_SSH_TIMEOUT=120s
+photo-organizer collect --from nas
+```
+
+## Scan And Manifest Issues
+
+### Manifest Is Old
+
+```text
+manifest is 520 days old
+```
+
+Scan the source folder again:
+
+```bash
+photo-organizer scan ~/Photos --prune
+```
+
+### Invalid Rows Were Skipped
+
+```text
+skipped 3 invalid row(s)
+```
+
+The valid rows are still usable. If many rows are invalid, regenerate the manifest from the original source:
+
+```bash
+photo-organizer scan /path/to/photos --no-cache --prune
+```
+
+### Missing Required Column
+
+```text
+no valid manifests loaded
+```
+
+Check that the file is a photo-organizer manifest:
+
+```bash
+ls -la ~/manifests/_Manifest/*.csv
+head -1 ~/manifests/_Manifest/example.csv
 photo-organizer scan /path/to/photos
 ```
 
-#### "Missing required column"
-```
-analyze: no valid manifests loaded
-```
+## Search And Duplicate Results
 
-**Meaning**: Manifest format is invalid or corrupted.
+### No Matching Files
 
-**Solutions**:
-- Check manifest file exists: `ls -la ~/manifests/_Manifest/*.csv`
-- Try different manifest: `photo-organizer analyze other.csv`
-- Regenerate if broken: `photo-organizer scan /photos`
+Try broader filters and confirm manifests exist:
 
----
-
-### Search Issues
-
-#### "No matching files found"
-```
-No matching files found.
-```
-
-**Solutions**:
-- Check filters are correct: `-name 'IMG_*'` (case-sensitive)
-- Verify manifests loaded: `photo-organizer machines`
-- Try broader search: `photo-organizer search -name '*'`
-- Check file actually exists in manifests
-
-#### "Wrong copy count showing"
-```
-Machine  Size    Hash      Copies  Full Path
-test-1   1.9 MB  abc123de  2
-```
-
-If copies seem wrong:
-- Ensure full_hash is populated (not just partial_hash)
-- Hash falls back to partial_hash if full not available
-- Check manifest has both machines: `photo-organizer machines`
-
----
-
-### Migration Issues
-
-#### "rsync failed"
-```
-⚠  rsync failed for group 1 (/data/Photos)
-```
-
-**Solutions**:
-- Check source path exists: `ssh source-machine ls -la /data/Photos`
-- Verify destination writable: `ssh dest-machine ls -la /destination`
-- Check available space on destination: `ssh dest-machine df -h /destination`
-- Try running migration script again (it resumes):
 ```bash
-bash migration_script.sh
+photo-organizer manifests
+photo-organizer machines
+photo-organizer search -name '*'
 ```
 
-#### "Migration interrupted—how to resume?"
-```
-Startup message shows:
-⚠  Found 1 incomplete scan(s). Run rescan to resume...
-```
+### Duplicate Counts Look Wrong
 
-**Solution**: Just run the migration script again:
+Refresh manifests and check for overlapping scans:
+
 ```bash
-bash migration_script.sh
+photo-organizer scan ~/Photos --prune
+photo-organizer dups
+photo-organizer dup-folders --top 20
 ```
 
-The script skips completed groups automatically via `.done` markers in `~/manifests/_migrate/`.
+Nested scan roots can make the same physical file appear in multiple manifests. The analyzer attempts to account for this, but reviewing `manifests` output is still useful.
 
-To **force full re-run**:
+## Backup Issues
+
+### Destination Cannot Be Written
+
+```text
+cannot write to destination
+```
+
+Check space and permissions:
+
 ```bash
-rm ~/manifests/_migrate/*/group_*.done
-bash migration_script.sh
+df -h /path/to/destination
+touch /path/to/destination/.write-test
+rm /path/to/destination/.write-test
 ```
 
----
+### rsync Failed During backup-missing
 
-### Plan/Cleanup Issues
+Check the configured destination and remote path:
 
-#### "No files unique to machine"
-```
-migrate: no files unique to test-machine
-```
-
-**Meaning**: All files on test-machine exist elsewhere (no migrations needed).
-
-**Solution**: 
-- This is actually good—everything is backed up!
-- Check duplicates instead: `photo-organizer analyze`
-
-#### "No duplicates found"
-```
-plan: no duplicates found between machines
-```
-
-**Solution**:
-- Each machine has unique files
-- No cleanup needed (everything is unique)
-- Consider running `risk-report` to see what's at risk
-
-#### "Keep machine not found"
-```
-plan: machine "laptop" not found in manifests
-Available machines: phone camera
-```
-
-**Solution**:
-- Use correct machine name: `photo-organizer plan --keep phone`
-- List available machines: `photo-organizer machines`
-
----
-
-### Performance Issues
-
-#### "Scanning is slow"
-Scanning 100K files takes >1 minute:
-
-**Solutions**:
-- Use `--auto-identify-folders` to scan only photo folders
-- Run on local machine (not over SSH)
-- Check disk I/O: `iostat 1` while scanning
-- For very large scans, split into smaller paths
-
-#### "Analysis is slow"
-Analyzing 1M files takes >10 seconds:
-
-**Solution**: This is normal—CSV analysis is O(N log N)
-- If unacceptable, consider maintaining multiple smaller manifests
-- Split analysis: `photo-organizer analyze subset1.csv subset2.csv`
-
-#### "Search timeout on huge dataset"
-Search hangs on 10M+ files:
-
-**Solutions**:
-- Use more specific filters: `-name` pattern, `-size`, `-date`
-- Search only relevant manifests: `photo-organizer search laptop.csv`
-- Export and grep CSV: `grep 'IMG_' ~/manifests/_Manifest/laptop.csv`
-
----
-
-### Recovery & Rollback
-
-#### "Accidentally uncommented rm lines—how to undo?"
-If you already ran the script:
-
-**Solution**: Files moved to quarantine, not deleted:
 ```bash
-# Move back from quarantine
-mv /Photos/_quarantine/photo-organizer/* /Photos/
+photo-organizer collect --list
+ssh user@host df -h /backups
+ssh user@host ls -la /backups
 ```
 
-#### "Lost manifest file"
-If you accidentally deleted a CSV manifest:
+Then retry:
 
-**Solution**: You can rescan:
 ```bash
-# On the original machine
-photo-organizer scan /path/to/photos
+photo-organizer backup-missing ~/Photos --dest user@host:/backups/photos
+```
 
-# Then collect manifests again
+### check-backup Shows At-Risk Files
+
+Back up the folder, collect manifests, then check again:
+
+```bash
+photo-organizer backup ~/Photos /mnt/archive
 photo-organizer collect
+photo-organizer check-backup ~/Photos
 ```
 
----
+## Archive Integrity
+
+### verify-archive Reports Missing Files
+
+Verify the archive path exists, then repair only after reviewing the report:
+
+```bash
+photo-organizer verify-archive ~/manifests/_Manifest/photos.csv
+photo-organizer fix ~/manifests/_Manifest/photos.csv /mnt/archive/2026-06-20-143022-Photos
+```
+
+### Accidental Cleanup
+
+Prefer `archive` before deletion so folders are recoverable:
+
+```bash
+photo-organizer archive ~/Photos/OldImport
+photo-organizer list ~/Photos/_archive
+```
+
+If files were moved into a quarantine folder by an older generated script, move them back manually from that quarantine path.
+
+## Performance
+
+### Scanning Is Slow
+
+- Run scans on local disks when possible.
+- Use `.photoignore` for generated or temporary files.
+- Split very large libraries into stable top-level folders.
+
+```bash
+photo-organizer scan ~/Photos/2024
+photo-organizer scan ~/Photos/2025
+```
+
+### Search Or Duplicate Analysis Is Slow
+
+Use narrower inputs or filters:
+
+```bash
+photo-organizer dups ~/manifests/_Manifest/*laptop*.csv
+photo-organizer search -name '*.mp4' -size '500MB-'
+```
 
 ## Getting Help
 
-### Enable verbose logging
+Capture the command output and basic environment details:
+
 ```bash
-export PHOTO_ORGANIZER_DEBUG=1
-photo-organizer analyze
+uname -a > ~/photo-organizer-report.txt
+photo-organizer manifests >> ~/photo-organizer-report.txt 2>&1
+photo-organizer machines >> ~/photo-organizer-report.txt 2>&1
+df -h ~/manifests >> ~/photo-organizer-report.txt 2>&1
 ```
 
-### Check manifests config
-```bash
-cat ~/manifests/machines.conf
-ls -la ~/manifests/_Manifest/
-```
+Include the failing command, the full error message, and relevant manifest paths.
 
-### Verify pre-flight checks
-```bash
-photo-organizer scan /test/path 2>&1 | head -10
-# Shows: ✓ Source directory readable, ✓ Manifest directory writable
-```
+## Deprecated Command Names
 
-### Test SSH connection
-```bash
-photo-organizer collect --list
-photo-organizer plan --keep machine1 --ssh nas.local test.csv
-```
-
----
-
-## When to Contact Support
-
-Include:
-1. Output from failing command (full error message)
-2. Machine and OS info: `uname -a`
-3. Photo Organizer version: `photo-organizer --version` (if available)
-4. Manifest info: `wc -l ~/manifests/_Manifest/*.csv`
-5. Disk space: `df -h ~/manifests`
-
-Example:
-```bash
-uname -a > ~/error-report.txt
-photo-organizer analyze >> ~/error-report.txt 2>&1
-cat ~/error-report.txt
-```
+If an older note suggests `analyze`, `plan`, `migrate`, `verify-backup`, `sign-manifest`, or `repair-manifest`, use the current commands: `dups`, `dup-folders`, `backup-missing`, `verify-archive`, `sign`, and `fix`.

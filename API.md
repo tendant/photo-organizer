@@ -4,12 +4,18 @@
 
 ```
 photo-organizer/
-├── main.go              # CLI entry point, scan/rescan/collect/migrate/machines
-├── analyze.go           # Core logic: duplicates, planning, search, recovery
+├── main.go              # CLI dispatch and scan command implementation
+├── analyze.go           # Duplicate, storage, search, and backup analysis
+├── manifest_read.go     # Manifest CSV loading and validation
+├── checkpoint.go        # Scan checkpoint storage and startup hints
+├── config_paths.go      # Shared manifest/config path helpers
+├── commands_backup.go   # Backup, restore, and archive listing commands
+├── commands_integrity.go # Manifest/archive integrity commands
+├── integrity.go         # Integrity verification helpers
+├── photoignore.go       # .photoignore parsing
 ├── main_test.go         # Tests for scanning, hashing, manifests
 ├── analyze_test.go      # Tests for analysis, validation, edge cases
-├── plan.md              # Development roadmap
-├── README.md            # User guide
+├── README.md            # Quick start
 ├── USAGE.md             # Workflow examples
 └── TROUBLESHOOTING.md   # Solutions to common issues
 ```
@@ -132,16 +138,10 @@ type ScanCheckpoint struct {
 }
 ```
 
-Stored in: `~/manifests/_checkpoints/<manifest>.checkpoint`
+Stored in: `~/manifests/_checkpoints/<manifest>.checkpoint` by default.
+Tests and custom environments can override this with `PHOTO_ORGANIZER_CHECKPOINT_DIR`.
 
-On interrupt, rescan resumes from checkpoint.
-
-### Migration Resumption
-
-Migration script uses `.done` markers:
-- `~/manifests/_migrate/<scriptName>/group_1.done` → group 1 complete
-- Script skips groups with existing `.done` markers
-- Re-run same script after interrupt to resume
+Interrupted scans are reported at startup so the source can be scanned again.
 
 ## Extending the Tool
 
@@ -213,9 +213,9 @@ Tests include:
 | Full hash | 1 file / 100ms | 1GB file | Used only on collisions |
 | Build index | 1M hashes / 1s | All manifests | O(N) pass |
 | Find duplicates | 1M files / 1s | All manifests | O(N) lookup |
-| Analyze | 1M files / 5s | Includes display | O(N log N) |
+| Duplicate report | 1M files / 5s | Includes display | O(N log N) |
 | Search | Instant | All manifests | Grep-like, not indexed |
-| Generate plan | 10K files / 100ms | Affected files | Linear deletion plan |
+| Folder duplicate report | 10K files / 100ms | Folder signatures | Linear grouping |
 
 ## Manifest Versioning
 

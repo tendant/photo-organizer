@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -72,208 +71,6 @@ type FolderStats struct {
 // =============================================================================
 // Reading Manifests
 // =============================================================================
-
-func readManifest(csvPath string) (ManifestSource, error) {
-	f, err := os.Open(csvPath)
-	if err != nil {
-		return ManifestSource{}, fmt.Errorf("open %s: %w", csvPath, err)
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	records, err := r.ReadAll()
-	if err != nil {
-		return ManifestSource{}, fmt.Errorf("read %s: %w", csvPath, err)
-	}
-	if len(records) < 1 {
-		return ManifestSource{}, fmt.Errorf("%s: empty file", csvPath)
-	}
-
-	// Build column index by name so we handle old/new formats gracefully.
-	colIdx := make(map[string]int)
-	for i, name := range records[0] {
-		colIdx[name] = i
-	}
-
-	// Validate that required columns are present.
-	for _, required := range []string{"relative_path", "partial_hash", "file_size_bytes"} {
-		if _, ok := colIdx[required]; !ok {
-			// Also accept file_hash as fallback for partial_hash in very old manifests.
-			if required == "partial_hash" {
-				if _, ok := colIdx["file_hash"]; ok {
-					continue
-				}
-			}
-			return ManifestSource{}, fmt.Errorf("%s: missing required column %q (not a valid manifest?)", csvPath, required)
-		}
-	}
-
-	col := func(row []string, name string) string {
-		i, ok := colIdx[name]
-		if !ok || i >= len(row) {
-			return ""
-		}
-		return row[i]
-	}
-
-	var rows []ManifestRow
-	var validationIssues []string
-	seenPaths := make(map[string]bool)
-	skippedCount := 0
-
-	for rowIdx, row := range records[1:] {
-		if len(row) < 2 {
-			skippedCount++
-			validationIssues = append(validationIssues, fmt.Sprintf("row %d: not enough columns", rowIdx+2))
-			continue
-		}
-
-		relPath := col(row, "relative_path")
-		sizeStr := col(row, "file_size_bytes")
-		scanDate := col(row, "scan_date")
-
-		// Validate required fields
-		if relPath == "" {
-			skippedCount++
-			validationIssues = append(validationIssues, fmt.Sprintf("row %d: empty relative_path", rowIdx+2))
-			continue
-		}
-
-		// Parse and validate size
-		size, err := strconv.ParseInt(sizeStr, 10, 64)
-		if err != nil || size < 0 {
-			skippedCount++
-			validationIssues = append(validationIssues, fmt.Sprintf("row %d: invalid size %q", rowIdx+2, sizeStr))
-			continue
-		}
-
-		// Validate scan_date (should be valid and not in future)
-		if scanDate != "" {
-			if len(scanDate) < len("2006-01-02") {
-				validationIssues = append(validationIssues, fmt.Sprintf("row %d: invalid scan_date %q", rowIdx+2, scanDate))
-				skippedCount++
-				continue
-			}
-			scanTime, err := time.Parse("2006-01-02", scanDate[:10])
-			if err != nil {
-				validationIssues = append(validationIssues, fmt.Sprintf("row %d: invalid scan_date %q", rowIdx+2, scanDate))
-				skippedCount++
-				continue
-			}
-			if scanTime.After(time.Now().AddDate(0, 0, 1)) {
-				validationIssues = append(validationIssues, fmt.Sprintf("row %d: future scan_date %s (skipped - breaks age calculation)", rowIdx+2, scanDate))
-				skippedCount++
-				continue
-			}
-		}
-
-		// Check for duplicates (same relative_path on same scan_path)
-		dupKey := filepath.Join(col(row, "scan_path"), relPath)
-		if seenPaths[dupKey] {
-			validationIssues = append(validationIssues, fmt.Sprintf("row %d: duplicate entry %s", rowIdx+2, relPath))
-			// Skip duplicate
-			skippedCount++
-			continue
-		}
-		seenPaths[dupKey] = true
-
-		// partial_hash is the new column; fall back to file_hash for old manifests.
-		partialHash := col(row, "partial_hash")
-		if partialHash == "" {
-			partialHash = col(row, "file_hash")
-		}
-
-		rows = append(rows, ManifestRow{
-			Filename:     col(row, "filename"),
-			RelativePath: relPath,
-			SizeBytes:    size,
-			PartialHash:  partialHash,
-			FullHash:     col(row, "full_hash"),
-			Extension:    col(row, "extension"),
-			FileModified: col(row, "file_modified"),
-			ScanDate:     scanDate,
-			ScanPath:     col(row, "scan_path"),
-			MachineName:  col(row, "machine_name"),
-		})
-	}
-
-	// Store validation issues for reporting
-	if skippedCount > 0 {
-		fmt.Fprintf(os.Stderr, "⚠  %s: skipped %d invalid row(s)\n", filepath.Base(csvPath), skippedCount)
-		if len(validationIssues) > 0 && len(validationIssues) <= 3 {
-			for _, issue := range validationIssues {
-				fmt.Fprintf(os.Stderr, "   %s\n", issue)
-			}
-		}
-	}
-
-	// Derive machine name, scan path, and most recent scan date from rows.
-	machine := ""
-	scanPath := ""
-	lastScanned := ""
-	for _, row := range rows {
-		if row.MachineName != "" {
-			machine = row.MachineName
-		}
-		if row.ScanPath != "" {
-			scanPath = row.ScanPath
-		}
-		if row.ScanDate > lastScanned {
-			lastScanned = row.ScanDate
-		}
-		if machine != "" && scanPath != "" && lastScanned != "" {
-			break
-		}
-	}
-	// Scan all rows to find the true latest scan date.
-	for _, row := range rows {
-		if row.ScanDate > lastScanned {
-			lastScanned = row.ScanDate
-		}
-	}
-	if machine == "" {
-		// Derive from filename: photo_manifest_<machine>_<path>.csv → first segment after prefix.
-		stem := strings.TrimSuffix(filepath.Base(csvPath), filepath.Ext(csvPath))
-		stem = strings.TrimPrefix(stem, "photo_manifest_")
-		stem = strings.TrimPrefix(stem, "photo_manifest")
-		if parts := strings.SplitN(stem, "_", 2); len(parts) >= 1 && parts[0] != "" {
-			machine = parts[0]
-		} else {
-			machine = filepath.Base(csvPath)
-		}
-	}
-
-	label := machine
-	if scanPath != "" {
-		label = machine + " @ " + scanPath
-	}
-
-	// Backfill machine name into rows that have an empty MachineName (old manifests).
-	for i := range rows {
-		if rows[i].MachineName == "" {
-			rows[i].MachineName = machine
-		}
-	}
-
-	// Check for stale manifests (not scanned in 30+ days)
-	if lastScanned != "" {
-		if scanTime, err := time.Parse("2006-01-02", lastScanned[:10]); err == nil {
-			daysOld := int(time.Since(scanTime).Hours() / 24)
-			if daysOld > 30 {
-				fmt.Fprintf(os.Stderr, "⚠  %s: manifest is %d days old (last scanned %s)\n", label, daysOld, lastScanned)
-			}
-		}
-	}
-
-	return ManifestSource{
-		FilePath:    csvPath,
-		MachineName: machine,
-		ScanPath:    scanPath,
-		Label:       label,
-		LastScanned: lastScanned,
-		Rows:        rows,
-	}, nil
-}
 
 // markManifestOrigin determines if a manifest is from the local machine or remote
 func markManifestOrigin(src *ManifestSource, currentMachineID string) {
@@ -954,7 +751,7 @@ func printReport(sources []ManifestSource, threshold float64, topN int, w io.Wri
 		for _, s := range stale {
 			fmt.Fprintln(w, s)
 		}
-		fmt.Fprintln(w, "  Run 'photo-organizer rescan' on these machines to refresh.")
+		fmt.Fprintln(w, "  Run 'photo-organizer scan <folder> --prune' on these machines to refresh.")
 	}
 
 	// Machine Summaries
@@ -1360,7 +1157,7 @@ func runAnalyze(args []string) {
 	}
 	sort.Strings(machineNames)
 	fmt.Fprintf(os.Stderr, "Machines: %s\n", strings.Join(machineNames, ", "))
-	fmt.Fprintf(os.Stderr, "Tip: photo-organizer plan --keep <machine> to generate a safe-delete script\n\n")
+	fmt.Fprintf(os.Stderr, "Tip: run 'photo-organizer dup-folders --top 20' before cleanup, then verify with 'photo-organizer check-backup <folder>'.\n\n")
 
 	printReport(sources, *threshold, *topN, os.Stdout)
 
@@ -2232,7 +2029,7 @@ func printRiskReport(w io.Writer, sources []ManifestSource, uniqueByMachine map[
 		for _, s := range stale {
 			fmt.Fprintln(w, s)
 		}
-		fmt.Fprintln(w, "  Run 'photo-organizer rescan' on these machines to refresh.")
+		fmt.Fprintln(w, "  Run 'photo-organizer scan <folder> --prune' on these machines to refresh.")
 	}
 
 	// Summary header.
@@ -2340,7 +2137,7 @@ func printRiskReport(w io.Writer, sources []ManifestSource, uniqueByMachine map[
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, sep)
 	fmt.Fprintf(w, "Total at risk: %s files  (%s)\n", formatCount(int(totalFiles)), formatSize(totalSize))
-	fmt.Fprintln(w, "Run 'photo-organizer migrate' to copy unique files to another machine.")
+	fmt.Fprintln(w, "Run 'photo-organizer backup-missing <folder> --dest <target>' to copy files not already backed up.")
 	fmt.Fprintln(w, sep)
 }
 
@@ -3232,101 +3029,6 @@ func CheckDiskSpace(path string, neededBytes int64) PreflightCheck {
 	defer os.Remove(testFile)
 
 	return PreflightCheck{Name: name, Pass: true}
-}
-
-// =============================================================================
-// Timeout & Recovery
-// =============================================================================
-
-// ScanCheckpoint tracks scan progress for resumption.
-type ScanCheckpoint struct {
-	ManifestPath  string    `json:"manifest_path"`
-	ScanPath      string    `json:"scan_path"`
-	ProcessedDir  int       `json:"processed_dirs"`
-	ProcessedFile int       `json:"processed_files"`
-	LastFile      string    `json:"last_file"`
-	StartTime     time.Time `json:"start_time"`
-	LastUpdate    time.Time `json:"last_update"`
-}
-
-// CheckpointDir returns the directory for storing scan checkpoints.
-func CheckpointDir() string {
-	if dir := strings.TrimSpace(os.Getenv("PHOTO_ORGANIZER_CHECKPOINT_DIR")); dir != "" {
-		return dir
-	}
-	return filepath.Join(userHomeDir(), "manifests", "_checkpoints")
-}
-
-// CheckpointPath returns the checkpoint file path for a manifest.
-func CheckpointPath(manifestPath string) string {
-	name := filepath.Base(manifestPath)
-	return filepath.Join(CheckpointDir(), name+".checkpoint")
-}
-
-// LoadCheckpoint loads a previous scan checkpoint if it exists.
-func LoadCheckpoint(manifestPath string) (*ScanCheckpoint, error) {
-	path := CheckpointPath(manifestPath)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err // File doesn't exist or can't read
-	}
-
-	var cp ScanCheckpoint
-	if err := json.Unmarshal(data, &cp); err != nil {
-		return nil, err
-	}
-	return &cp, nil
-}
-
-// SaveCheckpoint saves scan progress for potential resumption.
-func SaveCheckpoint(cp *ScanCheckpoint) error {
-	dir := CheckpointDir()
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	data, err := json.MarshalIndent(cp, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	path := CheckpointPath(cp.ManifestPath)
-	return os.WriteFile(path, data, 0600)
-}
-
-// ClearCheckpoint removes a checkpoint after successful completion.
-func ClearCheckpoint(manifestPath string) error {
-	path := CheckpointPath(manifestPath)
-	err := os.Remove(path)
-	if os.IsNotExist(err) {
-		return nil // Already gone, that's fine
-	}
-	return err
-}
-
-// DetectInterruptedOperations checks for incomplete operations and provides recovery hints.
-func DetectInterruptedOperations() {
-	dir := CheckpointDir()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return // Checkpoint dir doesn't exist yet
-	}
-
-	var found []string
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".checkpoint") {
-			found = append(found, entry.Name())
-		}
-	}
-
-	if len(found) > 0 {
-		fmt.Fprintf(os.Stderr, "⚠  Found %d incomplete scan(s). Run rescan to resume:\n", len(found))
-		for _, f := range found {
-			name := strings.TrimSuffix(f, ".checkpoint")
-			fmt.Fprintf(os.Stderr, "   photo-organizer rescan  (to resume %s)\n", name)
-		}
-		fmt.Fprintf(os.Stderr, "\n")
-	}
 }
 
 // =============================================================================

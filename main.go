@@ -1425,8 +1425,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  list <archive-root>             Show all available backups\n")
 	fmt.Fprintf(os.Stderr, "  check-backup <folder>           Check if folder is backed up (and where)\n")
 	fmt.Fprintf(os.Stderr, "  verify-archive <manifest>       Verify archive integrity (no corruption)\n")
-	fmt.Fprintf(os.Stderr, "  sign <folder> --key <secret>    Sign manifest cryptographically\n")
-	fmt.Fprintf(os.Stderr, "  fix <folder> [<archive>]        Repair corrupted backup\n\n")
+	fmt.Fprintf(os.Stderr, "  sign <manifest> --key <secret>  Sign manifest cryptographically\n")
+	fmt.Fprintf(os.Stderr, "  fix <manifest> <archive>        Repair corrupted backup manifest\n\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n")
 	fmt.Fprintf(os.Stderr, "UTILITIES (7 commands)\n")
 	fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════\n\n")
@@ -3414,25 +3414,9 @@ func runMachines(args []string) {
 		fmt.Println()
 	}
 
-	fmt.Printf("Use: photo-organizer plan --keep <machine> to generate a delete plan\n")
-	fmt.Printf("     photo-organizer plan --intra <machine> to find duplicates within a machine\n")
-}
-
-// =============================================================================
-// Config Paths
-// =============================================================================
-
-func defaultManifestRoot() string {
-	return filepath.Join(userHomeDir(), "manifests")
-}
-
-func machineIDFile() string {
-	return filepath.Join(defaultManifestRoot(), "machine-id")
-}
-
-func machinesConfFile() string {
-	return filepath.Join(defaultManifestRoot(), "machines.conf")
-}
+		fmt.Printf("Use: photo-organizer dups to find duplicate files across machines\n")
+		fmt.Printf("     photo-organizer dup-folders to find duplicate folders for cleanup review\n")
+	}
 
 // =============================================================================
 // Machines Config (~/manifests/machines.conf)

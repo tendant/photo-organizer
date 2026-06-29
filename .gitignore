@@ -10,3 +10,12 @@
 !Dockerfile
 
 .claude/
+
+# Local build/test artifacts
+photo-organizer
+dist/
+.gocache*
+coverage.out
+
+# Generated local manifests
+photo_manifest_*.csv

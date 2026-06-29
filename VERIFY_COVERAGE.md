@@ -156,7 +156,7 @@ du -sh /Volumes/MyCamera  # Total disk usage
 
 5. **Then verify results**
    ```bash
-   photo-organizer analyze
+   photo-organizer dups
    ```
 
 ## Why We Ignore Certain Files

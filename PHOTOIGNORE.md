@@ -80,6 +80,6 @@ Everything else is included by default unless you add `.photoignore` patterns.
 
 ## Tips
 
-- **Verify what would be scanned:** `photo-organizer analyze ~/Photos`
-- **Clean up old entries:** After adding patterns to `.photoignore`, run `photo-organizer prune ~/Photos`
+- **Verify what was scanned:** `photo-organizer search -path Photos`
+- **Clean up old entries:** After adding patterns to `.photoignore`, run `photo-organizer scan ~/Photos --prune`
 - **Multiple .photoignore files:** Each folder can have its own patterns
