@@ -4,7 +4,7 @@
 //
 //	photo-organizer [directory]            scan directory, manifest written inside it
 //	photo-organizer scan [directory]       explicit scan subcommand
-//	photo-organizer analyze a.csv b.csv    compare manifests across machines
+//	photo-organizer dups a.csv b.csv       compare manifests across machines
 package main
 
 import (
@@ -95,13 +95,12 @@ var audioExts = map[string]bool{
 }
 
 var sidecarExts = map[string]bool{
-	".lrf": true,  // Lightroom catalog
-	".xmp": true,  // XMP metadata
-	".aae": true,  // Apple photo edits
+	".lrf":  true, // Lightroom catalog
+	".xmp":  true, // XMP metadata
+	".aae":  true, // Apple photo edits
 	".json": true, // JSON metadata/config
-	".xml": true,  // XML metadata/config
+	".xml":  true, // XML metadata/config
 }
-
 
 // =============================================================================
 // Date Extraction
@@ -2161,11 +2160,11 @@ func runArchiveStatus(args []string) {
 	}
 
 	type ArchivedFolder struct {
-		Name      string
-		Path      string
+		Name       string
+		Path       string
 		ArchivedAt string
-		Size      int64
-		FileCount int
+		Size       int64
+		FileCount  int
 	}
 
 	var archived []ArchivedFolder
@@ -2187,11 +2186,11 @@ func runArchiveStatus(args []string) {
 		metrics := calculateFolderMetrics(folderPath)
 
 		archived = append(archived, ArchivedFolder{
-			Name:      entry.Name(),
-			Path:      folderPath,
+			Name:       entry.Name(),
+			Path:       folderPath,
 			ArchivedAt: timestamp,
-			Size:      metrics.TotalSize,
-			FileCount: metrics.FileCount,
+			Size:       metrics.TotalSize,
+			FileCount:  metrics.FileCount,
 		})
 	}
 
@@ -2951,7 +2950,7 @@ func runBackupMissing(args []string) {
 	}
 
 	// Scan remote location
-	scanCmd := fmt.Sprintf("cd %s && for path in photo-organizer ~/bin/photo-organizer /usr/local/bin/photo-organizer; do if command -v $path &>/dev/null || [ -f $path ]; then $path scan . --machine %s >/dev/null 2>&1; exit $?; fi; done; exit 1", remotePath, remoteMachineID)
+	scanCmd := fmt.Sprintf("cd %s && for path in photo-organizer ~/bin/photo-organizer /usr/local/bin/photo-organizer; do if command -v $path &>/dev/null || [ -f $path ]; then $path scan . --machine %s >/dev/null 2>&1; exit $?; fi; done; exit 1", shellQuote(remotePath), shellQuote(remoteMachineID))
 	sshCmd := exec.Command("ssh", remoteUserHost, scanCmd)
 	if err := sshCmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Remote scan failed. photo-organizer must be installed on remote machine.\n")
@@ -3571,7 +3570,6 @@ func generateMachinesConfWithPaths(machineNames []string, machineInfo map[string
 	return buf.String()
 }
 
-
 // loadMachinesConfig reads ~/manifests/machines.conf and returns a map of
 // machine_id → ssh_target. File format:
 //
@@ -4142,7 +4140,7 @@ func runCollect(args []string) {
 func deleteStaleManiests(machine, target, localDir string) {
 	// Get list of remote manifests for this machine via SSH
 	// Use full machine ID in grep pattern to avoid matching other machines
-	remoteManifestCmd := fmt.Sprintf("ls -1 ~/manifests/_Manifest/ 2>/dev/null | grep '^photo_manifest_%s_' || true", machine)
+	remoteManifestCmd := fmt.Sprintf("ls -1 ~/manifests/_Manifest/ 2>/dev/null | grep -F -- %s || true", shellQuote("photo_manifest_"+machine+"_"))
 	cmd := exec.Command("ssh", target, remoteManifestCmd)
 
 	var stdout bytes.Buffer
@@ -4903,8 +4901,8 @@ func runFindDuplicateFolders(args []string) {
 
 	// Find duplicate folders (same folder hash)
 	type DupFolderGroup struct {
-		FolderHash string
-		Folders    []*FolderInfo
+		FolderHash  string
+		Folders     []*FolderInfo
 		TotalWasted int64
 	}
 
@@ -5125,9 +5123,9 @@ func runVerify(args []string) {
 		Valid    bool
 		Message  string
 		FileInfo struct {
-			Count     int
-			TotalSize int64
-			Missing   []string
+			Count          int
+			TotalSize      int64
+			Missing        []string
 			SizeMismatches []string
 		}
 	}

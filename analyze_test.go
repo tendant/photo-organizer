@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -11,7 +12,10 @@ import (
 // Helpers
 // =============================================================================
 
-func makeSource(machine, scanPath string, files []struct{ rel, hash string; size int64 }) ManifestSource {
+func makeSource(machine, scanPath string, files []struct {
+	rel, hash string
+	size      int64
+}) ManifestSource {
 	var rows []ManifestRow
 	for _, f := range files {
 		rows = append(rows, ManifestRow{
@@ -106,11 +110,17 @@ func TestOverlappingPairs(t *testing.T) {
 // =============================================================================
 
 func TestFindDuplicates(t *testing.T) {
-	mac := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+	mac := makeSource("mac", "/Photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100},
 		{"IMG_002.jpg", "bbb", 200},
 	})
-	nas := makeSource("nas", "/volume1", []struct{ rel, hash string; size int64 }{
+	nas := makeSource("nas", "/volume1", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100}, // dup of mac IMG_001
 		{"IMG_003.jpg", "ccc", 300}, // unique to nas
 	})
@@ -132,10 +142,16 @@ func TestFindDuplicates(t *testing.T) {
 
 func TestFindDuplicatesSameHashDifferentSize(t *testing.T) {
 	// Same partial hash, different size — must NOT be reported as duplicate.
-	mac := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+	mac := makeSource("mac", "/Photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100},
 	})
-	nas := makeSource("nas", "/volume1", []struct{ rel, hash string; size int64 }{
+	nas := makeSource("nas", "/volume1", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 999}, // same hash, different size — hash collision
 	})
 	idx := buildHashIndex([]ManifestSource{mac, nas})
@@ -146,10 +162,16 @@ func TestFindDuplicatesSameHashDifferentSize(t *testing.T) {
 }
 
 func TestFindDuplicatesNone(t *testing.T) {
-	mac := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+	mac := makeSource("mac", "/Photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100},
 	})
-	nas := makeSource("nas", "/volume1", []struct{ rel, hash string; size int64 }{
+	nas := makeSource("nas", "/volume1", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_002.jpg", "bbb", 200},
 	})
 	idx := buildHashIndex([]ManifestSource{mac, nas})
@@ -164,11 +186,17 @@ func TestFindDuplicatesNone(t *testing.T) {
 // =============================================================================
 
 func TestFindUnique(t *testing.T) {
-	mac := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+	mac := makeSource("mac", "/Photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100}, // on both machines
 		{"IMG_002.jpg", "bbb", 200}, // only on mac
 	})
-	nas := makeSource("nas", "/volume1", []struct{ rel, hash string; size int64 }{
+	nas := makeSource("nas", "/volume1", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100}, // on both machines
 		{"IMG_003.jpg", "ccc", 300}, // only on nas
 	})
@@ -187,10 +215,16 @@ func TestFindUnique(t *testing.T) {
 
 func TestFindUniqueDeduplicatesOverlappingScans(t *testing.T) {
 	// Same physical file appears in both parent and child scan on same machine.
-	parent := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+	parent := makeSource("mac", "/Photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"Vacation/IMG_001.jpg", "aaa", 100},
 	})
-	child := makeSource("mac", "/Photos/Vacation", []struct{ rel, hash string; size int64 }{
+	child := makeSource("mac", "/Photos/Vacation", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100}, // same file, different relative path
 	})
 
@@ -210,10 +244,16 @@ func TestFindUniqueDeduplicatesOverlappingScans(t *testing.T) {
 
 func TestFindIntraMachine(t *testing.T) {
 	// Two genuinely different copies of the same file on the same machine.
-	src1 := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+	src1 := makeSource("mac", "/Photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"Backup/IMG_001.jpg", "aaa", 100},
 	})
-	src2 := makeSource("mac", "/Archive", []struct{ rel, hash string; size int64 }{
+	src2 := makeSource("mac", "/Archive", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100}, // different absolute path — real duplicate
 	})
 
@@ -228,10 +268,16 @@ func TestFindIntraMachine(t *testing.T) {
 
 func TestFindIntraMachineSkipsOverlappingScans(t *testing.T) {
 	// Parent and child scan of the same directory — NOT a real duplicate.
-	parent := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+	parent := makeSource("mac", "/Photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"Vacation/IMG_001.jpg", "aaa", 100},
 	})
-	child := makeSource("mac", "/Photos/Vacation", []struct{ rel, hash string; size int64 }{
+	child := makeSource("mac", "/Photos/Vacation", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100}, // same physical file
 	})
 
@@ -249,11 +295,17 @@ func TestFindIntraMachineSkipsOverlappingScans(t *testing.T) {
 // =============================================================================
 
 func TestBuildDeletePlanBasic(t *testing.T) {
-	nas := makeSource("nas", "/volume1", []struct{ rel, hash string; size int64 }{
+	nas := makeSource("nas", "/volume1", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100},
 		{"IMG_002.jpg", "bbb", 200},
 	})
-	laptop := makeSource("laptop", "/home/photos", []struct{ rel, hash string; size int64 }{
+	laptop := makeSource("laptop", "/home/photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100}, // backed up on nas
 		{"IMG_003.jpg", "ccc", 300}, // unique to laptop — must NOT appear in plan
 	})
@@ -272,11 +324,17 @@ func TestBuildDeletePlanBasic(t *testing.T) {
 }
 
 func TestBuildDeletePlanKeepMachineNotInManifests(t *testing.T) {
-	laptop := makeSource("laptop", "/home/photos", []struct{ rel, hash string; size int64 }{
+	laptop := makeSource("laptop", "/home/photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "aaa", 100},
 	})
 	// Keep machine "nas" doesn't have the file — should produce no candidates.
-	nas := makeSource("nas", "/volume1", []struct{ rel, hash string; size int64 }{
+	nas := makeSource("nas", "/volume1", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"OTHER.jpg", "bbb", 200},
 	})
 
@@ -290,7 +348,10 @@ func TestBuildIntraPlanThreeCopies(t *testing.T) {
 	// Same file exists in 3 folders on the same machine.
 	// Default (no --keep-under): keep first, delete 2. Both 2 deletes should
 	// list the one kept copy as backup.
-	src := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+	src := makeSource("mac", "/Photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"Originals/file.DNG", "aaa", 100},
 		{"Exports/file.DNG", "aaa", 100},
 		{"Archive/file.DNG", "aaa", 100},
@@ -309,7 +370,10 @@ func TestBuildIntraPlanThreeCopies(t *testing.T) {
 func TestBuildIntraPlanKeepUnderMultipleKept(t *testing.T) {
 	// File exists in 3 folders; 2 are under keep-under prefix.
 	// Should delete the 1 outside the prefix, show both kept paths as backups.
-	src := makeSource("mac", "/Photos", []struct{ rel, hash string; size int64 }{
+	src := makeSource("mac", "/Photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"Originals/2025/file.DNG", "aaa", 100},
 		{"Originals/archive/file.DNG", "aaa", 100},
 		{"Exports/file.DNG", "aaa", 100}, // outside keep-under
@@ -327,10 +391,16 @@ func TestBuildIntraPlanKeepUnderMultipleKept(t *testing.T) {
 }
 
 func TestBuildDeletePlanNeverDeletesUniqueFiles(t *testing.T) {
-	nas := makeSource("nas", "/volume1", []struct{ rel, hash string; size int64 }{
+	nas := makeSource("nas", "/volume1", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"shared.jpg", "aaa", 100},
 	})
-	laptop := makeSource("laptop", "/home", []struct{ rel, hash string; size int64 }{
+	laptop := makeSource("laptop", "/home", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"shared.jpg", "aaa", 100}, // dup → eligible
 		{"unique.jpg", "zzz", 999}, // unique → must NEVER appear
 	})
@@ -455,6 +525,24 @@ test.jpg,test.jpg,1000,0,2023-01-01,2023-01-01,,,oldhash123,,2023-01-01,/scan,m1
 	}
 }
 
+func TestReadManifestInvalidShortScanDate(t *testing.T) {
+	dir := t.TempDir()
+	manifestFile := dir + "/short-scan-date.csv"
+	content := `filename,relative_path,file_size_bytes,file_size_mb,file_modified,capture_date,camera_make,camera_model,partial_hash,full_hash,scan_date,scan_path,machine_name
+test.jpg,test.jpg,1000,0,2023-01-01,2023-01-01,,,hash123,,x,/scan,m1`
+	if err := os.WriteFile(manifestFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	source, err := readManifest(manifestFile)
+	if err != nil {
+		t.Fatalf("readManifest should not fail for invalid row: %v", err)
+	}
+	if len(source.Rows) != 0 {
+		t.Fatalf("invalid scan_date row should be skipped, got %d rows", len(source.Rows))
+	}
+}
+
 // =============================================================================
 // sshVerifyPaths: Empty Paths, Command Failure
 // =============================================================================
@@ -482,6 +570,7 @@ func TestSSHVerifyPathsCommandFailure(t *testing.T) {
 
 func TestCheckpointSaveLoad(t *testing.T) {
 	tempDir := t.TempDir()
+	t.Setenv("PHOTO_ORGANIZER_CHECKPOINT_DIR", filepath.Join(tempDir, "_checkpoints"))
 	manifestPath := tempDir + "/test.csv"
 
 	cp := &ScanCheckpoint{
@@ -509,6 +598,9 @@ func TestCheckpointSaveLoad(t *testing.T) {
 }
 
 func TestClearCheckpoint(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("PHOTO_ORGANIZER_CHECKPOINT_DIR", filepath.Join(tempDir, "_checkpoints"))
+
 	cp := &ScanCheckpoint{
 		ManifestPath: "test.csv",
 		ScanPath:     "/test",
@@ -648,9 +740,9 @@ func TestParseSizeRange(t *testing.T) {
 
 func TestMatchPattern(t *testing.T) {
 	tests := []struct {
-		name      string
-		pattern   string
-		want      bool
+		name    string
+		pattern string
+		want    bool
 	}{
 		{"IMG_001.jpg", "IMG_*", true},
 		{"IMG_001.jpg", "*.jpg", true},
@@ -678,10 +770,16 @@ func TestBuildHashIndexLargeDataset(t *testing.T) {
 	var sources []ManifestSource
 
 	for machine := 0; machine < 5; machine++ {
-		var files []struct{ rel, hash string; size int64 }
+		var files []struct {
+			rel, hash string
+			size      int64
+		}
 		for i := 0; i < 2000; i++ {
 			hash := fmt.Sprintf("hash_%d_%d", machine, i)
-			files = append(files, struct{ rel, hash string; size int64 }{
+			files = append(files, struct {
+				rel, hash string
+				size      int64
+			}{
 				rel:  fmt.Sprintf("IMG_%06d.jpg", i),
 				hash: hash,
 				size: 1024 * 1024,
@@ -704,15 +802,24 @@ func TestFindDuplicatesLargeDataset(t *testing.T) {
 	duplicateHash := "duplicate_hash"
 
 	for machine := 0; machine < 5; machine++ {
-		var files []struct{ rel, hash string; size int64 }
-		files = append(files, struct{ rel, hash string; size int64 }{
+		var files []struct {
+			rel, hash string
+			size      int64
+		}
+		files = append(files, struct {
+			rel, hash string
+			size      int64
+		}{
 			rel:  "IMG_001.jpg",
 			hash: duplicateHash,
 			size: 1024 * 1024,
 		})
 		// Add unique files
 		for i := 0; i < 100; i++ {
-			files = append(files, struct{ rel, hash string; size int64 }{
+			files = append(files, struct {
+				rel, hash string
+				size      int64
+			}{
 				rel:  fmt.Sprintf("IMG_%06d.jpg", i),
 				hash: fmt.Sprintf("hash_%d_%d", machine, i),
 				size: 1024 * 1024,
@@ -750,12 +857,18 @@ func TestFindDuplicatesLargeDataset(t *testing.T) {
 
 func TestFindDuplicatesWithEmptyHash(t *testing.T) {
 	// Handle rows with empty hashes gracefully (they're skipped)
-	src := makeSource("machine-1", "/photos", []struct{ rel, hash string; size int64 }{
+	src := makeSource("machine-1", "/photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "", 1024},
 		{"IMG_002.jpg", "hash1", 2048},
 		{"IMG_003.jpg", "hash1", 2048}, // actual duplicate
 	})
-	src2 := makeSource("machine-2", "/photos", []struct{ rel, hash string; size int64 }{
+	src2 := makeSource("machine-2", "/photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_004.jpg", "hash1", 2048}, // duplicate of IMG_003
 	})
 
@@ -777,11 +890,17 @@ func TestFindDuplicatesWithEmptyHash(t *testing.T) {
 
 func TestFindUniqueWithComplexOverlaps(t *testing.T) {
 	// Test with overlapping scan paths on same machine
-	src := makeSource("machine-1", "/photos", []struct{ rel, hash string; size int64 }{
+	src := makeSource("machine-1", "/photos", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "hash1", 1024},
 		{"IMG_002.jpg", "hash2", 2048},
 	})
-	src2 := makeSource("machine-1", "/photos/2024", []struct{ rel, hash string; size int64 }{
+	src2 := makeSource("machine-1", "/photos/2024", []struct {
+		rel, hash string
+		size      int64
+	}{
 		{"IMG_001.jpg", "hash3", 1024},
 		{"IMG_003.jpg", "hash1", 3072},
 	})

@@ -14,24 +14,24 @@ Creates a manifest CSV in `~/manifests/_Manifest/`.
 
 ### Find duplicates across machines
 ```bash
-photo-organizer analyze ~/manifests/_Manifest/*.csv
+photo-organizer dups ~/manifests/_Manifest/*.csv
 ```
 Shows:
 - Which machines have which duplicates
 - Files at risk (only on one machine)
 - Folder redundancy analysis
 
-### Generate a safe cleanup plan
+### Find duplicate folders for cleanup
 ```bash
-photo-organizer plan --keep laptop ~/manifests/_Manifest/*.csv
+photo-organizer dup-folders --top 20 ~/manifests/_Manifest/*.csv
 ```
-Creates a commented-out deletion script (you must uncomment to run).
+Shows folders with overlapping file sets so you can clean up whole folders safely.
 
-### Migrate unique files to backup
+### Back up files missing from an archive
 ```bash
-photo-organizer migrate --from laptop --dest nas:/backups/photos ~/manifests/_Manifest/*.csv
+photo-organizer backup-missing ~/Photos --dest nas:/backups/photos
 ```
-Generates an rsync script with resumable transfers and pre-flight checks.
+Copies only files that are not already represented in collected manifests.
 
 ### Search across all machines
 ```bash
@@ -54,14 +54,16 @@ photo-organizer search -hash abc123def456
 | Command | Purpose |
 |---------|---------|
 | `scan [dir]` | Scan directory and create manifest |
-| `rescan` | Re-scan folders from this machine |
-| `analyze` | Find duplicates across manifests |
-| `plan` | Generate safe deletion/organization scripts |
-| `migrate` | Create rsync script for file migration |
+| `dups` | Find duplicate files across manifests |
+| `dup-folders` | Find duplicate folders for cleanup |
+| `storage-status` | Show storage breakdown by machine and device |
+| `storage-plan` | Recommend what to back up next |
+| `backup` | Back up a folder to a timestamped archive |
+| `backup-missing` | Copy only files not already backed up |
 | `search` | Query manifests by name/hash/size/date |
 | `collect` | Pull manifests from remote machines |
 | `machines` | List all machines in manifests |
-| `risk-report` | Find files at risk (only on one machine) |
+| `check-backup` | Check if a folder is backed up |
 
 ## Configuration
 

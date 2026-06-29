@@ -149,12 +149,21 @@ func readManifest(csvPath string) (ManifestSource, error) {
 
 		// Validate scan_date (should be valid and not in future)
 		if scanDate != "" {
-			if scanTime, err := time.Parse("2006-01-02", scanDate[:10]); err == nil {
-				if scanTime.After(time.Now().AddDate(0, 0, 1)) {
-					validationIssues = append(validationIssues, fmt.Sprintf("row %d: future scan_date %s (skipped - breaks age calculation)", rowIdx+2, scanDate))
-					skippedCount++
-					continue
-				}
+			if len(scanDate) < len("2006-01-02") {
+				validationIssues = append(validationIssues, fmt.Sprintf("row %d: invalid scan_date %q", rowIdx+2, scanDate))
+				skippedCount++
+				continue
+			}
+			scanTime, err := time.Parse("2006-01-02", scanDate[:10])
+			if err != nil {
+				validationIssues = append(validationIssues, fmt.Sprintf("row %d: invalid scan_date %q", rowIdx+2, scanDate))
+				skippedCount++
+				continue
+			}
+			if scanTime.After(time.Now().AddDate(0, 0, 1)) {
+				validationIssues = append(validationIssues, fmt.Sprintf("row %d: future scan_date %s (skipped - breaks age calculation)", rowIdx+2, scanDate))
+				skippedCount++
+				continue
 			}
 		}
 
@@ -418,8 +427,8 @@ func printStaleManifestReport(report StaleManifestReport) {
 // DeduplicationReport tracks files excluded due to overlapping scans
 type DeduplicationReport struct {
 	OverlapGroups map[[2]int]int // pair → count of files excluded from broader manifest
-	TotalExcluded  int
-	Details        []string // Human-readable details
+	TotalExcluded int
+	Details       []string // Human-readable details
 }
 
 // reportOverlapDeduplication analyzes what would be deduplicated and returns details
@@ -735,11 +744,11 @@ func findIntraMachine(sources []ManifestSource, idx map[string][]hashLocation) [
 			}
 			sort.Strings(locations)
 			result = append(result, intraDupGroup{
-				MachineName:  machine,
-				Hash:         hash,
-				SizeBytes:    sizeBytes,
-				Locations:    locations,
-				FullHashed:   allFullHashed,
+				MachineName: machine,
+				Hash:        hash,
+				SizeBytes:   sizeBytes,
+				Locations:   locations,
+				FullHashed:  allFullHashed,
 			})
 		}
 	}
@@ -814,13 +823,13 @@ func topLevelFolder(relPath string) string {
 // =============================================================================
 
 type MachineSummary struct {
-	MachineName  string
-	Sources      []string // labels of all scan sources for this machine
-	TotalFiles   int
-	TotalBytes   int64
-	UniqueFiles  int
-	DupedFiles   int
-	ByType       map[string]int // "photo"/"video"/"audio"/"sidecar"/"other"
+	MachineName string
+	Sources     []string // labels of all scan sources for this machine
+	TotalFiles  int
+	TotalBytes  int64
+	UniqueFiles int
+	DupedFiles  int
+	ByType      map[string]int // "photo"/"video"/"audio"/"sidecar"/"other"
 }
 
 func computeSummaries(sources []ManifestSource, idx map[string][]hashLocation) []MachineSummary {
@@ -2227,15 +2236,15 @@ func printRiskReport(w io.Writer, sources []ManifestSource, uniqueByMachine map[
 	}
 
 	// Summary header.
-	fmt.Fprintln(w, "\n" + sep)
+	fmt.Fprintln(w, "\n"+sep)
 	fmt.Fprintln(w, "RISK REPORT — Files with no backup (single machine only)")
 	fmt.Fprintln(w, sep)
 
 	// Compute per-machine totals.
 	type machineInfo struct {
-		name     string
-		files    int
-		size     int64
+		name  string
+		files int
+		size  int64
 	}
 	var machineStats []machineInfo
 	for machine, rows := range uniqueByMachine {
@@ -3101,10 +3110,10 @@ func writeSearchResults(filename string, rows []ManifestRow) {
 
 // PreflightCheck represents a single validation check.
 type PreflightCheck struct {
-	Name   string
-	Pass   bool
-	Error  string
-	Hint   string
+	Name  string
+	Pass  bool
+	Error string
+	Hint  string
 }
 
 // RunPreflightChecks validates that an operation can proceed.
@@ -3231,17 +3240,20 @@ func CheckDiskSpace(path string, neededBytes int64) PreflightCheck {
 
 // ScanCheckpoint tracks scan progress for resumption.
 type ScanCheckpoint struct {
-	ManifestPath string    `json:"manifest_path"`
-	ScanPath     string    `json:"scan_path"`
-	ProcessedDir int       `json:"processed_dirs"`
-	ProcessedFile int      `json:"processed_files"`
-	LastFile     string    `json:"last_file"`
-	StartTime    time.Time `json:"start_time"`
-	LastUpdate   time.Time `json:"last_update"`
+	ManifestPath  string    `json:"manifest_path"`
+	ScanPath      string    `json:"scan_path"`
+	ProcessedDir  int       `json:"processed_dirs"`
+	ProcessedFile int       `json:"processed_files"`
+	LastFile      string    `json:"last_file"`
+	StartTime     time.Time `json:"start_time"`
+	LastUpdate    time.Time `json:"last_update"`
 }
 
 // CheckpointDir returns the directory for storing scan checkpoints.
 func CheckpointDir() string {
+	if dir := strings.TrimSpace(os.Getenv("PHOTO_ORGANIZER_CHECKPOINT_DIR")); dir != "" {
+		return dir
+	}
 	return filepath.Join(userHomeDir(), "manifests", "_checkpoints")
 }
 
@@ -3331,16 +3343,16 @@ type BackupComplianceFile struct {
 }
 
 type BackupComplianceReport struct {
-	Machine           string
-	TargetPath        string
-	SafeFiles         []BackupComplianceFile
-	RiskyFiles        []BackupComplianceFile
-	CriticalFiles     []BackupComplianceFile
-	SafeSize          int64
-	RiskySize         int64
-	CriticalSize      int64
-	TotalSize         int64
-	TotalFiles        int
+	Machine            string
+	TargetPath         string
+	SafeFiles          []BackupComplianceFile
+	RiskyFiles         []BackupComplianceFile
+	CriticalFiles      []BackupComplianceFile
+	SafeSize           int64
+	RiskySize          int64
+	CriticalSize       int64
+	TotalSize          int64
+	TotalFiles         int
 	SafeableSpaceFreed int64
 }
 
@@ -3682,14 +3694,14 @@ type BackupCheckResult struct {
 	NotBackedUp     []FileBackupStatus // 0 copies
 	BackupLocations map[string]int     // machine@path -> count of files
 	AllBackedUp     bool
-	IgnoredFiles    int // number of system/sync files skipped
+	IgnoredFiles    int   // number of system/sync files skipped
 	IgnoredSize     int64 // total size of ignored files
 }
 
 type FileBackupStatus struct {
 	Path            string
 	SizeBytes       int64
-	Locations       int    // number of machines that have this file
+	Locations       int      // number of machines that have this file
 	LocationDetails []string // detailed list of locations where file exists
 }
 
@@ -4145,16 +4157,16 @@ func runStorageStatus(args []string) {
 
 	// Group by machine, then by device/mount point
 	type DeviceStats struct {
-		MountPoint   string
-		ScanPaths    []string
-		TotalFiles   int
-		TotalBytes   int64
-		UniqueFiles  int
-		UniqueBytes  int64
-		DupFiles     int
-		DupBytes     int64
-		BackedFiles  int
-		BackedBytes  int64
+		MountPoint  string
+		ScanPaths   []string
+		TotalFiles  int
+		TotalBytes  int64
+		UniqueFiles int
+		UniqueBytes int64
+		DupFiles    int
+		DupBytes    int64
+		BackedFiles int
+		BackedBytes int64
 	}
 
 	type MachineStats struct {
@@ -4329,11 +4341,11 @@ func runStoragePlan(args []string) {
 
 	// Calculate unique files per machine
 	type MachineInfo struct {
-		Machine      string
-		UniqueFiles  int
-		UniqueBytes  int64
-		TotalFiles   int
-		TotalBytes   int64
+		Machine     string
+		UniqueFiles int
+		UniqueBytes int64
+		TotalFiles  int
+		TotalBytes  int64
 	}
 
 	machineMap := make(map[string]*MachineInfo)
@@ -4573,17 +4585,17 @@ func runCheckBackupStatus(args []string) {
 
 	// Count files per machine (separate backed up vs removable vs local)
 	machinesCfg := loadMachinesConfig()
-	machineCount := make(map[string]int)      // remote machines with proper backups
-	machineBytes := make(map[string]int64)    // remote machines with proper backups
-	removableCount := make(map[string]int)    // removable media
-	removableBytes := make(map[string]int64)  // removable media
+	machineCount := make(map[string]int)     // remote machines with proper backups
+	machineBytes := make(map[string]int64)   // remote machines with proper backups
+	removableCount := make(map[string]int)   // removable media
+	removableBytes := make(map[string]int64) // removable media
 
 	// Track folder-level stats
 	type FolderStats struct {
-		Path         string
+		Path          string
 		BackedUpFiles int
-		AtRiskFiles  int
-		TotalFiles   int
+		AtRiskFiles   int
+		TotalFiles    int
 	}
 	folderStats := make(map[string]*FolderStats)
 
@@ -4720,11 +4732,11 @@ func runCheckBackupStatus(args []string) {
 
 	// Show top 3 folders by at-risk files or by size
 	type FolderRank struct {
-		Path      string
-		BackedUp  int
-		AtRisk    int
-		Total     int
-		Coverage  float64
+		Path     string
+		BackedUp int
+		AtRisk   int
+		Total    int
+		Coverage float64
 	}
 
 	var folderRanks []FolderRank
