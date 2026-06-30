@@ -26,14 +26,18 @@ func TestCLIMainHelper(t *testing.T) {
 
 func runCLI(t *testing.T, args ...string) (string, int) {
 	t.Helper()
+	return runCLIWithHome(t, t.TempDir(), args...)
+}
+
+func runCLIWithHome(t *testing.T, homeDir string, args ...string) (string, int) {
+	t.Helper()
 	cmdArgs := append([]string{"-test.run=TestCLIMainHelper", "--"}, args...)
 	cmd := exec.Command(os.Args[0], cmdArgs...)
 	cmd.Dir = "."
-	homeDir := t.TempDir()
 	cmd.Env = append(os.Environ(),
 		"HOME="+homeDir,
 		"PHOTO_ORGANIZER_TEST_MAIN=1",
-		"PHOTO_ORGANIZER_CHECKPOINT_DIR="+t.TempDir(),
+		"PHOTO_ORGANIZER_CHECKPOINT_DIR="+filepath.Join(homeDir, "checkpoints"),
 	)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -44,6 +48,39 @@ func runCLI(t *testing.T, args ...string) (string, int) {
 	}
 	t.Fatalf("run cli %v: %v\n%s", args, err, out)
 	return "", -1
+}
+
+func TestMachinesConfigSaveLoad(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	cfg := map[string]string{
+		"nas":        "admin@nas.local:/mnt/backup",
+		"ubuntu-max": "ubuntu@192.168.1.100:/photos",
+	}
+
+	if err := saveMachinesConfig(cfg); err != nil {
+		t.Fatalf("saveMachinesConfig: %v", err)
+	}
+
+	loaded := loadMachinesConfig()
+	if len(loaded) != len(cfg) {
+		t.Fatalf("loaded %d entries, want %d", len(loaded), len(cfg))
+	}
+	for key, want := range cfg {
+		if got := loaded[key]; got != want {
+			t.Fatalf("loaded[%q] = %q, want %q", key, got, want)
+		}
+	}
+
+	data, err := os.ReadFile(machinesConfFile())
+	if err != nil {
+		t.Fatalf("read machines.conf: %v", err)
+	}
+	text := string(data)
+	if strings.Index(text, "nas") > strings.Index(text, "ubuntu-max") {
+		t.Fatalf("machines.conf not sorted:\n%s", text)
+	}
 }
 
 func TestCLIHelpCurrentSurface(t *testing.T) {
@@ -166,6 +203,36 @@ func TestCLIUsageAndEmptyStateCoverage(t *testing.T) {
 				t.Fatalf("%s output missing %q:\n%s", tt.name, tt.want, out)
 			}
 		})
+	}
+}
+
+func TestCLICollectListsConfiguredMachines(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	cfg := map[string]string{
+		"nas":        "admin@nas.local:/mnt/backup",
+		"ubuntu-max": "ubuntu@192.168.1.100:/photos",
+	}
+	if err := saveMachinesConfig(cfg); err != nil {
+		t.Fatalf("saveMachinesConfig: %v", err)
+	}
+
+	out, code := runCLIWithHome(t, homeDir, "collect", "--list")
+	if code != 0 {
+		t.Fatalf("collect --list exit code = %d, output:\n%s", code, out)
+	}
+
+	for _, want := range []string{
+		"Configured machines:",
+		"nas",
+		"ubuntu-max",
+		"admin@nas.local:/mnt/backup",
+		"ubuntu@192.168.1.100:/photos",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("collect --list output missing %q:\n%s", want, out)
+		}
 	}
 }
 
