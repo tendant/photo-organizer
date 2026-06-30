@@ -13,7 +13,7 @@ Thumbs.db
 EOF
 ```
 
-Then rescan:
+Then refresh the scan:
 ```bash
 photo-organizer scan ~/Photos
 ```

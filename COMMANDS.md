@@ -183,7 +183,3 @@ Check whether a folder is backed up and where copies exist.
 ```bash
 photo-organizer check-backup ~/Photos
 ```
-
-## Deprecated Commands
-
-Older commands such as `analyze`, `plan`, `migrate`, `verify-backup`, `sign-manifest`, and `repair-manifest` are intentionally rejected by the CLI. Use the current commands above.

@@ -167,7 +167,3 @@ Remote checks use `PHOTO_ORGANIZER_SSH_TIMEOUT` when a longer timeout is needed:
 export PHOTO_ORGANIZER_SSH_TIMEOUT=120s
 photo-organizer collect --from nas
 ```
-
-## Deprecated Command Names
-
-Older examples may mention `analyze`, `plan`, `migrate`, `verify-backup`, `sign-manifest`, or `repair-manifest`. The current CLI rejects those names. Use `dups`, `dup-folders`, `backup-missing`, `verify-archive`, `sign`, and `fix` instead.

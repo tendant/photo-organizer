@@ -135,7 +135,7 @@ func runScan(args []string) {
 			fmt.Fprintf(os.Stderr, "   Machine: %s\n", src.MachineName)
 			fmt.Fprintf(os.Stderr, "   Last scanned: %s\n", src.LastScanned)
 			fmt.Fprintf(os.Stderr, "   Files: %d\n", len(src.Rows))
-			fmt.Fprintf(os.Stderr, "   Tip: Use 'rescan' to update instead of 're-scanning from scratch'\n\n")
+			fmt.Fprintf(os.Stderr, "   Tip: run scan again with --prune to refresh this manifest.\n\n")
 			break
 		}
 	}

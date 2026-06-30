@@ -150,7 +150,3 @@ Add a `.photoignore` file to the scan tree. See `PHOTOIGNORE.md`.
 5. Verify archives periodically with `verify-archive`.
 6. Keep manifests with your archives.
 7. Use `.photoignore` for temporary, generated, or sync-system files.
-
-## Deprecated Command Names
-
-Older guides may mention `analyze`, `plan`, `migrate`, `verify-backup`, `sign-manifest`, or `repair-manifest`. Use the current commands: `dups`, `dup-folders`, `backup-missing`, `verify-archive`, `sign`, and `fix`.

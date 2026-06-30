@@ -4,8 +4,8 @@
 
 ```
 photo-organizer/
-├── main.go              # CLI dispatch and remaining legacy command helpers
-├── analyze.go           # Plan, migration, search, risk, and compliance helpers
+├── main.go              # CLI dispatch, archive, manifests, lookup, and backup-missing
+├── analyze.go           # Shared duplicate/search/compliance helpers
 ├── duplicate_analysis.go # Duplicate index, reports, CSV exports, dups command
 ├── storage.go           # Storage status, storage plan, and check-backup commands
 ├── commands_scan.go     # Scan command

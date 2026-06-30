@@ -209,7 +209,3 @@ df -h ~/manifests >> ~/photo-organizer-report.txt 2>&1
 ```
 
 Include the failing command, the full error message, and relevant manifest paths.
-
-## Deprecated Command Names
-
-If an older note suggests `analyze`, `plan`, `migrate`, `verify-backup`, `sign-manifest`, or `repair-manifest`, use the current commands: `dups`, `dup-folders`, `backup-missing`, `verify-archive`, `sign`, and `fix`.
