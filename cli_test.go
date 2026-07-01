@@ -366,6 +366,65 @@ func TestCLIStorageReportsUseManifestFixtures(t *testing.T) {
 	}
 }
 
+func TestCLIManifestsStalledShowsMissingSources(t *testing.T) {
+	homeDir := t.TempDir()
+	writeManifestFixtureSet(t, homeDir)
+
+	missingDir := filepath.Join(homeDir, "photos-b")
+	if err := os.RemoveAll(missingDir); err != nil {
+		t.Fatalf("remove %s: %v", missingDir, err)
+	}
+
+	out, code := runCLIWithHome(t, homeDir, "manifests", "--stalled")
+	if code != 0 {
+		t.Fatalf("manifests --stalled exit code = %d, output:\n%s", code, out)
+	}
+
+	for _, want := range []string{
+		"STALLED MANIFESTS",
+		"machine-b",
+		missingDir + " (missing)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("manifests --stalled output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "machine-a") && strings.Contains(out, filepath.Join(homeDir, "photos-a")+" (missing)") {
+		t.Fatalf("manifests --stalled incorrectly reported healthy manifest:\n%s", out)
+	}
+}
+
+func TestCLIManifestsRemoveDeletesMatchingManifest(t *testing.T) {
+	homeDir := t.TempDir()
+	manifestA := writeManifestFixture(t, homeDir, "machine-a", "photos-a", map[string]string{
+		"albums/unique-a.jpg": "only-a",
+	})
+	manifestB := writeManifestFixture(t, homeDir, "machine-b", "photos-b", map[string]string{
+		"albums/unique-b.jpg": "only-b",
+	})
+
+	removePath := filepath.Join(homeDir, "photos-a")
+	out, code := runCLIWithHome(t, homeDir, "manifests", "--remove", removePath)
+	if code != 0 {
+		t.Fatalf("manifests --remove exit code = %d, output:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"Removed manifest:",
+		"Removed 1 manifest(s)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("manifests --remove output missing %q:\n%s", want, out)
+		}
+	}
+
+	if _, err := os.Stat(manifestA); !os.IsNotExist(err) {
+		t.Fatalf("removed manifest still exists: %s", manifestA)
+	}
+	if _, err := os.Stat(manifestB); err != nil {
+		t.Fatalf("non-matching manifest missing after remove: %v", err)
+	}
+}
+
 func TestDocsUseCurrentCommandExamples(t *testing.T) {
 	stale := regexp.MustCompile(`photo-organizer\s+(analyze|plan|migrate|rescan|risk-report|verify-backup|sign-manifest|repair-manifest)\b`)
 	files, err := filepath.Glob("*.md")
