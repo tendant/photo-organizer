@@ -50,6 +50,49 @@ func runCLIWithHome(t *testing.T, homeDir string, args ...string) (string, int) 
 	return "", -1
 }
 
+func writeManifestFixture(t *testing.T, homeDir, machine, dirName string, files map[string]string) string {
+	t.Helper()
+
+	scanDir := filepath.Join(homeDir, dirName)
+	if err := os.MkdirAll(scanDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", scanDir, err)
+	}
+	for relPath, content := range files {
+		fullPath := filepath.Join(scanDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatalf("mkdir parent for %s: %v", fullPath, err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", fullPath, err)
+		}
+	}
+
+	cache := make(map[string]CacheEntry)
+	fileInfos, _, err := scanDirectory(scanDir, cache, newPhotoIgnore(scanDir))
+	if err != nil {
+		t.Fatalf("scan fixture dir %s: %v", scanDir, err)
+	}
+
+	manifestPath := filepath.Join(homeDir, "manifests", "_Manifest", manifestFilename(machine, scanDir))
+	if _, err := updateManifest(scanDir, fileInfos, manifestPath, machine, false); err != nil {
+		t.Fatalf("update manifest %s: %v", manifestPath, err)
+	}
+	return manifestPath
+}
+
+func writeManifestFixtureSet(t *testing.T, homeDir string) {
+	t.Helper()
+
+	writeManifestFixture(t, homeDir, "machine-a", "photos-a", map[string]string{
+		"dup/shared.jpg":      "same-bytes",
+		"albums/unique-a.jpg": "only-a",
+	})
+	writeManifestFixture(t, homeDir, "machine-b", "photos-b", map[string]string{
+		"dup/shared.jpg":      "same-bytes",
+		"albums/unique-b.jpg": "only-b",
+	})
+}
+
 func TestMachinesConfigSaveLoad(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
@@ -232,6 +275,93 @@ func TestCLICollectListsConfiguredMachines(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("collect --list output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestCLIMachinesListsManifestMachines(t *testing.T) {
+	homeDir := t.TempDir()
+	writeManifestFixtureSet(t, homeDir)
+
+	out, code := runCLIWithHome(t, homeDir, "machines")
+	if code != 0 {
+		t.Fatalf("machines exit code = %d, output:\n%s", code, out)
+	}
+
+	for _, want := range []string{
+		"Machines in manifests:",
+		"machine-a",
+		"machine-b",
+		"photos-a",
+		"photos-b",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("machines output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestCLIMachinesWriteConfFromManifests(t *testing.T) {
+	homeDir := t.TempDir()
+	writeManifestFixtureSet(t, homeDir)
+
+	out, code := runCLIWithHome(t, homeDir, "machines", "--write-conf")
+	if code != 0 {
+		t.Fatalf("machines --write-conf exit code = %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "Generated machines.conf") {
+		t.Fatalf("machines --write-conf missing success output:\n%s", out)
+	}
+
+	data, err := os.ReadFile(filepath.Join(homeDir, "manifests", "machines.conf"))
+	if err != nil {
+		t.Fatalf("read generated machines.conf: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"# Machine SSH Configuration",
+		"machine-a",
+		"machine-b",
+		"[local] scanned from:",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("generated machines.conf missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestCLIStorageReportsUseManifestFixtures(t *testing.T) {
+	homeDir := t.TempDir()
+	writeManifestFixtureSet(t, homeDir)
+
+	statusOut, statusCode := runCLIWithHome(t, homeDir, "storage-status")
+	if statusCode != 0 {
+		t.Fatalf("storage-status exit code = %d, output:\n%s", statusCode, statusOut)
+	}
+	for _, want := range []string{
+		"STORAGE STATUS REPORT",
+		"machine-a",
+		"machine-b",
+		"Duplicated files: 1",
+	} {
+		if !strings.Contains(statusOut, want) {
+			t.Fatalf("storage-status output missing %q:\n%s", want, statusOut)
+		}
+	}
+
+	planOut, planCode := runCLIWithHome(t, homeDir, "storage-plan")
+	if planCode != 0 {
+		t.Fatalf("storage-plan exit code = %d, output:\n%s", planCode, planOut)
+	}
+	for _, want := range []string{
+		"STORAGE PLANNING REPORT",
+		"PRIORITY BACKUPS",
+		"machine-a",
+		"machine-b",
+		"Files at-risk:",
+	} {
+		if !strings.Contains(planOut, want) {
+			t.Fatalf("storage-plan output missing %q:\n%s", want, planOut)
 		}
 	}
 }
