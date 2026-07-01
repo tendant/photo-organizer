@@ -536,6 +536,44 @@ func TestCLIArchiveMovesFolderAndRewritesManifests(t *testing.T) {
 	}
 }
 
+func TestCLIArchiveCancelledLeavesSourceUntouched(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	archiveRoot := filepath.Join(homeDir, "archive")
+	oldManifest := writeManifestFixture(t, homeDir, "test-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+	})
+
+	if err := os.MkdirAll(filepath.Join(homeDir, "manifests"), 0o755); err != nil {
+		t.Fatalf("mkdir manifests: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("test-machine\n"), 0o644); err != nil {
+		t.Fatalf("write machine-id: %v", err)
+	}
+
+	out, code := runCLIWithHomeInput(t, homeDir, "n\n", "archive", sourceDir, "--dest", archiveRoot)
+	if code != 0 {
+		t.Fatalf("archive cancel exit code = %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "Cancelled.") {
+		t.Fatalf("archive cancel output missing cancellation message:\n%s", out)
+	}
+
+	if _, err := os.Stat(sourceDir); err != nil {
+		t.Fatalf("source dir missing after cancel: %v", err)
+	}
+	if _, err := os.Stat(oldManifest); err != nil {
+		t.Fatalf("manifest missing after cancel: %v", err)
+	}
+	entries, err := os.ReadDir(archiveRoot)
+	if err != nil {
+		t.Fatalf("read archive root after cancel: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("archive root should be empty after cancel")
+	}
+}
+
 func TestCLIBackupAndRestoreWorkflow(t *testing.T) {
 	homeDir := t.TempDir()
 	sourceDir := filepath.Join(homeDir, "library", "Photos")
@@ -619,6 +657,50 @@ func TestCLIBackupMissingNoOpWhenAlreadyBackedUp(t *testing.T) {
 	}
 	if !strings.Contains(out, "All files already backed up") {
 		t.Fatalf("backup-missing output missing no-op message:\n%s", out)
+	}
+}
+
+func TestCLIBackupMissingFailsWhenRsyncFails(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	remoteRoot := filepath.Join(homeDir, "remote-dest")
+	binDir := filepath.Join(homeDir, "bin")
+	t.Setenv("HOME", homeDir)
+
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+	})
+	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("local-machine\n"), 0o644); err != nil {
+		t.Fatalf("write machine-id: %v", err)
+	}
+	if err := saveMachinesConfig(map[string]string{
+		"remote-machine": "backup@example",
+	}); err != nil {
+		t.Fatalf("saveMachinesConfig: %v", err)
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	for name, content := range map[string]string{
+		"rsync":           "#!/bin/sh\nexit 12\n",
+		"ssh":             "#!/bin/sh\nexit 0\n",
+		"photo-organizer": "#!/bin/sh\nexit 0\n",
+	} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+			t.Fatalf("write shim %s: %v", name, err)
+		}
+	}
+
+	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{prependPathEnv(binDir)}, "backup-missing", sourceDir, "--dest", "remote-machine:"+remoteRoot)
+	if code == 0 {
+		t.Fatalf("backup-missing exit code = 0, want nonzero\n%s", out)
+	}
+	if !strings.Contains(out, "Error: rsync failed") {
+		t.Fatalf("backup-missing failure output missing rsync error:\n%s", out)
+	}
+	if _, err := os.Stat(remoteRoot); !os.IsNotExist(err) {
+		t.Fatalf("remote root should not exist after rsync failure")
 	}
 }
 
