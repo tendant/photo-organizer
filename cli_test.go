@@ -26,14 +26,22 @@ func TestCLIMainHelper(t *testing.T) {
 
 func runCLI(t *testing.T, args ...string) (string, int) {
 	t.Helper()
-	return runCLIWithHome(t, t.TempDir(), args...)
+	return runCLIWithHomeInput(t, t.TempDir(), "", args...)
 }
 
 func runCLIWithHome(t *testing.T, homeDir string, args ...string) (string, int) {
 	t.Helper()
+	return runCLIWithHomeInput(t, homeDir, "", args...)
+}
+
+func runCLIWithHomeInput(t *testing.T, homeDir, stdin string, args ...string) (string, int) {
+	t.Helper()
 	cmdArgs := append([]string{"-test.run=TestCLIMainHelper", "--"}, args...)
 	cmd := exec.Command(os.Args[0], cmdArgs...)
 	cmd.Dir = "."
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	cmd.Env = append(os.Environ(),
 		"HOME="+homeDir,
 		"PHOTO_ORGANIZER_TEST_MAIN=1",
@@ -48,6 +56,24 @@ func runCLIWithHome(t *testing.T, homeDir string, args ...string) (string, int) 
 	}
 	t.Fatalf("run cli %v: %v\n%s", args, err, out)
 	return "", -1
+}
+
+func readAllManifestSources(t *testing.T, homeDir string) []ManifestSource {
+	t.Helper()
+
+	paths, err := filepath.Glob(filepath.Join(homeDir, "manifests", "_Manifest", "*.csv"))
+	if err != nil {
+		t.Fatalf("glob manifests: %v", err)
+	}
+	var sources []ManifestSource
+	for _, path := range paths {
+		src, err := readManifest(path)
+		if err != nil {
+			t.Fatalf("read manifest %s: %v", path, err)
+		}
+		sources = append(sources, src)
+	}
+	return sources
 }
 
 func writeManifestFixture(t *testing.T, homeDir, machine, dirName string, files map[string]string) string {
@@ -422,6 +448,72 @@ func TestCLIManifestsRemoveDeletesMatchingManifest(t *testing.T) {
 	}
 	if _, err := os.Stat(manifestB); err != nil {
 		t.Fatalf("non-matching manifest missing after remove: %v", err)
+	}
+}
+
+func TestCLIArchiveMovesFolderAndRewritesManifests(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	archiveRoot := filepath.Join(homeDir, "archive")
+	oldManifest := writeManifestFixture(t, homeDir, "test-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+	})
+
+	if err := os.MkdirAll(filepath.Join(homeDir, "manifests"), 0o755); err != nil {
+		t.Fatalf("mkdir manifests: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("test-machine\n"), 0o644); err != nil {
+		t.Fatalf("write machine-id: %v", err)
+	}
+
+	out, code := runCLIWithHomeInput(t, homeDir, "y\n", "archive", sourceDir, "--dest", archiveRoot)
+	if code != 0 {
+		t.Fatalf("archive exit code = %d, output:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"ARCHIVE PREVIEW",
+		"Cleaning up old manifest entries...",
+		"Folder archived to",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("archive output missing %q:\n%s", want, out)
+		}
+	}
+
+	if _, err := os.Stat(sourceDir); !os.IsNotExist(err) {
+		t.Fatalf("source dir still exists after archive: %s", sourceDir)
+	}
+	if _, err := os.Stat(oldManifest); !os.IsNotExist(err) {
+		t.Fatalf("old source manifest still exists: %s", oldManifest)
+	}
+
+	entries, err := os.ReadDir(archiveRoot)
+	if err != nil {
+		t.Fatalf("read archive root: %v", err)
+	}
+	if len(entries) != 1 || !entries[0].IsDir() {
+		t.Fatalf("archive root entries = %d, want 1 archived folder", len(entries))
+	}
+	archivedDir := filepath.Join(archiveRoot, entries[0].Name())
+	if _, err := os.Stat(filepath.Join(archivedDir, "album", "photo1.jpg")); err != nil {
+		t.Fatalf("archived photo missing: %v", err)
+	}
+
+	sources := readAllManifestSources(t, homeDir)
+	foundArchiveManifest := false
+	for _, src := range sources {
+		if src.ScanPath != archiveRoot {
+			continue
+		}
+		for _, row := range src.Rows {
+			if row.RelativePath == filepath.Join(entries[0].Name(), "album", "photo1.jpg") {
+				foundArchiveManifest = true
+				break
+			}
+		}
+	}
+	if !foundArchiveManifest {
+		t.Fatalf("did not find archive manifest entry for moved photo in %s", archiveRoot)
 	}
 }
 
