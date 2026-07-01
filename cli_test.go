@@ -26,15 +26,20 @@ func TestCLIMainHelper(t *testing.T) {
 
 func runCLI(t *testing.T, args ...string) (string, int) {
 	t.Helper()
-	return runCLIWithHomeInput(t, t.TempDir(), "", args...)
+	return runCLIWithHomeInputEnv(t, t.TempDir(), "", nil, args...)
 }
 
 func runCLIWithHome(t *testing.T, homeDir string, args ...string) (string, int) {
 	t.Helper()
-	return runCLIWithHomeInput(t, homeDir, "", args...)
+	return runCLIWithHomeInputEnv(t, homeDir, "", nil, args...)
 }
 
 func runCLIWithHomeInput(t *testing.T, homeDir, stdin string, args ...string) (string, int) {
+	t.Helper()
+	return runCLIWithHomeInputEnv(t, homeDir, stdin, nil, args...)
+}
+
+func runCLIWithHomeInputEnv(t *testing.T, homeDir, stdin string, extraEnv []string, args ...string) (string, int) {
 	t.Helper()
 	cmdArgs := append([]string{"-test.run=TestCLIMainHelper", "--"}, args...)
 	cmd := exec.Command(os.Args[0], cmdArgs...)
@@ -42,11 +47,11 @@ func runCLIWithHomeInput(t *testing.T, homeDir, stdin string, args ...string) (s
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append(os.Environ(),
 		"HOME="+homeDir,
 		"PHOTO_ORGANIZER_TEST_MAIN=1",
 		"PHOTO_ORGANIZER_CHECKPOINT_DIR="+filepath.Join(homeDir, "checkpoints"),
-	)
+	), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return string(out), 0
@@ -87,6 +92,14 @@ func singleDirEntry(t *testing.T, dir string) string {
 		t.Fatalf("%s entries = %d, want 1 directory", dir, len(entries))
 	}
 	return filepath.Join(dir, entries[0].Name())
+}
+
+func prependPathEnv(pathDir string) string {
+	current := os.Getenv("PATH")
+	if current == "" {
+		return "PATH=" + pathDir
+	}
+	return "PATH=" + pathDir + string(os.PathListSeparator) + current
 }
 
 func writeManifestFixture(t *testing.T, homeDir, machine, dirName string, files map[string]string) string {
@@ -584,6 +597,92 @@ func TestCLIBackupAndRestoreWorkflow(t *testing.T) {
 		}
 		if string(data) != want {
 			t.Fatalf("restored file %s = %q, want %q", relPath, string(data), want)
+		}
+	}
+}
+
+func TestCLIBackupMissingNoOpWhenAlreadyBackedUp(t *testing.T) {
+	homeDir := t.TempDir()
+	localDir := filepath.Join(homeDir, "library", "Photos")
+	shared := map[string]string{
+		"album/photo1.jpg": "photo-one",
+	}
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), shared)
+	writeManifestFixture(t, homeDir, "remote-machine", filepath.Join("remote-backup", "Photos"), shared)
+	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("local-machine\n"), 0o644); err != nil {
+		t.Fatalf("write machine-id: %v", err)
+	}
+
+	out, code := runCLIWithHome(t, homeDir, "backup-missing", localDir, "--dest", "unused:/backups")
+	if code != 0 {
+		t.Fatalf("backup-missing exit code = %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "All files already backed up") {
+		t.Fatalf("backup-missing output missing no-op message:\n%s", out)
+	}
+}
+
+func TestCLIBackupMissingCopiesMissingFilesWithConfiguredMachine(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	remoteRoot := filepath.Join(homeDir, "remote-dest")
+	binDir := filepath.Join(homeDir, "bin")
+	t.Setenv("HOME", homeDir)
+
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+		"album/photo2.jpg": "photo-two",
+	})
+	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("local-machine\n"), 0o644); err != nil {
+		t.Fatalf("write machine-id: %v", err)
+	}
+	if err := saveMachinesConfig(map[string]string{
+		"remote-machine": "backup@example",
+	}); err != nil {
+		t.Fatalf("saveMachinesConfig: %v", err)
+	}
+
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	rsyncScript := "#!/bin/sh\nset -eu\nfiles_from=\nsrc=\ndest=\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    --files-from=*) files_from=${arg#--files-from=} ;;\n    -*) ;;\n    *)\n      if [ -z \"$src\" ]; then\n        src=$arg\n      elif [ -z \"$dest\" ]; then\n        dest=$arg\n      fi\n      ;;\n  esac\ndone\nremote_path=${dest#*:}\nmkdir -p \"$remote_path\"\nwhile IFS= read -r rel; do\n  mkdir -p \"$remote_path/$(dirname \"$rel\")\"\n  cp \"$src$rel\" \"$remote_path/$rel\"\ndone < \"$files_from\"\n"
+	sshScript := "#!/bin/sh\nexit 0\n"
+	collectScript := "#!/bin/sh\nexit 0\n"
+	for name, content := range map[string]string{
+		"rsync":           rsyncScript,
+		"ssh":             sshScript,
+		"photo-organizer": collectScript,
+	} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+			t.Fatalf("write shim %s: %v", name, err)
+		}
+	}
+
+	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{prependPathEnv(binDir)}, "backup-missing", sourceDir, "--dest", "remote-machine:"+remoteRoot)
+	if code != 0 {
+		t.Fatalf("backup-missing exit code = %d, output:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"Checking which files need backup...",
+		"Backing up 2 files",
+		"Backup complete",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("backup-missing output missing %q:\n%s", want, out)
+		}
+	}
+
+	for relPath, want := range map[string]string{
+		filepath.Join("album", "photo1.jpg"): "photo-one",
+		filepath.Join("album", "photo2.jpg"): "photo-two",
+	} {
+		data, err := os.ReadFile(filepath.Join(remoteRoot, relPath))
+		if err != nil {
+			t.Fatalf("read remote copied file %s: %v", relPath, err)
+		}
+		if string(data) != want {
+			t.Fatalf("remote copied file %s = %q, want %q", relPath, string(data), want)
 		}
 	}
 }
