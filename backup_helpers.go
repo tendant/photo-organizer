@@ -7,6 +7,26 @@ import (
 	"strings"
 )
 
+func parseRequiredDestFlag(args []string) string {
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--dest" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func resolveExistingFolder(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(absPath); err != nil {
+		return "", err
+	}
+	return absPath, nil
+}
+
 func loadManifestSources(currentMachineID string) []ManifestSource {
 	manifestDir := filepath.Join(userHomeDir(), "manifests", "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))

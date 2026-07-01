@@ -1515,15 +1515,7 @@ func runArchive(args []string) {
 	}
 
 	sourceFolder := args[0]
-	var archiveDir string
-
-	// Parse --dest flag
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--dest" && i+1 < len(args) {
-			archiveDir = args[i+1]
-			break
-		}
-	}
+	archiveDir := parseRequiredDestFlag(args)
 
 	if archiveDir == "" {
 		fmt.Fprintf(os.Stderr, "Error: --dest is required\n")
@@ -1531,21 +1523,18 @@ func runArchive(args []string) {
 	}
 
 	// Resolve paths to absolute
-	absSourceFolder, err := filepath.Abs(sourceFolder)
+	absSourceFolder, err := resolveExistingFolder(sourceFolder)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: invalid source path %q\n", sourceFolder)
+		if _, statErr := os.Stat(sourceFolder); statErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: source folder not found: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: invalid source path %q\n", sourceFolder)
+		}
 		os.Exit(1)
 	}
-
 	absArchiveDir, err := filepath.Abs(archiveDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: invalid archive directory %q\n", archiveDir)
-		os.Exit(1)
-	}
-
-	// Check source folder exists
-	if _, err := os.Stat(absSourceFolder); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: source folder not found: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -1798,15 +1787,7 @@ func runBackupMissing(args []string) {
 	}
 
 	sourceFolder := args[0]
-	var destLocation string
-
-	// Parse --dest flag
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--dest" && i+1 < len(args) {
-			destLocation = args[i+1]
-			break
-		}
-	}
+	destLocation := parseRequiredDestFlag(args)
 
 	if destLocation == "" {
 		fmt.Fprintf(os.Stderr, "Error: --dest is required (e.g., user@host:/backups)\n")
@@ -1814,15 +1795,13 @@ func runBackupMissing(args []string) {
 	}
 
 	// Resolve source folder to absolute path
-	absSourceFolder, err := filepath.Abs(sourceFolder)
+	absSourceFolder, err := resolveExistingFolder(sourceFolder)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: invalid source path %q\n", sourceFolder)
-		os.Exit(1)
-	}
-
-	// Check source folder exists
-	if _, err := os.Stat(absSourceFolder); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: source folder not found: %v\n", err)
+		if _, statErr := os.Stat(sourceFolder); statErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: source folder not found: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: invalid source path %q\n", sourceFolder)
+		}
 		os.Exit(1)
 	}
 
