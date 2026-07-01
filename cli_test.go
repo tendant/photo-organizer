@@ -76,6 +76,19 @@ func readAllManifestSources(t *testing.T, homeDir string) []ManifestSource {
 	return sources
 }
 
+func singleDirEntry(t *testing.T, dir string) string {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir %s: %v", dir, err)
+	}
+	if len(entries) != 1 || !entries[0].IsDir() {
+		t.Fatalf("%s entries = %d, want 1 directory", dir, len(entries))
+	}
+	return filepath.Join(dir, entries[0].Name())
+}
+
 func writeManifestFixture(t *testing.T, homeDir, machine, dirName string, files map[string]string) string {
 	t.Helper()
 
@@ -487,14 +500,7 @@ func TestCLIArchiveMovesFolderAndRewritesManifests(t *testing.T) {
 		t.Fatalf("old source manifest still exists: %s", oldManifest)
 	}
 
-	entries, err := os.ReadDir(archiveRoot)
-	if err != nil {
-		t.Fatalf("read archive root: %v", err)
-	}
-	if len(entries) != 1 || !entries[0].IsDir() {
-		t.Fatalf("archive root entries = %d, want 1 archived folder", len(entries))
-	}
-	archivedDir := filepath.Join(archiveRoot, entries[0].Name())
+	archivedDir := singleDirEntry(t, archiveRoot)
 	if _, err := os.Stat(filepath.Join(archivedDir, "album", "photo1.jpg")); err != nil {
 		t.Fatalf("archived photo missing: %v", err)
 	}
@@ -506,7 +512,7 @@ func TestCLIArchiveMovesFolderAndRewritesManifests(t *testing.T) {
 			continue
 		}
 		for _, row := range src.Rows {
-			if row.RelativePath == filepath.Join(entries[0].Name(), "album", "photo1.jpg") {
+			if row.RelativePath == filepath.Join(filepath.Base(archivedDir), "album", "photo1.jpg") {
 				foundArchiveManifest = true
 				break
 			}
@@ -514,6 +520,71 @@ func TestCLIArchiveMovesFolderAndRewritesManifests(t *testing.T) {
 	}
 	if !foundArchiveManifest {
 		t.Fatalf("did not find archive manifest entry for moved photo in %s", archiveRoot)
+	}
+}
+
+func TestCLIBackupAndRestoreWorkflow(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	archiveRoot := filepath.Join(homeDir, "backups")
+	restoreDir := filepath.Join(homeDir, "restored")
+
+	writeManifestFixture(t, homeDir, "test-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+		"album/photo2.jpg": "photo-two",
+	})
+
+	backupOut, backupCode := runCLIWithHome(t, homeDir, "backup", sourceDir, archiveRoot)
+	if backupCode != 0 {
+		t.Fatalf("backup exit code = %d, output:\n%s", backupCode, backupOut)
+	}
+	for _, want := range []string{
+		"BACKUP WORKFLOW",
+		"BACKUP COMPLETE",
+		"Files backed up: 2",
+		"All files successfully backed up",
+	} {
+		if !strings.Contains(backupOut, want) {
+			t.Fatalf("backup output missing %q:\n%s", want, backupOut)
+		}
+	}
+
+	archiveDir := singleDirEntry(t, archiveRoot)
+	for _, relPath := range []string{
+		filepath.Join("album", "photo1.jpg"),
+		filepath.Join("album", "photo2.jpg"),
+	} {
+		if _, err := os.Stat(filepath.Join(archiveDir, relPath)); err != nil {
+			t.Fatalf("archived file missing %s: %v", relPath, err)
+		}
+	}
+
+	restoreOut, restoreCode := runCLIWithHome(t, homeDir, "restore", archiveDir, restoreDir)
+	if restoreCode != 0 {
+		t.Fatalf("restore exit code = %d, output:\n%s", restoreCode, restoreOut)
+	}
+	for _, want := range []string{
+		"RESTORE FROM ARCHIVE",
+		"RESTORE COMPLETE",
+		"Files restored: 2",
+		"All files successfully restored",
+	} {
+		if !strings.Contains(restoreOut, want) {
+			t.Fatalf("restore output missing %q:\n%s", want, restoreOut)
+		}
+	}
+
+	for relPath, want := range map[string]string{
+		filepath.Join("album", "photo1.jpg"): "photo-one",
+		filepath.Join("album", "photo2.jpg"): "photo-two",
+	} {
+		data, err := os.ReadFile(filepath.Join(restoreDir, relPath))
+		if err != nil {
+			t.Fatalf("read restored file %s: %v", relPath, err)
+		}
+		if string(data) != want {
+			t.Fatalf("restored file %s = %q, want %q", relPath, string(data), want)
+		}
 	}
 }
 
