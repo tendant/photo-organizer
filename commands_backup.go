@@ -68,7 +68,7 @@ func runBackup(args []string) {
 		os.Exit(1)
 	}
 
-	// Find or create manifest for this folder
+	// Find existing manifest for this folder
 	manifestDir := filepath.Join(userHomeDir(), "manifests", "_Manifest")
 	var manifest ManifestSource
 
@@ -87,11 +87,8 @@ func runBackup(args []string) {
 		}
 	}
 
-	// If no manifest found, create one
+	// Require an existing manifest so backup decisions come from scan data.
 	if manifest.FilePath == "" {
-		fmt.Printf("📋 Creating manifest for %s...\n", filepath.Base(absPath))
-		// Use existing scan logic to create manifest
-		// For now, we'll use the current approach: require existing manifest
 		fmt.Fprintf(os.Stderr, "❌ No manifest found for %s\n", absPath)
 		fmt.Fprintf(os.Stderr, "   Run 'photo-organizer scan %s' first\n", absPath)
 		os.Exit(1)
@@ -110,6 +107,13 @@ func runBackup(args []string) {
 		fmt.Printf("Mode:    Only backup files not already backed up\n")
 	}
 	fmt.Printf("\n")
+
+	var idx map[string][]hashLocation
+	var sources []ManifestSource
+	if newOnlyFlag {
+		sources = loadManifestSources(manifest.MachineName)
+		idx = buildHashIndex(sources)
+	}
 
 	// Create timestamped archive folder
 	timestamp := time.Now()
@@ -130,6 +134,11 @@ func runBackup(args []string) {
 	// Backup each file
 	fmt.Printf("Backing up files...\n")
 	for i, row := range manifest.Rows {
+		if newOnlyFlag && hasIndependentBackup(sources, idx, manifest.MachineName, row.PartialHash, row.SizeBytes) {
+			filesSkipped++
+			continue
+		}
+
 		sourceFile := filepath.Join(manifest.ScanPath, row.RelativePath)
 		destFile := filepath.Join(archivePath, row.RelativePath)
 
@@ -151,7 +160,7 @@ func runBackup(args []string) {
 		filesToBackup++
 
 		// Progress
-		if (i + 1) % 100 == 0 {
+		if (i+1)%100 == 0 {
 			fmt.Printf("  %d / %d files backed up...\n", i+1, len(manifest.Rows))
 		}
 	}

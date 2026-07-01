@@ -1832,19 +1832,7 @@ func runBackupMissing(args []string) {
 	localMachineID := resolveMachineID("")
 
 	// Load all manifests
-	defaultDir := filepath.Join(userHomeDir(), "manifests", "_Manifest")
-	matches, _ := filepath.Glob(filepath.Join(defaultDir, "*.csv"))
-
-	var sources []ManifestSource
-	for _, path := range matches {
-		src, err := readManifest(path)
-		if err != nil {
-			continue
-		}
-		// Mark whether this manifest is local or remote
-		markManifestOrigin(&src, localMachineID)
-		sources = append(sources, src)
-	}
+	sources := loadManifestSources(localMachineID)
 
 	// Build hash index
 	idx := buildHashIndex(sources)
@@ -1875,28 +1863,7 @@ func runBackupMissing(args []string) {
 			return nil
 		}
 
-		// Check if this file has non-removable backups
-		key := indexKey(partialHash, info.Size())
-		locs, exists := idx[key]
-
-		hasBackup := false
-		if exists && len(locs) > 0 {
-			// Check if any location is non-removable and not the local source folder
-			for _, loc := range locs {
-				scanPath := sources[loc.sourceIdx].ScanPath
-				isLocalManifest := sources[loc.sourceIdx].MachineName == localMachineID
-				// Only skip if it's a local manifest at the source folder (file we're backing up from)
-				if isLocalManifest && scanPath == absSourceFolder {
-					continue
-				}
-				if !isRemovablePath(scanPath) {
-					hasBackup = true
-					break
-				}
-			}
-		}
-
-		if !hasBackup {
+		if !hasIndependentBackup(sources, idx, localMachineID, partialHash, info.Size()) {
 			// This file needs backing up
 			relPath, _ := filepath.Rel(absSourceFolder, path)
 			missingFiles = append(missingFiles, relPath)
@@ -1915,7 +1882,7 @@ func runBackupMissing(args []string) {
 	fmt.Fprintf(os.Stderr, "Backing up %d files (%.1f GB)...\n", missingCount, float64(missingSize)/(1024*1024*1024))
 
 	// Parse remote destination FIRST (can be machine-id:/path or user@host:/path)
-	parts := strings.Split(destLocation, ":")
+	parts := strings.SplitN(destLocation, ":", 2)
 	if len(parts) != 2 {
 		fmt.Fprintf(os.Stderr, "Error: invalid destination format. Use: machine-id:/path or user@host:/path\n")
 		os.Exit(1)
@@ -1944,11 +1911,6 @@ func runBackupMissing(args []string) {
 				remoteMachineID = machID
 				break
 			}
-		}
-		if remoteMachineID == "" {
-			fmt.Fprintf(os.Stderr, "Error: Remote host '%s' not found in machines.conf\n", remoteUserHost)
-			fmt.Fprintf(os.Stderr, "Configure it with: photo-organizer collect --add <machine-id>=%s\n", remoteUserHost)
-			os.Exit(1)
 		}
 	} else {
 		// Try reverse lookup: check if destIdentifier is a known SSH host
@@ -1999,11 +1961,17 @@ func runBackupMissing(args []string) {
 		os.Exit(1)
 	}
 
+	if remoteMachineID == "" {
+		fmt.Fprintf(os.Stderr, "⚠ Backup copied, but manifest refresh was skipped.\n")
+		fmt.Fprintf(os.Stderr, "  Add this host first: photo-organizer collect --add <machine-id>=%s\n", remoteUserHost)
+		return
+	}
+
 	// Scan remote location
 	scanCmd := fmt.Sprintf("cd %s && for path in photo-organizer ~/bin/photo-organizer /usr/local/bin/photo-organizer; do if command -v $path &>/dev/null || [ -f $path ]; then $path scan . --machine %s >/dev/null 2>&1; exit $?; fi; done; exit 1", shellQuote(remotePath), shellQuote(remoteMachineID))
 	sshCmd := exec.Command("ssh", remoteUserHost, scanCmd)
 	if err := sshCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: Remote scan failed. photo-organizer must be installed on remote machine.\n")
+		fmt.Fprintf(os.Stderr, "Error: remote scan failed after copying files. photo-organizer must be installed on remote machine.\n")
 		os.Exit(1)
 	}
 
@@ -2011,7 +1979,10 @@ func runBackupMissing(args []string) {
 	collectCmd := exec.Command("photo-organizer", "collect", "--from", remoteMachineID)
 	collectCmd.Stdout = os.Stderr
 	collectCmd.Stderr = os.Stderr
-	collectCmd.Run()
+	if err := collectCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: files were copied, but manifest collection failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Fprintf(os.Stderr, "✓ Backup complete\n")
 }
