@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -68,27 +67,8 @@ func runBackup(args []string) {
 		os.Exit(1)
 	}
 
-	// Find existing manifest for this folder
-	manifestDir := filepath.Join(userHomeDir(), "manifests", "_Manifest")
-	var manifest ManifestSource
-
-	// Try to find existing manifest for this folder
-	entries, err := os.ReadDir(manifestDir)
-	if err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".csv") {
-				fullPath := filepath.Join(manifestDir, entry.Name())
-				m, err := readManifest(fullPath)
-				if err == nil && m.ScanPath == absPath {
-					manifest = m
-					break
-				}
-			}
-		}
-	}
-
-	// Require an existing manifest so backup decisions come from scan data.
-	if manifest.FilePath == "" {
+	manifest, found := findManifestForScanPath(absPath)
+	if !found {
 		fmt.Fprintf(os.Stderr, "❌ No manifest found for %s\n", absPath)
 		fmt.Fprintf(os.Stderr, "   Run 'photo-organizer scan %s' first\n", absPath)
 		os.Exit(1)

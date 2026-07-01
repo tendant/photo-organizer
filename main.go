@@ -1881,62 +1881,22 @@ func runBackupMissing(args []string) {
 
 	fmt.Fprintf(os.Stderr, "Backing up %d files (%.1f GB)...\n", missingCount, float64(missingSize)/(1024*1024*1024))
 
-	// Parse remote destination FIRST (can be machine-id:/path or user@host:/path)
-	parts := strings.SplitN(destLocation, ":", 2)
-	if len(parts) != 2 {
-		fmt.Fprintf(os.Stderr, "Error: invalid destination format. Use: machine-id:/path or user@host:/path\n")
-		os.Exit(1)
-	}
-
-	destIdentifier := parts[0]
-	remotePath := parts[1]
-
 	// Look up remote machine config
 	machines := loadMachinesConfig()
-
-	var remoteUserHost string
-	var remoteMachineID string
-
-	// Check if destIdentifier is a machine-id (in our config) or already user@host
-	if sshHost, exists := machines[destIdentifier]; exists {
-		// It's a machine-id we know about
-		remoteMachineID = destIdentifier
-		remoteUserHost = sshHost
-	} else if strings.Contains(destIdentifier, "@") {
-		// It's already user@host format
-		remoteUserHost = destIdentifier
-		// Try to find the machine ID for this host
+	remoteUserHost, remoteMachineID, remotePath, err := resolveBackupDestination(destLocation, machines)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Available options:\n")
 		for machID, sshHost := range machines {
-			if sshHost == remoteUserHost {
-				remoteMachineID = machID
-				break
+			if !strings.HasPrefix(sshHost, "[removable]") {
+				fmt.Fprintf(os.Stderr, "  - %s (machine-id: %s)\n", sshHost, machID)
 			}
 		}
-	} else {
-		// Try reverse lookup: check if destIdentifier is a known SSH host
-		found := false
-		for machID, sshHost := range machines {
-			if sshHost == destIdentifier {
-				remoteMachineID = machID
-				remoteUserHost = sshHost
-				found = true
-				break
-			}
-		}
-		if !found {
-			fmt.Fprintf(os.Stderr, "Error: '%s' not found in machines.conf\n", destIdentifier)
-			fmt.Fprintf(os.Stderr, "Available options:\n")
-			for machID, sshHost := range machines {
-				if !strings.HasPrefix(sshHost, "[removable]") {
-					fmt.Fprintf(os.Stderr, "  - %s (machine-id: %s)\n", sshHost, machID)
-				}
-			}
-			fmt.Fprintf(os.Stderr, "\nUsage examples:\n")
-			fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max-acb605:/backups\n")
-			fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max:/backups\n")
-			fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
-			os.Exit(1)
-		}
+		fmt.Fprintf(os.Stderr, "\nUsage examples:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max-acb605:/backups\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max:/backups\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
+		os.Exit(1)
 	}
 
 	// Step 2: Create temporary file list for rsync
