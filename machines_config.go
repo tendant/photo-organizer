@@ -200,9 +200,25 @@ func isLinuxRemovable(path string) bool {
 		return false
 	}
 
-	// Find the longest matching mount point for path.
+	dev := mountDeviceForPath(data, path)
+	if dev == "" {
+		return false
+	}
+	devName := blockDeviceName(dev)
+
+	// Check /sys/block/<dev>/removable: "1" means removable.
+	removable, err := os.ReadFile("/sys/block/" + devName + "/removable")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(removable)) == "1"
+}
+
+// mountDeviceForPath returns the device backing the longest mount point (in
+// /proc/mounts-formatted data) that is a prefix of path, or "" if none match.
+func mountDeviceForPath(mountsData []byte, path string) string {
 	bestMount, bestDev := "", ""
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, line := range strings.Split(string(mountsData), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -213,22 +229,17 @@ func isLinuxRemovable(path string) bool {
 			bestDev = dev
 		}
 	}
-	if bestDev == "" {
-		return false
-	}
+	return bestDev
+}
 
-	// Strip partition number to get block device (e.g., /dev/sdb1 → sdb).
-	devName := filepath.Base(bestDev)
-	for len(devName) > 0 && devName[len(devName)-1] >= '0' && devName[len(devName)-1] <= '9' {
-		devName = devName[:len(devName)-1]
+// blockDeviceName reduces a device path to its parent block-device name by
+// dropping the directory and any trailing partition number (/dev/sdb1 → sdb).
+func blockDeviceName(dev string) string {
+	name := filepath.Base(dev)
+	for len(name) > 0 && name[len(name)-1] >= '0' && name[len(name)-1] <= '9' {
+		name = name[:len(name)-1]
 	}
-
-	// Check /sys/block/<dev>/removable: "1" means removable.
-	removable, err := os.ReadFile("/sys/block/" + devName + "/removable")
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(removable)) == "1"
+	return name
 }
 
 // generateMachinesConfWithPaths creates machines.conf from discovered machines and their paths
