@@ -7,7 +7,34 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
+
+// FolderInfo describes one physical copy of a folder found in a manifest.
+type FolderInfo struct {
+	Path        string
+	MachineName string
+	FileCount   int
+	TotalSize   int64
+	FolderHash  string
+}
+
+// distinctDevices counts the distinct non-removable machines a folder's copies
+// live on. Removable media (SD cards, USB) don't count as a durable device, so
+// a folder is only safely archivable when this is >= 2.
+func distinctDevices(folders []*FolderInfo, machinesCfg map[string]string) int {
+	set := make(map[string]bool)
+	for _, f := range folders {
+		if f.MachineName == "" {
+			continue
+		}
+		if strings.Contains(machinesCfg[f.MachineName], "[removable]") {
+			continue
+		}
+		set[f.MachineName] = true
+	}
+	return len(set)
+}
 
 func runFindDuplicateFolders(args []string) {
 	// Convert short flags to long form
@@ -32,6 +59,7 @@ func runFindDuplicateFolders(args []string) {
 	byCountFlag := fs.Bool("by-count", false, "sort by number of copies (most duplicated first)")
 	topFlag := fs.Int("top", 0, "show only top N duplicate folders (0 = all)")
 	minCopiesFlag := fs.Int("min-copies", 0, "only show folders with at least N copies (filter)")
+	minDevicesFlag := fs.Int("min-devices", 0, "only show folders present on at least N distinct non-removable devices (archivable filter)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer dup-folders [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Find duplicate folders (entire directories with identical contents).\n")
@@ -42,6 +70,8 @@ func runFindDuplicateFolders(args []string) {
 		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders --top 20 -s\n\n")
 		fmt.Fprintf(os.Stderr, "Top 20 by size, only folders with 3+ copies:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders --top 20 -s --min-copies 3\n\n")
+		fmt.Fprintf(os.Stderr, "Only folders safely archivable (on 2+ durable devices):\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders -s --min-devices 2\n\n")
 		fmt.Fprintf(os.Stderr, "Most duplicated folders (sorted by copy count):\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders --by-count -s\n\n")
 		fmt.Fprintf(os.Stderr, "Find duplicate folders on specific machine:\n")
@@ -81,15 +111,10 @@ func runFindDuplicateFolders(args []string) {
 
 	fmt.Fprintf(os.Stderr, "Using manifest data from %d manifest(s)...\n\n", len(sources))
 
-	// Group files by folder, calculate folder hash
-	type FolderInfo struct {
-		Path        string
-		MachineName string
-		FileCount   int
-		TotalSize   int64
-		FolderHash  string
-	}
+	// Config lets us tell durable machines from removable media (SD/USB).
+	machinesConfig := loadMachinesConfig()
 
+	// Group files by folder, calculate folder hash
 	folderHashes := make(map[string]*FolderInfo) // folder path -> info
 	filesByFolder := make(map[string][]string)   // folder path -> list of file hashes
 
@@ -191,14 +216,18 @@ func runFindDuplicateFolders(args []string) {
 		})
 	}
 
-	// Filter by minimum copies if specified
+	// Filter by minimum copies and/or minimum distinct devices if specified.
 	filteredDuplicates := duplicates
-	if *minCopiesFlag > 0 {
+	if *minCopiesFlag > 0 || *minDevicesFlag > 0 {
 		var filtered []DupFolderGroup
 		for _, dup := range duplicates {
-			if len(dup.Folders) >= *minCopiesFlag {
-				filtered = append(filtered, dup)
+			if *minCopiesFlag > 0 && len(dup.Folders) < *minCopiesFlag {
+				continue
 			}
+			if *minDevicesFlag > 0 && distinctDevices(dup.Folders, machinesConfig) < *minDevicesFlag {
+				continue
+			}
+			filtered = append(filtered, dup)
 		}
 		filteredDuplicates = filtered
 	}
@@ -224,19 +253,19 @@ func runFindDuplicateFolders(args []string) {
 			fmt.Printf("\n")
 		}
 		fmt.Printf("Total wasted space: %s\n\n", formatBytes(totalWasted))
-		fmt.Printf("%-4s %-8s %-12s %-12s %s\n", "Rank", "Copies", "Size/copy", "Wasted", "Machines")
-		fmt.Printf("%-4s %-8s %-12s %-12s %s\n", "----", "------", "---------", "-------", "--------")
+		fmt.Printf("%-4s %-7s %-8s %-12s %-12s %s\n", "Rank", "Copies", "Devices", "Size/copy", "Wasted", "Archive?")
+		fmt.Printf("%-4s %-7s %-8s %-12s %-12s %s\n", "----", "------", "-------", "---------", "-------", "--------")
 		for i, dup := range displayDuplicates {
-			// Count unique machines for this folder
-			machineSet := make(map[string]bool)
-			for _, folder := range dup.Folders {
-				machineSet[folder.MachineName] = true
+			devices := distinctDevices(dup.Folders, machinesConfig)
+			archive := "no (1 device)"
+			if devices >= 2 {
+				archive = "yes"
 			}
-			machineCount := len(machineSet)
-			fmt.Printf("%-4d %-8d %-12s %-12s %d\n",
-				i+1, len(dup.Folders), formatBytes(dup.Folders[0].TotalSize),
-				formatBytes(dup.TotalWasted), machineCount)
+			fmt.Printf("%-4d %-7d %-8d %-12s %-12s %s\n",
+				i+1, len(dup.Folders), devices, formatBytes(dup.Folders[0].TotalSize),
+				formatBytes(dup.TotalWasted), archive)
 		}
+		fmt.Printf("\n\"Devices\" counts distinct non-removable machines; archive only when >= 2.\n")
 		return
 	}
 
@@ -257,9 +286,14 @@ func runFindDuplicateFolders(args []string) {
 	fmt.Printf("Total wasted space: %s\n\n", formatBytes(totalWasted))
 
 	for i, dup := range displayDuplicates {
-		fmt.Printf("Duplicate Folder Group %d: %d copies (%s each, %s wasted)\n",
+		devices := distinctDevices(dup.Folders, machinesConfig)
+		verdict := "KEEP — only on 1 durable device, archiving would lose redundancy"
+		if devices >= 2 {
+			verdict = fmt.Sprintf("ARCHIVABLE — on %d durable devices, one copy can be archived", devices)
+		}
+		fmt.Printf("Duplicate Folder Group %d: %d copies (%s each, %s wasted) — %s\n",
 			i+1, len(dup.Folders), formatBytes(dup.Folders[0].TotalSize),
-			formatBytes(dup.TotalWasted))
+			formatBytes(dup.TotalWasted), verdict)
 		// Sort folders by machine first, then by path for consistent output
 		sortedFolders := make([]*FolderInfo, len(dup.Folders))
 		copy(sortedFolders, dup.Folders)

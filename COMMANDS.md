@@ -39,9 +39,12 @@ Find duplicate or highly overlapping folders.
 photo-organizer dup-folders
 photo-organizer dup-folders --top 20
 photo-organizer dup-folders -s
+photo-organizer dup-folders -s --min-devices 2   # only folders safe to archive
 ```
 
 Use this before manual cleanup; it is usually easier to review whole-folder overlap than individual files.
+
+The summary shows a **Devices** count (distinct non-removable machines a folder lives on) and an **Archive?** verdict: a folder is only safe to archive when it exists on **2+ durable devices**, so archiving one copy still leaves redundancy. Removable media (SD cards, USB) is never counted as a device. Use `--min-devices N` to list only folders you can safely archive while staying on at least N devices, and `--min-copies N` to filter by raw copy count.
 
 ### storage-status
 Show storage breakdown by machine, device, and backup state.
