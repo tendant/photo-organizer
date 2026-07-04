@@ -642,6 +642,15 @@ func TestCheckDirReadable(t *testing.T) {
 	if check.Error == "" {
 		t.Error("CheckDirReadable should provide error message")
 	}
+
+	// A file path is readable but not a directory.
+	file := tempDir + "/f.txt"
+	if err := os.WriteFile(file, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if check = CheckDirReadable(file, "file as dir"); check.Pass || check.Error != "is not a directory" {
+		t.Errorf("CheckDirReadable on a file = %+v, want fail/is-not-a-directory", check)
+	}
 }
 
 func TestCheckFileReadable(t *testing.T) {
@@ -685,6 +694,21 @@ func TestCheckDiskSpace(t *testing.T) {
 	check = CheckDiskSpace(tempDir, 1<<50) // 1PB
 	if check.Pass {
 		t.Logf("Warning: CheckDiskSpace passed for 1PB (system has lots of space)")
+	}
+
+	// Zero/negative need short-circuits to pass without touching disk.
+	if check = CheckDiskSpace(tempDir, 0); !check.Pass {
+		t.Errorf("zero need should pass: %+v", check)
+	}
+
+	// A need smaller than the 1MB probe exercises the clamp branch.
+	if check = CheckDiskSpace(tempDir, 10); !check.Pass {
+		t.Errorf("small need in writable dir should pass: %+v", check)
+	}
+
+	// Un-writable destination fails.
+	if check = CheckDiskSpace(tempDir+"/nope", 1024); check.Pass {
+		t.Errorf("non-existent dir should fail: %+v", check)
 	}
 }
 
