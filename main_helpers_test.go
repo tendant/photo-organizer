@@ -306,3 +306,39 @@ func TestRunManifestsCleanupNone(t *testing.T) {
 		t.Errorf("expected nothing-to-clean message, got:\n%s", out)
 	}
 }
+
+func TestRunManifestsSourceCategories(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "manifests", "_Manifest")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Fix machineID so a manifest can be recognized as local.
+	if err := os.WriteFile(filepath.Join(home, "manifests", "machine-id"), []byte("testhost\n"), 0o600); err != nil {
+		t.Fatalf("write machine-id: %v", err)
+	}
+
+	// Local: machine matches machineID, scan path exists (non-removable).
+	writeSearchManifest(t, filepath.Join(dir, "local.csv"), []searchRow{
+		{"testhost", home, "a.jpg", "p1", "h1", "2026-07-01", 100},
+	})
+	// Removable: scan path under /Volumes.
+	writeSearchManifest(t, filepath.Join(dir, "cam.csv"), []searchRow{
+		{"cam", "/Volumes/USB", "b.jpg", "p2", "h2", "2026-07-01", 200},
+	})
+	// Empty: header only, zero rows.
+	writeSearchManifest(t, filepath.Join(dir, "empty.csv"), nil)
+
+	out := captureBoth(t, func() { runManifests(nil) })
+	for _, w := range []string{
+		"LOCAL MANIFESTS",
+		"REMOVABLE MEDIA",
+		"EMPTY MANIFESTS",
+		"1 local, 1 removable, 0 remote, 1 empty",
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("categorized listing missing %q\n---\n%s", w, out)
+		}
+	}
+}

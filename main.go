@@ -2135,7 +2135,7 @@ func runManifests(args []string) {
 				filename := filepath.Base(src.FilePath)
 				pathEncoded := strings.TrimSuffix(filename, ".csv")
 				pathEncoded = strings.TrimPrefix(pathEncoded, "photo_manifest_")
-				if idx := strings.Index(pathEncoded, src.MachineName); idx == 0 {
+				if idx := strings.Index(pathEncoded, src.MachineName); idx == 0 && len(pathEncoded) > len(src.MachineName) {
 					pathEncoded = pathEncoded[len(src.MachineName)+1:]
 					scanPath = "/" + strings.ReplaceAll(pathEncoded, "_", "/")
 				}
