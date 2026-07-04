@@ -46,11 +46,6 @@ type ManifestSource struct {
 	Origin      string // "local" or "remote" for display
 }
 
-type StaleManifestReport struct {
-	StaleCount int
-	Details    []string // Human-readable details
-}
-
 type DuplicateGroup struct {
 	PartialHash string
 	FullHash    string // non-empty = confirmed via full-file hash

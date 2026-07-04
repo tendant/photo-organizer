@@ -255,34 +255,3 @@ func deleteStaleManiests(machine, target, localDir string) {
 		}
 	}
 }
-
-// mergeMachinesConfig merges remote config into local config, preserving remote-only entries.
-// Returns the merged config, counts of added/updated/preserved entries, and list of conflicts.
-func mergeMachinesConfig(local, remote map[string]string) (map[string]string, int, int, int) {
-	merged := make(map[string]string)
-	var added, updated, preserved int
-
-	// Copy all remote entries initially
-	for k, v := range remote {
-		merged[k] = v
-	}
-
-	// Local entries override remote entries
-	for k, v := range local {
-		if _, exists := remote[k]; exists && remote[k] != v {
-			updated++
-		} else if !exists {
-			added++
-		}
-		merged[k] = v
-	}
-
-	// Count preserved remote-only entries
-	for k := range remote {
-		if _, inLocal := local[k]; !inLocal {
-			preserved++
-		}
-	}
-
-	return merged, added, updated, preserved
-}

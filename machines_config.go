@@ -10,20 +10,6 @@ import (
 	"strings"
 )
 
-func isRemoteMachine(machineName string) bool {
-	// If machine name looks like a remote identifier (not localhost-like),
-	// it's probably remote. Common patterns:
-	// - ubuntu-max-acb605 (remote)
-	// - ubuntu-nas-f7e184 (remote)
-	// - Ls-MBP-967e82 (local)
-	// - Sony-A7IV-... (local device)
-	// For simplicity: if it contains "ubuntu-" or starts with a known remote prefix, it's remote
-	isKnownRemote := strings.HasPrefix(machineName, "ubuntu-") ||
-		strings.HasPrefix(machineName, "backup-") ||
-		(strings.Contains(machineName, "-") && len(machineName) > 20) // Random identifiers
-	return isKnownRemote
-}
-
 // machineInfo holds metadata about a discovered machine
 type machineInfo struct {
 	name      string
