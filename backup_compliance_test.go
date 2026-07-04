@@ -203,10 +203,10 @@ func TestPrintBackupComplianceReport(t *testing.T) {
 		"SAFE TO DELETE",
 		"RISKY",
 		"CRITICAL",
-		"safe0.jpg",   // sample safe file
-		"and 1 more",  // 6 safe files -> 5 shown + 1 more
-		"risky.jpg",   // sample risky file
-		"crit.jpg",    // sample critical file
+		"safe0.jpg",  // sample safe file
+		"and 1 more", // 6 safe files -> 5 shown + 1 more
+		"risky.jpg",  // sample risky file
+		"crit.jpg",   // sample critical file
 	}
 	for _, w := range wants {
 		if !strings.Contains(out, w) {
@@ -374,6 +374,116 @@ func TestCheckFolderBackupRemovableDoesNotCount(t *testing.T) {
 	}
 	if len(result.SafelyBackedUp)+len(result.AtRisk) != 0 {
 		t.Error("removable-only copy should not be counted as backed up")
+	}
+}
+
+// srcRow builds a single-row ManifestSource for a given (machine, scanPath) that
+// references one file. Used to drive checkFolderBackup's per-machine dedup logic.
+func srcRow(machine, scanPath, rel, hash string, size int64) ManifestSource {
+	return ManifestSource{
+		MachineName: machine,
+		ScanPath:    scanPath,
+		Label:       machine + " @ " + scanPath,
+		Rows: []ManifestRow{{
+			Filename:     rel,
+			RelativePath: rel,
+			SizeBytes:    size,
+			PartialHash:  hash,
+			FullHash:     hash,
+			Extension:    ".jpg",
+			ScanPath:     scanPath,
+			MachineName:  machine,
+		}},
+	}
+}
+
+// runCheckFolderBackup writes one file "a.jpg" into a temp folder, then runs
+// checkFolderBackup against manifests built from that file's real hash/size.
+func runCheckFolderBackup(t *testing.T, content string, build func(hash string, size int64) []ManifestSource) BackupCheckResult {
+	t.Helper()
+	folder := t.TempDir()
+	path := filepath.Join(folder, "a.jpg")
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	hash, _ := processFile(path)
+	info, _ := os.Stat(path)
+	sources := build(hash, info.Size())
+	idx := buildHashIndex(sources)
+	return checkFolderBackup(folder, sources, idx, "localmac")
+}
+
+// The same physical file scanned under both a broad manifest and a nested child
+// manifest on one machine must count as a single backup location, not two.
+func TestCheckFolderBackupOverlappingManifestsDedup(t *testing.T) {
+	result := runCheckFolderBackup(t, "trip-photo", func(h string, s int64) []ManifestSource {
+		return []ManifestSource{
+			srcRow("nas", "/photos", "Trip/a.jpg", h, s), // broader scan
+			srcRow("nas", "/photos/Trip", "a.jpg", h, s), // nested child scan
+		}
+	})
+
+	if len(result.SafelyBackedUp) != 0 {
+		t.Errorf("SafelyBackedUp = %d, want 0 (overlapping scans are one machine)", len(result.SafelyBackedUp))
+	}
+	if len(result.AtRisk) != 1 {
+		t.Fatalf("AtRisk = %d, want 1", len(result.AtRisk))
+	}
+	if result.AtRisk[0].Locations != 1 {
+		t.Errorf("Locations = %d, want 1 (single machine counted once)", result.AtRisk[0].Locations)
+	}
+}
+
+// When a machine has the file under two non-overlapping paths, the dedup tie-break
+// prefers the path whose name embeds the machine id (media-id convention).
+func TestCheckFolderBackupPrefersMediaIdPath(t *testing.T) {
+	result := runCheckFolderBackup(t, "beast-photo", func(h string, s int64) []ManifestSource {
+		return []ManifestSource{
+			srcRow("beast", "/photos", "a.jpg", h, s),            // no machine id in path
+			srcRow("beast", "/tank/beast_mirror", "a.jpg", h, s), // machine id in path — preferred
+		}
+	})
+
+	if len(result.AtRisk) != 1 {
+		t.Fatalf("AtRisk = %d, want 1", len(result.AtRisk))
+	}
+	if got := result.AtRisk[0].LocationDetails; len(got) != 1 || got[0] != "beast @ /tank/beast_mirror" {
+		t.Errorf("LocationDetails = %v, want [beast @ /tank/beast_mirror]", got)
+	}
+}
+
+// If the current best already embeds the machine id, a later plain path must not
+// displace it (the !hasMediaId && bestHasMediaId keep-best arm).
+func TestCheckFolderBackupKeepsMediaIdBest(t *testing.T) {
+	result := runCheckFolderBackup(t, "keeper-photo", func(h string, s int64) []ManifestSource {
+		return []ManifestSource{
+			srcRow("keeper", "/keeper_primary", "a.jpg", h, s), // machine id — should stay best
+			srcRow("keeper", "/photos", "a.jpg", h, s),         // plain path
+		}
+	})
+
+	if len(result.AtRisk) != 1 {
+		t.Fatalf("AtRisk = %d, want 1", len(result.AtRisk))
+	}
+	if got := result.AtRisk[0].LocationDetails; len(got) != 1 || got[0] != "keeper @ /keeper_primary" {
+		t.Errorf("LocationDetails = %v, want [keeper @ /keeper_primary]", got)
+	}
+}
+
+// With neither path embedding the machine id, the longer (more specific) path wins.
+func TestCheckFolderBackupPrefersLongerPath(t *testing.T) {
+	result := runCheckFolderBackup(t, "plain-photo", func(h string, s int64) []ManifestSource {
+		return []ManifestSource{
+			srcRow("plain", "/a", "a.jpg", h, s),             // short path
+			srcRow("plain", "/bb/ccc/photos", "a.jpg", h, s), // longer path — preferred
+		}
+	})
+
+	if len(result.AtRisk) != 1 {
+		t.Fatalf("AtRisk = %d, want 1", len(result.AtRisk))
+	}
+	if got := result.AtRisk[0].LocationDetails; len(got) != 1 || got[0] != "plain @ /bb/ccc/photos" {
+		t.Errorf("LocationDetails = %v, want [plain @ /bb/ccc/photos]", got)
 	}
 }
 
