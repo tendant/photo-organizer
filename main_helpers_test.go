@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,5 +173,136 @@ func TestRunManifestsNoManifests(t *testing.T) {
 	out := captureStderr(t, func() { runManifests(nil) })
 	if !strings.Contains(out, "No manifests found") {
 		t.Errorf("expected no-manifests message, got:\n%s", out)
+	}
+}
+
+// withStdin redirects os.Stdin to feed input to functions that read from it.
+func withStdin(t *testing.T, input string, fn func()) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = orig; r.Close() }()
+	go func() { io.WriteString(w, input); w.Close() }()
+	fn()
+}
+
+// captureBoth captures stdout and stderr for one call (runManifests writes to both).
+func captureBoth(t *testing.T, fn func()) string {
+	t.Helper()
+	var errStr string
+	out := captureStdout(t, func() { errStr = captureStderr(t, fn) })
+	return out + errStr
+}
+
+// seedExistingManifest writes a manifest whose scan_path exists, so it is not
+// treated as stalled.
+func seedExistingManifest(t *testing.T, home string) {
+	t.Helper()
+	dir := filepath.Join(home, "manifests", "_Manifest")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeSearchManifest(t, filepath.Join(dir, "local.csv"), []searchRow{
+		{"local", home, "a.jpg", "p1", "h1", "2026-07-01", 100},
+	})
+}
+
+func manifestFileCount(t *testing.T, home string) int {
+	t.Helper()
+	m, _ := filepath.Glob(filepath.Join(home, "manifests", "_Manifest", "*.csv"))
+	return len(m)
+}
+
+// =============================================================================
+// runManifests flag paths
+// =============================================================================
+
+func TestRunManifestsRemove(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedManifests(t, home) // mac.csv (/Photos), nas.csv (/vol1)
+
+	// Matching scan path removes exactly that manifest.
+	out := captureBoth(t, func() { runManifests([]string{"--remove", "/Photos"}) })
+	if !strings.Contains(out, "Removed manifest") {
+		t.Errorf("expected removal message, got:\n%s", out)
+	}
+	if n := manifestFileCount(t, home); n != 1 {
+		t.Errorf("remaining manifests = %d, want 1 (nas kept)", n)
+	}
+
+	// No match reports nothing removed.
+	out = captureBoth(t, func() { runManifests([]string{"--remove", "/nowhere"}) })
+	if !strings.Contains(out, "No manifest found for") {
+		t.Errorf("expected no-match message, got:\n%s", out)
+	}
+}
+
+func TestRunManifestsStalled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedManifests(t, home) // /Photos and /vol1 don't exist -> stalled
+
+	out := captureBoth(t, func() { runManifests([]string{"--stalled"}) })
+	if !strings.Contains(out, "STALLED MANIFESTS") || !strings.Contains(out, "mac.csv") {
+		t.Errorf("expected stalled listing, got:\n%s", out)
+	}
+}
+
+func TestRunManifestsStalledNone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedExistingManifest(t, home) // scan path exists -> not stalled
+
+	out := captureBoth(t, func() { runManifests([]string{"--stalled"}) })
+	if !strings.Contains(out, "No stalled manifests found") {
+		t.Errorf("expected no-stalled message, got:\n%s", out)
+	}
+}
+
+func TestRunManifestsCleanupConfirm(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedManifests(t, home) // stalled
+
+	out := captureBoth(t, func() {
+		withStdin(t, "y\n", func() { runManifests([]string{"--cleanup"}) })
+	})
+	if !strings.Contains(out, "Removed 2 stalled manifest(s)") {
+		t.Errorf("expected 2 removed, got:\n%s", out)
+	}
+	if n := manifestFileCount(t, home); n != 0 {
+		t.Errorf("remaining manifests = %d, want 0", n)
+	}
+}
+
+func TestRunManifestsCleanupDecline(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedManifests(t, home) // stalled
+
+	out := captureBoth(t, func() {
+		withStdin(t, "n\n", func() { runManifests([]string{"--cleanup"}) })
+	})
+	if !strings.Contains(out, "Cancelled") {
+		t.Errorf("expected cancellation, got:\n%s", out)
+	}
+	if n := manifestFileCount(t, home); n != 2 {
+		t.Errorf("declining cleanup should keep all manifests, got %d", n)
+	}
+}
+
+func TestRunManifestsCleanupNone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedExistingManifest(t, home) // not stalled
+
+	out := captureBoth(t, func() { runManifests([]string{"--cleanup"}) })
+	if !strings.Contains(out, "No stalled manifests to clean up") {
+		t.Errorf("expected nothing-to-clean message, got:\n%s", out)
 	}
 }
