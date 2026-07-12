@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/md5"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -52,7 +53,7 @@ func runFindDuplicateFolders(args []string) error {
 		}
 	}
 
-	fs := flag.NewFlagSet("dup-folders", flag.ExitOnError)
+	fs := flag.NewFlagSet("dup-folders", flag.ContinueOnError)
 	machineFlag := fs.String("machine", "", "find duplicates in manifest from specific machine")
 	summaryFlag := fs.Bool("summary", false, "show summary only")
 	byCountFlag := fs.Bool("by-count", false, "sort by number of copies (most duplicated first)")
@@ -79,7 +80,12 @@ func runFindDuplicateFolders(args []string) error {
 		fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders -s\n\n")
 		fs.PrintDefaults()
 	}
-	fs.Parse(processedArgs)
+	if err := fs.Parse(processedArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil // help requested and printed; not a failure
+		}
+		return errFailed // flag package already printed the error and usage
+	}
 
 	// Load all manifests
 	manifestRoot := defaultManifestRoot()

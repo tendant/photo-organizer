@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -755,7 +756,7 @@ func runAnalyze(args []string) error {
 		}
 	}
 
-	fs := flag.NewFlagSet("analyze", flag.ExitOnError)
+	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
 	csvPrefix := fs.String("csv", "", "write CSV output files with this filename prefix")
 	threshold := fs.Float64("threshold", 0.9, "folder coverage fraction to flag as nearly-redundant (e.g. 0.9 = 90%)")
 	topN := fs.Int("top", 0, "show only top N most duplicated folders (0 = all)")
@@ -763,7 +764,12 @@ func runAnalyze(args []string) error {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer dups [--csv prefix] [--threshold 0.9] [--top N] [manifest1.csv ...]\n")
 		fs.PrintDefaults()
 	}
-	fs.Parse(flagArgs)
+	if err := fs.Parse(flagArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil // help requested and printed; not a failure
+		}
+		return errFailed // flag package already printed the error and usage
+	}
 
 	manifestPaths := posArgs
 	if len(manifestPaths) == 0 {

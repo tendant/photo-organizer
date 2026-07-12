@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -31,7 +32,7 @@ func runScan(args []string) error {
 		}
 	}
 
-	fs := flag.NewFlagSet("scan", flag.ExitOnError)
+	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "where to write the manifest (default: ~/manifests)")
 	machineFlag := fs.String("machine", "", "machine label embedded in manifest (default: stable machine ID)")
 	mediaIDFlag := fs.String("media-id", "", "stable identifier for removable media (same across different machines)")
@@ -43,7 +44,12 @@ func runScan(args []string) error {
 	detectOnlyFlag := fs.Bool("detect-only", false, "with --auto-identify-folders: show detection results and exit without scanning")
 	noReportFlag := fs.Bool("no-report", false, "skip file type coverage report (usually shown before scanning)")
 	fs.Usage = printUsage
-	fs.Parse(flagArgs)
+	if err := fs.Parse(flagArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil // help requested and printed; not a failure
+		}
+		return errFailed // flag package already printed the error and usage
+	}
 
 	// Resolve machine name (priority: flag > ./machine-id > ~/manifests/machine-id)
 	machineName := resolveMachineID(*machineFlag)

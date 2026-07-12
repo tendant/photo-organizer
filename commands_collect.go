@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -21,7 +22,7 @@ func runCollect(args []string) error {
 	fromMachines := parsed.FromMachines
 	remaining := parsed.Remaining
 
-	fs := flag.NewFlagSet("collect", flag.ExitOnError)
+	fs := flag.NewFlagSet("collect", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "local manifest directory (default: ~/manifests)")
 	addFlag := fs.String("add", "", "register a new machine: --add machine_id=user@host")
 	listFlag := fs.Bool("list", false, "list configured machines")
@@ -43,7 +44,12 @@ func runCollect(args []string) error {
 		fmt.Fprintf(os.Stderr, "  photo-organizer collect -l\n\n")
 		fs.PrintDefaults()
 	}
-	fs.Parse(remaining)
+	if err := fs.Parse(remaining); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil // help requested and printed; not a failure
+		}
+		return errFailed // flag package already printed the error and usage
+	}
 
 	cfg := loadMachinesConfig()
 

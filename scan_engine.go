@@ -260,10 +260,7 @@ func shouldSkipFile(path string) bool {
 		return true
 	}
 	normPath := filepath.ToSlash(path)
-	if strings.Contains(normPath, "/.stfolder/") {
-		return true
-	}
-	return false
+	return strings.Contains(normPath, "/.stfolder/")
 }
 
 func formatBytes(b int64) string {
