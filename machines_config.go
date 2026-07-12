@@ -157,6 +157,23 @@ func runMachines(args []string) {
 
 // isRemovableMedia asks the OS whether the filesystem at path is removable.
 // On macOS: uses diskutil info to check "Removable Media: Removable" or "Ejectable: Yes".
+// isRemovableSource reports whether a manifest source lives on removable media
+// (SD card, USB drive) rather than a durable device.
+//
+// The machines.conf entry is authoritative when present: a "[removable]" tag
+// means removable, and any other entry (an SSH target or "[local]") means
+// durable. Machines with no config entry fall back to the scan-path heuristic.
+//
+// This is the analysis-side predicate for classifying manifests from any
+// machine. It is distinct from isRemovableMedia below, which queries the OS
+// about a locally mounted path at scan time.
+func isRemovableSource(machineName, scanPath string, cfg map[string]string) bool {
+	if entry := cfg[machineName]; entry != "" {
+		return strings.Contains(entry, "[removable]")
+	}
+	return isRemovablePath(scanPath)
+}
+
 // On Linux: resolves the mount device via /proc/mounts, then checks /sys/block/<dev>/removable.
 // Falls back to false (no warning) if detection fails — better a missed warning than a false one.
 func isRemovableMedia(path string) bool {

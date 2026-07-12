@@ -16,13 +16,40 @@ func TestDistinctDevices(t *testing.T) {
 		{MachineName: "mac"},
 		{MachineName: "mac"}, // same machine, counted once
 		{MachineName: "nas"},
-		{MachineName: "cam"}, // removable — excluded
+		{MachineName: "cam"}, // removable by config tag — excluded
 		{MachineName: ""},    // unknown — excluded
 	}
 	cfg := map[string]string{"cam": "[removable] scanned from: /Volumes/USB"}
 
 	if got := distinctDevices(folders, cfg); got != 2 {
 		t.Errorf("distinctDevices = %d, want 2 (mac, nas; cam removable, blank skipped)", got)
+	}
+
+	// Untagged machine on a removable-looking path is excluded via the
+	// path-heuristic fallback (previously it counted as a durable device).
+	withUntagged := append(folders, &FolderInfo{MachineName: "usbstick", Path: "/Volumes/Stick/DCIM"})
+	if got := distinctDevices(withUntagged, cfg); got != 2 {
+		t.Errorf("distinctDevices with untagged /Volumes machine = %d, want 2", got)
+	}
+}
+
+func TestMachineDisplayLabel(t *testing.T) {
+	cfg := map[string]string{
+		"sdcard": "[removable] scanned from: /Volumes/Untitled",
+		"nas":    "admin@nas.local:/mnt/backup",
+	}
+	tests := []struct {
+		machine, scanPath, want string
+	}{
+		{"sdcard", "/Volumes/Untitled", "📷 sdcard"},
+		{"nas", "/mnt/backup", "🌐 nas"},
+		{"laptop", "/home/user/photos", "💻 laptop"}, // unknown durable path
+		{"stick", "/Volumes/Stick", "📷 stick"},      // unknown removable path via heuristic
+	}
+	for _, tt := range tests {
+		if got := machineDisplayLabel(tt.machine, tt.scanPath, cfg); got != tt.want {
+			t.Errorf("machineDisplayLabel(%q, %q) = %q, want %q", tt.machine, tt.scanPath, got, tt.want)
+		}
 	}
 }
 

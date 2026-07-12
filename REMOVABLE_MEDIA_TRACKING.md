@@ -2,6 +2,15 @@
 
 Photo Organizer tracks removable media best when each card or drive has a stable ID.
 
+## How A Source Is Classified
+
+All analysis commands (`check-backup`, `storage-status`, `storage-plan`, `dup-folders`, `manifests`, `backup-missing`) share one rule for deciding whether a manifest source is removable media or a durable device:
+
+1. **machines.conf is authoritative.** A `[removable]` tag means removable; any other entry (an SSH target or `[local]`) means durable — even if the scan path looks like a removable mount (e.g. a NAS mounted under `/Volumes`).
+2. **Unknown machines fall back to the scan path.** Paths under `/Volumes`, `/mnt`, `/media`, etc. are treated as removable.
+
+Removable media never counts as a backup copy. To make sure a NAS or external RAID mounted under `/Volumes` is treated as durable, give it an entry in `machines.conf`.
+
 ## Stable IDs
 
 Use `--media-id` whenever the same card may mount at different paths:

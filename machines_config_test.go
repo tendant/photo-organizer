@@ -54,6 +54,45 @@ proc /proc proc rw 0 0
 }
 
 // =============================================================================
+// isRemovableSource — config tag is authoritative, path heuristic is fallback
+// =============================================================================
+
+func TestIsRemovableSource(t *testing.T) {
+	cfg := map[string]string{
+		"sdcard": "[removable] scanned from: /Volumes/Untitled",
+		"nas":    "admin@nas.local:/mnt/backup", // SSH target -> durable
+		"mac":    "[local] scanned from: /Users/x/Photos",
+	}
+	tests := []struct {
+		name, machine, scanPath string
+		want                    bool
+	}{
+		// Config tag wins over the path heuristic — in both directions.
+		{"tagged removable, durable-looking path", "sdcard", "/home/user/photos", true},
+		{"ssh target, removable-looking path", "nas", "/Volumes/nas-mount", false},
+		{"local tag, removable-looking path", "mac", "/Volumes/TimeMachine", false},
+		// No config entry -> path heuristic decides.
+		{"unknown machine, /Volumes path", "cam", "/Volumes/USB", true},
+		{"unknown machine, home path", "laptop", "/home/user/photos", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRemovableSource(tt.machine, tt.scanPath, cfg); got != tt.want {
+				t.Errorf("isRemovableSource(%q, %q) = %v, want %v", tt.machine, tt.scanPath, got, tt.want)
+			}
+		})
+	}
+
+	// Nil config degrades to the pure heuristic.
+	if !isRemovableSource("x", "/Volumes/USB", nil) {
+		t.Error("nil config with removable path should be removable")
+	}
+	if isRemovableSource("x", "/data/photos", nil) {
+		t.Error("nil config with durable path should not be removable")
+	}
+}
+
+// =============================================================================
 // OS-integration contract: unknown paths are never flagged removable
 // =============================================================================
 

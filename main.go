@@ -1816,6 +1816,9 @@ func runBackupMissing(args []string) {
 	// Build hash index
 	idx := buildHashIndex(sources)
 
+	// Config distinguishes durable machines from removable media
+	machinesCfg := loadMachinesConfig()
+
 	// Find missing files (files without non-removable backups)
 	var missingFiles []string
 	var missingCount int
@@ -1842,7 +1845,7 @@ func runBackupMissing(args []string) {
 			return nil
 		}
 
-		if !hasIndependentBackup(sources, idx, localMachineID, partialHash, info.Size()) {
+		if !hasIndependentBackup(sources, idx, machinesCfg, localMachineID, partialHash, info.Size()) {
 			// This file needs backing up
 			relPath, _ := filepath.Rel(absSourceFolder, path)
 			missingFiles = append(missingFiles, relPath)
@@ -2076,11 +2079,12 @@ func runManifests(args []string) {
 	})
 
 	// Separate into local, removable, and remote (excluding empty)
+	machinesCfg := loadMachinesConfig()
 	var localSources, removableSources, remoteSources, emptySources []ManifestSource
 	for _, src := range sources {
 		if len(src.Rows) == 0 {
 			emptySources = append(emptySources, src)
-		} else if isRemovablePath(src.ScanPath) {
+		} else if isRemovableSource(src.MachineName, src.ScanPath, machinesCfg) {
 			// Check removable path first (USB, SD cards, external drives)
 			removableSources = append(removableSources, src)
 		} else if src.IsLocal {
@@ -2145,7 +2149,7 @@ func runManifests(args []string) {
 			if src.IsLocal {
 				originMark = "💻 lcl"
 			}
-			if isRemovablePath(src.ScanPath) {
+			if isRemovableSource(src.MachineName, src.ScanPath, machinesCfg) {
 				originMark = "💾 rem"
 			}
 
@@ -2162,7 +2166,7 @@ func runManifests(args []string) {
 	for _, src := range sources {
 		if len(src.Rows) == 0 {
 			emptyCount++
-		} else if isRemovablePath(src.ScanPath) {
+		} else if isRemovableSource(src.MachineName, src.ScanPath, machinesCfg) {
 			removableCount++
 		} else if src.IsLocal {
 			localCount++

@@ -113,8 +113,9 @@ func runBackup(args []string) {
 
 	// Backup each file
 	fmt.Printf("Backing up files...\n")
+	machinesCfg := loadMachinesConfig()
 	for i, row := range manifest.Rows {
-		if newOnlyFlag && hasIndependentBackup(sources, idx, manifest.MachineName, row.PartialHash, row.SizeBytes) {
+		if newOnlyFlag && hasIndependentBackup(sources, idx, machinesCfg, manifest.MachineName, row.PartialHash, row.SizeBytes) {
 			filesSkipped++
 			continue
 		}

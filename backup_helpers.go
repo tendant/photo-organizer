@@ -64,14 +64,14 @@ func findManifestForScanPath(absPath string) (ManifestSource, bool) {
 	return ManifestSource{}, false
 }
 
-func hasIndependentBackup(sources []ManifestSource, idx map[string][]hashLocation, machineName, partialHash string, sizeBytes int64) bool {
+func hasIndependentBackup(sources []ManifestSource, idx map[string][]hashLocation, machinesCfg map[string]string, machineName, partialHash string, sizeBytes int64) bool {
 	locs := idx[indexKey(partialHash, sizeBytes)]
 	for _, loc := range locs {
 		src := sources[loc.sourceIdx]
 		if src.MachineName == machineName {
 			continue
 		}
-		if isRemovablePath(src.ScanPath) {
+		if isRemovableSource(src.MachineName, src.ScanPath, machinesCfg) {
 			continue
 		}
 		return true

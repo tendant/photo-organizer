@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 )
 
 // FolderInfo describes one physical copy of a folder found in a manifest.
@@ -28,7 +27,7 @@ func distinctDevices(folders []*FolderInfo, machinesCfg map[string]string) int {
 		if f.MachineName == "" {
 			continue
 		}
-		if strings.Contains(machinesCfg[f.MachineName], "[removable]") {
+		if isRemovableSource(f.MachineName, f.Path, machinesCfg) {
 			continue
 		}
 		set[f.MachineName] = true

@@ -135,8 +135,17 @@ func runStorageStatus(args []string) {
 		stats := machineStats[machine]
 		config := machinesConfig[machine]
 
+		// Any scan path of this machine is representative for the removable check.
+		var machineScanPath string
+		for _, dev := range stats.Devices {
+			if len(dev.ScanPaths) > 0 {
+				machineScanPath = dev.ScanPaths[0]
+				break
+			}
+		}
+
 		// Print machine with type info
-		if strings.Contains(config, "[removable]") {
+		if isRemovableSource(machine, machineScanPath, machinesConfig) {
 			deviceInfo := extractDeviceInfo(config)
 			fmt.Printf("📷 REMOVABLE: %s\n", machine)
 			if deviceInfo != "" {
@@ -196,6 +205,20 @@ func runStorageStatus(args []string) {
 	fmt.Printf("\n")
 }
 
+// machineDisplayLabel prefixes a machine name with its device-type icon:
+// 📷 removable media, 🌐 remote (SSH target), 💻 local.
+func machineDisplayLabel(machine, scanPath string, cfg map[string]string) string {
+	entry := cfg[machine]
+	switch {
+	case isRemovableSource(machine, scanPath, cfg):
+		return "📷 " + machine
+	case entry != "" && !strings.Contains(entry, "["):
+		return "🌐 " + machine
+	default:
+		return "💻 " + machine
+	}
+}
+
 // runStoragePlan recommends backup priorities and storage planning
 func runStoragePlan(args []string) {
 	// Load all manifests
@@ -236,9 +259,11 @@ func runStoragePlan(args []string) {
 	}
 
 	machineMap := make(map[string]*MachineInfo)
+	machineScanPath := make(map[string]string) // representative path for the removable check
 	for _, src := range sources {
 		if _, ok := machineMap[src.MachineName]; !ok {
 			machineMap[src.MachineName] = &MachineInfo{Machine: src.MachineName}
+			machineScanPath[src.MachineName] = src.ScanPath
 		}
 
 		m := machineMap[src.MachineName]
@@ -283,15 +308,7 @@ func runStoragePlan(args []string) {
 	for _, m := range machines {
 		if m.UniqueBytes > 0 {
 			coverage := 100.0 - (float64(m.UniqueBytes) / float64(m.TotalBytes) * 100)
-			config := machinesConfig[m.Machine]
-			machineLabel := m.Machine
-			if strings.Contains(config, "[removable]") {
-				machineLabel = "📷 " + machineLabel
-			} else if config != "" && !strings.Contains(config, "[") {
-				machineLabel = "🌐 " + machineLabel
-			} else {
-				machineLabel = "💻 " + machineLabel
-			}
+			machineLabel := machineDisplayLabel(m.Machine, machineScanPath[m.Machine], machinesConfig)
 
 			fmt.Printf("   ⚠️  %s\n", machineLabel)
 			fmt.Printf("       Unique:  %s (%s)\n", formatCount(m.UniqueFiles), formatSize(m.UniqueBytes))
@@ -345,15 +362,7 @@ func runStoragePlan(args []string) {
 	for _, m := range machines {
 		duplicatedBytes := m.TotalBytes - m.UniqueBytes
 		if duplicatedBytes > 0 {
-			config := machinesConfig[m.Machine]
-			machineLabel := m.Machine
-			if strings.Contains(config, "[removable]") {
-				machineLabel = "📷 " + machineLabel
-			} else if config != "" && !strings.Contains(config, "[") {
-				machineLabel = "🌐 " + machineLabel
-			} else {
-				machineLabel = "💻 " + machineLabel
-			}
+			machineLabel := machineDisplayLabel(m.Machine, machineScanPath[m.Machine], machinesConfig)
 
 			coverage := float64(m.TotalFiles-m.UniqueFiles) / float64(m.TotalFiles) * 100
 			fmt.Printf("   🧹 %s\n", machineLabel)
@@ -511,8 +520,7 @@ func runCheckBackupStatus(args []string) {
 		key := indexKey(localRow.PartialHash, localRow.SizeBytes)
 		if len(hashIndex[key]) > 0 {
 			for _, remoteRow := range hashIndex[key] {
-				cfg := machinesCfg[remoteRow.MachineName]
-				if strings.Contains(cfg, "[removable]") {
+				if isRemovableSource(remoteRow.MachineName, remoteRow.ScanPath, machinesCfg) {
 					removableHaveFile[remoteRow.MachineName] = true
 				} else if remoteRow.MachineName != currentMachine {
 					// Only count OTHER machines as backups (not current machine)
