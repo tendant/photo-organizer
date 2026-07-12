@@ -52,15 +52,15 @@ func TestFuzzCSVParsing(t *testing.T) {
 // TestFuzzHashInput tests parseArchiveTimestamp with malformed inputs
 func TestFuzzTimestampParsing(t *testing.T) {
 	tests := []struct {
-		name      string
+		name       string
 		folderName string
-		wantError bool
+		wantError  bool
 	}{
 		{"valid", "2024-06-19-143022-backup", false},
 		{"no timestamp", "backup", true},
-		{"partial timestamp", "2024-06-19-backup", false},         // Parses as lenient
-		{"invalid date", "2024-13-01-143022-backup", false},       // Parses as lenient
-		{"invalid time", "2024-06-19-253022-backup", false},       // Parses as lenient
+		{"partial timestamp", "2024-06-19-backup", false},   // Parses as lenient
+		{"invalid date", "2024-13-01-143022-backup", false}, // Parses as lenient
+		{"invalid time", "2024-06-19-253022-backup", false}, // Parses as lenient
 		{"spaces", "2024-06-19 143022 backup", true},
 		{"lowercase", "2024-06-19-143022-backup", false},
 		{"extra dashes", "2024-06-19-143022-extra-backup", false},
@@ -431,7 +431,7 @@ func TestRecoveryPruneWithMissingFiles(t *testing.T) {
 	result := pruneManifestRecords(
 		records,
 		headerIndex,
-		"/photos",  // Use actual scan path from manifest
+		"/photos", // Use actual scan path from manifest
 		func(p string) bool {
 			// Check if file would exist in our test directory
 			testPath := filepath.Join(photosDir, filepath.Base(p))

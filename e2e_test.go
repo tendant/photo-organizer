@@ -137,10 +137,10 @@ func TestE2EPhotoIgnoreIntegration(t *testing.T) {
 
 	// Create files
 	files := map[string]string{
-		"photo.jpg":              filepath.Join(testDir, "photo.jpg"),
-		"backup.jpg":             filepath.Join(testDir, "backup.jpg"),
-		"config.json":            filepath.Join(testDir, ".claude", "config.json"),
-		"nested.jpg":             filepath.Join(testDir, "photos", "nested.jpg"),
+		"photo.jpg":   filepath.Join(testDir, "photo.jpg"),
+		"backup.jpg":  filepath.Join(testDir, "backup.jpg"),
+		"config.json": filepath.Join(testDir, ".claude", "config.json"),
+		"nested.jpg":  filepath.Join(testDir, "photos", "nested.jpg"),
 	}
 
 	for _, path := range files {

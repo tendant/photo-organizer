@@ -111,7 +111,10 @@ func TestManifestFilenameLongPath(t *testing.T) {
 // =============================================================================
 
 func TestFormatCount(t *testing.T) {
-	tests := []struct{ n int; want string }{
+	tests := []struct {
+		n    int
+		want string
+	}{
 		{0, "0"},
 		{999, "999"},
 		{1000, "1,000"},
@@ -274,7 +277,6 @@ func TestUpdateManifestDiskFull(t *testing.T) {
 		t.Errorf("updateManifest should return an error when write fails, got nil")
 	}
 }
-
 
 // =============================================================================
 // scanDirectory: Special Chars, Symlinks, Skip Folders, File Sizes
@@ -453,11 +455,11 @@ func TestManifestFilenameSanitization(t *testing.T) {
 
 func TestExtractManifestFields(t *testing.T) {
 	tests := []struct {
-		name      string
-		record    []string
-		headers   map[string]int
-		fields    []string
-		expected  map[string]string
+		name     string
+		record   []string
+		headers  map[string]int
+		fields   []string
+		expected map[string]string
 	}{
 		{
 			name:     "basic extraction",
@@ -488,14 +490,14 @@ func TestExtractManifestFields(t *testing.T) {
 			expected: map[string]string{"scan_path": ""},
 		},
 		{
-			name:     "special characters",
-			record:   []string{"path/with spaces", "photo's.jpg", "日本語.jpg"},
-			headers:  map[string]int{"scan_path": 0, "relative_path": 1, "name": 2},
-			fields:   []string{"scan_path", "relative_path", "name"},
+			name:    "special characters",
+			record:  []string{"path/with spaces", "photo's.jpg", "日本語.jpg"},
+			headers: map[string]int{"scan_path": 0, "relative_path": 1, "name": 2},
+			fields:  []string{"scan_path", "relative_path", "name"},
 			expected: map[string]string{
-				"scan_path":      "path/with spaces",
-				"relative_path":  "photo's.jpg",
-				"name":           "日本語.jpg",
+				"scan_path":     "path/with spaces",
+				"relative_path": "photo's.jpg",
+				"name":          "日本語.jpg",
 			},
 		},
 	}
@@ -755,10 +757,10 @@ func TestPruneManifestRecords(t *testing.T) {
 				{"/archive/2026-06-19-060012-Photos", "photo2.jpg"},
 				{"/data/photos", "photo3.jpg"},
 			},
-			headerIndex: map[string]int{"scan_path": 0, "relative_path": 1},
-			archivePath: "/archive/2026-06-19-060012-Photos",
-			fileExists:  func(s string) bool { return true },
-			wantKeepLen: 4, // header + 3 records
+			headerIndex:  map[string]int{"scan_path": 0, "relative_path": 1},
+			archivePath:  "/archive/2026-06-19-060012-Photos",
+			fileExists:   func(s string) bool { return true },
+			wantKeepLen:  4, // header + 3 records
 			wantDeleteCt: 0,
 		},
 		{
@@ -785,10 +787,10 @@ func TestPruneManifestRecords(t *testing.T) {
 				{"/data/photos", "photo1.jpg"},
 				{"/other/data", "photo2.jpg"},
 			},
-			headerIndex: map[string]int{"scan_path": 0, "relative_path": 1},
-			archivePath: "/archive/2026-06-19-060012-Photos",
-			fileExists:  func(s string) bool { return true },
-			wantKeepLen: 3, // all rows kept (none match archive)
+			headerIndex:  map[string]int{"scan_path": 0, "relative_path": 1},
+			archivePath:  "/archive/2026-06-19-060012-Photos",
+			fileExists:   func(s string) bool { return true },
+			wantKeepLen:  3, // all rows kept (none match archive)
 			wantDeleteCt: 0,
 		},
 		{
@@ -796,10 +798,10 @@ func TestPruneManifestRecords(t *testing.T) {
 			records: [][]string{
 				{"scan_path", "relative_path"},
 			},
-			headerIndex: map[string]int{"scan_path": 0, "relative_path": 1},
-			archivePath: "/archive/2026-06-19-060012-Photos",
-			fileExists:  func(s string) bool { return true },
-			wantKeepLen: 1, // only header
+			headerIndex:  map[string]int{"scan_path": 0, "relative_path": 1},
+			archivePath:  "/archive/2026-06-19-060012-Photos",
+			fileExists:   func(s string) bool { return true },
+			wantKeepLen:  1, // only header
 			wantDeleteCt: 0,
 		},
 		{
@@ -811,10 +813,10 @@ func TestPruneManifestRecords(t *testing.T) {
 				{"only_one_field"},
 				{"/archive/2026-06-19-060012-Photos", "photo2.jpg"},
 			},
-			headerIndex: map[string]int{"scan_path": 0, "relative_path": 1},
-			archivePath: "/archive/2026-06-19-060012-Photos",
-			fileExists:  func(s string) bool { return true },
-			wantKeepLen: 3, // header + 2 valid records
+			headerIndex:  map[string]int{"scan_path": 0, "relative_path": 1},
+			archivePath:  "/archive/2026-06-19-060012-Photos",
+			fileExists:   func(s string) bool { return true },
+			wantKeepLen:  3, // header + 2 valid records
 			wantDeleteCt: 0,
 		},
 	}
@@ -843,10 +845,10 @@ func TestPruneManifestRecords(t *testing.T) {
 
 func TestGenerateArchiveFolderName(t *testing.T) {
 	tests := []struct {
-		name      string
+		name       string
 		folderName string
-		timestamp time.Time
-		want      string
+		timestamp  time.Time
+		want       string
 	}{
 		{
 			name:       "basic case",
@@ -888,9 +890,9 @@ func TestGenerateArchiveFolderName(t *testing.T) {
 
 func TestParseCollectArgs(t *testing.T) {
 	tests := []struct {
-		name         string
-		args         []string
-		wantMachines []string
+		name          string
+		args          []string
+		wantMachines  []string
 		wantRemaining []string
 	}{
 		{
@@ -1000,33 +1002,33 @@ func TestPhotoIgnoreShouldSkip(t *testing.T) {
 	ig := newPhotoIgnore(dir)
 
 	tests := []struct {
-		name     string
-		path     string
+		name       string
+		path       string
 		shouldSkip bool
 	}{
 		{
-			name:     "skip .claude folder",
-			path:     filepath.Join(dir, ".claude", "test.txt"),
+			name:       "skip .claude folder",
+			path:       filepath.Join(dir, ".claude", "test.txt"),
 			shouldSkip: true,
 		},
 		{
-			name:     "skip _Manifest folder",
-			path:     filepath.Join(dir, "_Manifest", "test.csv"),
+			name:       "skip _Manifest folder",
+			path:       filepath.Join(dir, "_Manifest", "test.csv"),
 			shouldSkip: true,
 		},
 		{
-			name:     "skip .tmp files",
-			path:     filepath.Join(dir, "file.tmp"),
+			name:       "skip .tmp files",
+			path:       filepath.Join(dir, "file.tmp"),
 			shouldSkip: true,
 		},
 		{
-			name:     "keep .jpg files",
-			path:     filepath.Join(dir, "photo.jpg"),
+			name:       "keep .jpg files",
+			path:       filepath.Join(dir, "photo.jpg"),
 			shouldSkip: false,
 		},
 		{
-			name:     "keep nested files outside .claude",
-			path:     filepath.Join(dir, "photos", "photo.jpg"),
+			name:       "keep nested files outside .claude",
+			path:       filepath.Join(dir, "photos", "photo.jpg"),
 			shouldSkip: false,
 		},
 	}
@@ -1111,8 +1113,8 @@ func TestFindStalledManifests(t *testing.T) {
 			name: "no stalled manifests",
 			manifests: []*ManifestSource{
 				{
-					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
-					Rows:        []ManifestRow{{MachineName: "m1", ScanPath: "/data/photos", FileModified: "2026-06-19"}},
+					FilePath: "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
+					Rows:     []ManifestRow{{MachineName: "m1", ScanPath: "/data/photos", FileModified: "2026-06-19"}},
 				},
 			},
 			localMachine: "m1",
@@ -1125,8 +1127,8 @@ func TestFindStalledManifests(t *testing.T) {
 			name: "one stalled manifest",
 			manifests: []*ManifestSource{
 				{
-					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
-					Rows:        []ManifestRow{{MachineName: "m1", ScanPath: "/missing/photos", FileModified: "2026-06-19"}},
+					FilePath: "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
+					Rows:     []ManifestRow{{MachineName: "m1", ScanPath: "/missing/photos", FileModified: "2026-06-19"}},
 				},
 			},
 			localMachine: "m1",
@@ -1139,12 +1141,12 @@ func TestFindStalledManifests(t *testing.T) {
 			name: "filter by local machine",
 			manifests: []*ManifestSource{
 				{
-					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
-					Rows:        []ManifestRow{{MachineName: "m1", ScanPath: "/missing1", FileModified: "2026-06-19"}},
+					FilePath: "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
+					Rows:     []ManifestRow{{MachineName: "m1", ScanPath: "/missing1", FileModified: "2026-06-19"}},
 				},
 				{
-					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m2_data.csv",
-					Rows:        []ManifestRow{{MachineName: "m2", ScanPath: "/missing2", FileModified: "2026-06-19"}},
+					FilePath: "/home/user/manifests/_Manifest/photo_manifest_m2_data.csv",
+					Rows:     []ManifestRow{{MachineName: "m2", ScanPath: "/missing2", FileModified: "2026-06-19"}},
 				},
 			},
 			localMachine: "m1",
@@ -1157,12 +1159,12 @@ func TestFindStalledManifests(t *testing.T) {
 			name: "all machines",
 			manifests: []*ManifestSource{
 				{
-					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
-					Rows:        []ManifestRow{{MachineName: "m1", ScanPath: "/missing1", FileModified: "2026-06-19"}},
+					FilePath: "/home/user/manifests/_Manifest/photo_manifest_m1_data.csv",
+					Rows:     []ManifestRow{{MachineName: "m1", ScanPath: "/missing1", FileModified: "2026-06-19"}},
 				},
 				{
-					FilePath:    "/home/user/manifests/_Manifest/photo_manifest_m2_data.csv",
-					Rows:        []ManifestRow{{MachineName: "m2", ScanPath: "/missing2", FileModified: "2026-06-19"}},
+					FilePath: "/home/user/manifests/_Manifest/photo_manifest_m2_data.csv",
+					Rows:     []ManifestRow{{MachineName: "m2", ScanPath: "/missing2", FileModified: "2026-06-19"}},
 				},
 			},
 			localMachine: "m1",

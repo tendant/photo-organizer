@@ -18,11 +18,11 @@ import (
 
 // ManifestSignature holds integrity metadata for a manifest
 type ManifestSignature struct {
-	ManifestHash    string    // SHA256 of manifest file
-	SignatureHash   string    // HMAC-SHA256 of manifest using key
-	SignedAt        time.Time // When signature was created
-	SigningKey      string    // Key fingerprint (first 8 chars of hash)
-	VerificationID  string    // Unique ID for this manifest+key combo
+	ManifestHash   string    // SHA256 of manifest file
+	SignatureHash  string    // HMAC-SHA256 of manifest using key
+	SignedAt       time.Time // When signature was created
+	SigningKey     string    // Key fingerprint (first 8 chars of hash)
+	VerificationID string    // Unique ID for this manifest+key combo
 }
 
 // SignManifest creates a cryptographic signature for a manifest file
@@ -90,14 +90,14 @@ func VerifyManifest(manifestPath string, signature ManifestSignature, signingKey
 
 // ArchiveIntegrity holds verification results for an archive
 type ArchiveIntegrity struct {
-	ArchivePath     string
-	TotalFiles      int
-	VerifiedFiles   int
-	CorruptedFiles  int
-	MissingFiles    int
-	VerificationID  string
-	VerifiedAt      time.Time
-	Issues          []string
+	ArchivePath    string
+	TotalFiles     int
+	VerifiedFiles  int
+	CorruptedFiles int
+	MissingFiles   int
+	VerificationID string
+	VerifiedAt     time.Time
+	Issues         []string
 }
 
 // VerifyArchiveIntegrity checks all files in an archive against manifest entries
@@ -174,11 +174,11 @@ type BackupVerificationReport struct {
 	VerifiedArchives int
 	Integrity        []ArchiveIntegrity
 	Summary          struct {
-		TotalFiles      int
-		VerifiedFiles   int
-		CorruptedFiles  int
-		MissingFiles    int
-		IssueCount      int
+		TotalFiles     int
+		VerifiedFiles  int
+		CorruptedFiles int
+		MissingFiles   int
+		IssueCount     int
 	}
 	ReportID string
 }
@@ -320,21 +320,21 @@ func writeManifestDirect(path string, rows []ManifestRow) error {
 
 // FileIntegrity holds hash verification for a single file
 type FileIntegrity struct {
-	Path         string
-	PartialHash  string
-	FullHash     string
-	Size         int64
-	IsValid      bool
-	Mismatch     string
+	Path        string
+	PartialHash string
+	FullHash    string
+	Size        int64
+	IsValid     bool
+	Mismatch    string
 }
 
 // VerifyFileIntegrity spot-checks a file against manifest entry
 // Computes partial hash (first 1KB) for quick verification
 func VerifyFileIntegrity(filePath string, manifestEntry ManifestRow) FileIntegrity {
 	result := FileIntegrity{
-		Path:         filePath,
-		PartialHash:  manifestEntry.PartialHash,
-		FullHash:     manifestEntry.FullHash,
+		Path:        filePath,
+		PartialHash: manifestEntry.PartialHash,
+		FullHash:    manifestEntry.FullHash,
 	}
 
 	info, err := os.Stat(filePath)
