@@ -388,13 +388,15 @@ func provideSshErrorHelp(errMsg, detail, sshHost string) {
 		fmt.Fprintf(os.Stderr, "   Try: ssh-keygen -t ed25519  or  ssh-copy-id %s\n", sshHost)
 		fmt.Fprintf(os.Stderr, "        Make sure SSH key is in ~/.ssh/\n")
 
-	case strings.Contains(lower, "no such file") || strings.Contains(lower, "not found"):
-		fmt.Fprintf(os.Stderr, "   Error: Remote path not found\n")
-		fmt.Fprintf(os.Stderr, "   Try: ssh %s ls -la ~/manifests/\n", sshHost)
-
+	// "command not found" must be checked before the generic "not found" arm,
+	// which would otherwise match it first.
 	case strings.Contains(lower, "command not found"):
 		fmt.Fprintf(os.Stderr, "   Error: Remote command not found\n")
 		fmt.Fprintf(os.Stderr, "   Make sure the remote host has a compatible shell\n")
+
+	case strings.Contains(lower, "no such file") || strings.Contains(lower, "not found"):
+		fmt.Fprintf(os.Stderr, "   Error: Remote path not found\n")
+		fmt.Fprintf(os.Stderr, "   Try: ssh %s ls -la ~/manifests/\n", sshHost)
 
 	default:
 		if detail != "" {

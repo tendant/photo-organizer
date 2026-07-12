@@ -32,8 +32,7 @@ func TestProvideSshErrorHelp(t *testing.T) {
 		{"timeout", "connection timeout", "", "Connection timeout"},
 		{"denied", "Permission denied", "", "Permission denied"},
 		{"notfound", "no such file or directory", "", "Remote path not found"},
-		// Note: a literal "command not found" message is shadowed by the "not found"
-		// arm above, so that switch case is unreachable in practice and untested.
+		{"cmd", "bash: photo-organizer: command not found", "", "Remote command not found"},
 		{"default", "weird unexpected error", "raw detail", "verbose debugging"},
 	}
 	for _, tt := range tests {

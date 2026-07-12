@@ -95,7 +95,7 @@ func TestPrintScanSummaryMinimal(t *testing.T) {
 }
 
 // =============================================================================
-// deleteStaleManiests
+// deleteStaleManifests
 // =============================================================================
 
 func TestDeleteStaleManifestsSSHUnreachable(t *testing.T) {
@@ -108,7 +108,7 @@ func TestDeleteStaleManifestsSSHUnreachable(t *testing.T) {
 	}
 
 	// .invalid host never resolves -> ssh fails -> function returns silently.
-	deleteStaleManiests("mac", "photo-organizer-nonexistent.invalid", dir)
+	deleteStaleManifests("mac", "photo-organizer-nonexistent.invalid", dir)
 
 	if _, err := os.Stat(local); err != nil {
 		t.Errorf("manifest should be untouched when SSH fails: %v", err)

@@ -216,14 +216,14 @@ func runCollect(args []string) {
 				}
 
 				if !collectFromAll {
-					deleteStaleManiests(machine, target, localDir)
+					deleteStaleManifests(machine, target, localDir)
 				}
 			}
 		}
 	}
 }
 
-func deleteStaleManiests(machine, target, localDir string) {
+func deleteStaleManifests(machine, target, localDir string) {
 	// Get list of remote manifests for this machine via SSH
 	// Use full machine ID in grep pattern to avoid matching other machines
 	remoteManifestCmd := fmt.Sprintf("ls -1 ~/manifests/_Manifest/ 2>/dev/null | grep -F -- %s || true", shellQuote("photo_manifest_"+machine+"_"))
