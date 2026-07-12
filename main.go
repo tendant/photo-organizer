@@ -8,6 +8,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -89,92 +90,85 @@ func suggestCommand(typo string) string {
 
 // =============================================================================
 
+// errFailed signals that a command failed and has already reported the
+// details to stderr. main exits with status 1 without printing anything more.
+var errFailed = errors.New("command failed")
+
 func main() {
 	// Check for interrupted operations at startup
 	DetectInterruptedOperations()
 
-	if len(os.Args) >= 2 {
-		cmd := os.Args[1]
-		switch cmd {
-		// Core workflow commands (14 total)
-		case "scan":
-			os.Args = append(os.Args[:1], os.Args[2:]...)
-		case "dups":
-			runAnalyze(os.Args[2:])
-			return
-		case "dup-folders":
-			runFindDuplicateFolders(os.Args[2:])
-			return
-		case "storage-status":
-			runStorageStatus(os.Args[2:])
-			return
-		case "storage-plan":
-			runStoragePlan(os.Args[2:])
-			return
-		case "backup":
-			runBackup(os.Args[2:])
-			return
-		case "restore":
-			runRestore(os.Args[2:])
-			return
-		case "list":
-			runListArchives(os.Args[2:])
-			return
-		case "verify-archive":
-			runVerifyBackup(os.Args[2:])
-			return
-		case "check-backup":
-			runCheckBackupStatus(os.Args[2:])
-			return
-		case "sign":
-			runSignManifest(os.Args[2:])
-			return
-		case "fix":
-			runRepairManifest(os.Args[2:])
-			return
-		case "archive":
-			runArchive(os.Args[2:])
-			return
-		case "manifests":
-			runManifests(os.Args[2:])
-			return
-		case "machines":
-			runMachines(os.Args[2:])
-			return
-		case "lookup":
-			runLookup(os.Args[2:])
-			return
-		case "search":
-			runSearch(os.Args[2:])
-			return
-		case "collect":
-			runCollect(os.Args[2:])
-			return
-		case "backup-missing":
-			runBackupMissing(os.Args[2:])
-			return
-
-		case "help", "--help", "-h":
-			printUsage()
-			return
-		default:
-			// Check if it looks like a command (not a directory path)
-			if !strings.HasPrefix(cmd, "/") && !strings.HasPrefix(cmd, ".") {
-				// Might be a typo'd command, suggest similar ones
-				suggested := suggestCommand(cmd)
-				fmt.Fprintf(os.Stderr, "Error: unknown command %q\n", cmd)
-				if suggested != "" {
-					fmt.Fprintf(os.Stderr, "Did you mean: %s?\n\n", suggested)
-				}
-				fmt.Fprintf(os.Stderr, "Run 'photo-organizer help' for available commands.\n")
-				os.Exit(1)
-			}
-			// Looks like a directory path, try to scan it
-		}
-		runScan(os.Args[1:])
+	if len(os.Args) < 2 {
+		printUsage()
 		return
 	}
-	printUsage()
+
+	var err error
+	cmd := os.Args[1]
+	switch cmd {
+	case "scan":
+		err = runScan(os.Args[2:])
+	case "dups":
+		err = runAnalyze(os.Args[2:])
+	case "dup-folders":
+		err = runFindDuplicateFolders(os.Args[2:])
+	case "storage-status":
+		err = runStorageStatus(os.Args[2:])
+	case "storage-plan":
+		err = runStoragePlan(os.Args[2:])
+	case "backup":
+		err = runBackup(os.Args[2:])
+	case "restore":
+		err = runRestore(os.Args[2:])
+	case "list":
+		err = runListArchives(os.Args[2:])
+	case "verify-archive":
+		err = runVerifyBackup(os.Args[2:])
+	case "check-backup":
+		err = runCheckBackupStatus(os.Args[2:])
+	case "sign":
+		err = runSignManifest(os.Args[2:])
+	case "fix":
+		err = runRepairManifest(os.Args[2:])
+	case "archive":
+		err = runArchive(os.Args[2:])
+	case "manifests":
+		err = runManifests(os.Args[2:])
+	case "machines":
+		err = runMachines(os.Args[2:])
+	case "lookup":
+		err = runLookup(os.Args[2:])
+	case "search":
+		err = runSearch(os.Args[2:])
+	case "collect":
+		err = runCollect(os.Args[2:])
+	case "backup-missing":
+		err = runBackupMissing(os.Args[2:])
+	case "help", "--help", "-h":
+		printUsage()
+	default:
+		// Check if it looks like a command (not a directory path)
+		if !strings.HasPrefix(cmd, "/") && !strings.HasPrefix(cmd, ".") {
+			// Might be a typo'd command, suggest similar ones
+			suggested := suggestCommand(cmd)
+			fmt.Fprintf(os.Stderr, "Error: unknown command %q\n", cmd)
+			if suggested != "" {
+				fmt.Fprintf(os.Stderr, "Did you mean: %s?\n\n", suggested)
+			}
+			fmt.Fprintf(os.Stderr, "Run 'photo-organizer help' for available commands.\n")
+			err = errFailed
+		} else {
+			// Looks like a directory path, try to scan it
+			err = runScan(os.Args[1:])
+		}
+	}
+
+	if err != nil {
+		if !errors.Is(err, errFailed) {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
+		os.Exit(1)
+	}
 }
 
 func printUsage() {

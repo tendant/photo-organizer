@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func runManifests(args []string) {
+func runManifests(args []string) error {
 	// Parse flags
 	showStalled := false
 	doCleanup := false
@@ -49,7 +49,7 @@ func runManifests(args []string) {
 		} else {
 			fmt.Printf("\n✓ Removed %d manifest(s)\n", removed)
 		}
-		return
+		return nil
 	}
 
 	// Load all manifests
@@ -59,7 +59,7 @@ func runManifests(args []string) {
 
 	if len(matches) == 0 {
 		fmt.Fprintf(os.Stderr, "No manifests found in %s\n", manifestDir)
-		return
+		return nil
 	}
 
 	var sources []ManifestSource
@@ -90,7 +90,7 @@ func runManifests(args []string) {
 
 		if len(stalledSources) == 0 {
 			fmt.Fprintf(os.Stderr, "✅ No stalled manifests found\n")
-			return
+			return nil
 		}
 
 		fmt.Fprintf(os.Stderr, "📋 STALLED MANIFESTS (source paths no longer exist)\n\n")
@@ -100,7 +100,7 @@ func runManifests(args []string) {
 			fmt.Printf("    Machine:   %s\n", src.MachineName)
 			fmt.Printf("    Files:     %d\n\n", len(src.Rows))
 		}
-		return
+		return nil
 	}
 
 	// Handle --cleanup flag
@@ -116,7 +116,7 @@ func runManifests(args []string) {
 
 		if len(stalledSources) == 0 {
 			fmt.Fprintf(os.Stderr, "✅ No stalled manifests to clean up\n")
-			return
+			return nil
 		}
 
 		fmt.Fprintf(os.Stderr, "Found %d stalled manifest(s):\n\n", len(stalledSources))
@@ -127,7 +127,7 @@ func runManifests(args []string) {
 
 		if !confirmPrompt("Remove stalled manifests?") {
 			fmt.Fprintf(os.Stderr, "Cancelled.\n")
-			return
+			return nil
 		}
 
 		removed := 0
@@ -138,7 +138,7 @@ func runManifests(args []string) {
 			}
 		}
 		fmt.Printf("\n✓ Removed %d stalled manifest(s)\n", removed)
-		return
+		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "Listing all manifests and their origin...\n\n")
@@ -252,6 +252,7 @@ func runManifests(args []string) {
 	}
 	fmt.Fprintf(os.Stderr, "Summary: %d local, %d removable, %d remote, %d empty\n", localCount, removableCount, remoteCount, emptyCount)
 	fmt.Fprintf(os.Stderr, "💻 = Local machine       💾 = Removable media       📦 = Remote machines\n")
+	return nil
 }
 
 // Helper function to display manifest table

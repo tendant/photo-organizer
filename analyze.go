@@ -529,7 +529,7 @@ func pct(part, total int) float64 {
 // Search
 // =============================================================================
 
-func runSearchAnalyze(args []string) {
+func runSearchAnalyze(args []string) error {
 	// Parse search flags
 	var (
 		namePattern    string
@@ -585,7 +585,7 @@ func runSearchAnalyze(args []string) {
 		allCSVs, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
 		if len(allCSVs) == 0 {
 			fmt.Fprintf(os.Stderr, "search: no manifests found in %s\n", manifestDir)
-			os.Exit(1)
+			return errFailed
 		}
 		manifestFiles = allCSVs
 	}
@@ -612,7 +612,7 @@ func runSearchAnalyze(args []string) {
 
 	if len(allRows) == 0 {
 		fmt.Fprintf(os.Stderr, "search: no files found\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Apply filters
@@ -675,13 +675,13 @@ func runSearchAnalyze(args []string) {
 
 	if len(filtered) == 0 {
 		fmt.Println("No matching files found.")
-		return
+		return nil
 	}
 
 	// Output results
 	if csvOutput != "" {
 		// Write CSV
-		writeSearchResults(csvOutput, filtered)
+		return writeSearchResults(csvOutput, filtered)
 	} else if groupByHash {
 		// Display grouped by hash
 		displayGroupedResults(filtered, hashCounts)
@@ -689,6 +689,7 @@ func runSearchAnalyze(args []string) {
 		// Display as table
 		displayTableResults(filtered, hashCounts)
 	}
+	return nil
 }
 
 func compilePattern(pattern string) (*regexp.Regexp, error) {
@@ -895,11 +896,11 @@ func displayGroupedResults(rows []ManifestRow, hashCounts map[string]int) {
 	fmt.Printf("\nTotal: %d duplicate group(s) found\n", groupNum)
 }
 
-func writeSearchResults(filename string, rows []ManifestRow) {
+func writeSearchResults(filename string, rows []ManifestRow) error {
 	f, err := os.Create(filename)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "search: cannot create %s: %v\n", filename, err)
-		os.Exit(1)
+		return errFailed
 	}
 	defer f.Close()
 
@@ -922,6 +923,7 @@ func writeSearchResults(filename string, rows []ManifestRow) {
 	}
 
 	fmt.Printf("Results written to %s\n", filename)
+	return nil
 }
 
 // =============================================================================

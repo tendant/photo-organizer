@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func runScan(args []string) {
+func runScan(args []string) error {
 	// Separate flag args from the positional directory argument so that
 	// both orderings work: --machine foo /dir  and  /dir --machine foo
 	var flagArgs, posArgs []string
@@ -58,7 +58,7 @@ func runScan(args []string) {
 		scanDir, err = os.Getwd()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
-			os.Exit(1)
+			return errFailed
 		}
 	}
 
@@ -97,7 +97,7 @@ func runScan(args []string) {
 		fmt.Fprintf(os.Stderr, "   and appear as different machines when scanned on other systems.\n\n")
 		fmt.Fprintf(os.Stderr, "   Please provide a stable identifier:\n")
 		fmt.Fprintf(os.Stderr, "     photo-organizer scan %s --media-id \"<label-on-card>\"\n\n", absScanDir)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Write machine-id to card on first use (unless --no-write-media-id)
@@ -119,7 +119,7 @@ func runScan(args []string) {
 		CheckDirWritable(filepath.Join(manifestRoot, "_Manifest"), "Manifest directory writable"),
 	}
 	if !RunPreflightChecks(checks) {
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Check if folder was already scanned
@@ -151,12 +151,12 @@ func runScan(args []string) {
 		qualifying, skipped, err := identifyPhotoFolders(absScanDir, *scoreThresholdFlag)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error identifying photo folders: %v\n", err)
-			os.Exit(1)
+			return errFailed
 		}
 
 		if len(qualifying) == 0 {
 			fmt.Fprintf(os.Stderr, "No photo folders found.\n")
-			os.Exit(1)
+			return errFailed
 		}
 
 		fmt.Printf("Auto-identifying photo folders in %s...\n\n", scanDir)
@@ -181,7 +181,7 @@ func runScan(args []string) {
 		}
 		if *detectOnlyFlag {
 			fmt.Printf("\nDetection complete. Use --auto-identify-folders (without --detect-only) to scan these folders.\n")
-			return
+			return nil
 		}
 
 		fmt.Printf("\nScanning %d photo folder(s)...\n\n", len(qualifying))
@@ -197,7 +197,7 @@ func runScan(args []string) {
 			manifestDir := filepath.Dir(manifestFile)
 			if err := os.MkdirAll(manifestDir, 0755); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: cannot create manifest directory %s: %v\n", manifestDir, err)
-				os.Exit(1)
+				return errFailed
 			}
 
 			fmt.Printf("[%d/%d] Scanning: %s\n", i+1, len(qualifying), scored.Path)
@@ -233,7 +233,7 @@ func runScan(args []string) {
 		manifestDir := filepath.Dir(manifestFile)
 		if err := os.MkdirAll(manifestDir, 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: cannot create manifest directory %s: %v\n", manifestDir, err)
-			os.Exit(1)
+			return errFailed
 		}
 
 		fmt.Printf("Scanning:  %s\n", scanDir)
@@ -257,7 +257,7 @@ func runScan(args []string) {
 		files, scanStats, err := scanDirectory(absScanDir, cache, photoIgnore)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
-			os.Exit(1)
+			return errFailed
 		}
 
 		fmt.Fprintf(os.Stderr, "\n✓ Scan complete: %d files found\n", len(files))
@@ -265,11 +265,12 @@ func runScan(args []string) {
 		manifestStats, err := updateManifest(absScanDir, files, manifestFile, machineName, *pruneFlag)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
-			os.Exit(1)
+			return errFailed
 		}
 
 		printScanSummary(scanStats, manifestStats)
 	}
+	return nil
 }
 
 func printScanSummary(s ScanStats, m ManifestStats) {

@@ -12,11 +12,11 @@ import (
 // Archive and Delete Commands
 // =============================================================================
 
-func runArchive(args []string) {
+func runArchive(args []string) error {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder-path> --dest <archive-dir>\n\n")
 		fmt.Fprintf(os.Stderr, "Move folder to local archive directory and update manifests.\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	sourceFolder := args[0]
@@ -24,7 +24,7 @@ func runArchive(args []string) {
 
 	if archiveDir == "" {
 		fmt.Fprintf(os.Stderr, "Error: --dest is required\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Resolve paths to absolute
@@ -35,18 +35,18 @@ func runArchive(args []string) {
 		} else {
 			fmt.Fprintf(os.Stderr, "Error: invalid source path %q\n", sourceFolder)
 		}
-		os.Exit(1)
+		return errFailed
 	}
 	absArchiveDir, err := filepath.Abs(archiveDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: invalid archive directory %q\n", archiveDir)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Check archive directory exists or create it
 	if err := os.MkdirAll(absArchiveDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot create archive directory: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Create timestamped archive folder name (include time to avoid conflicts)
@@ -76,14 +76,14 @@ func runArchive(args []string) {
 
 	if !confirmPrompt("\nProceed?") {
 		fmt.Fprintf(os.Stderr, "Cancelled.\n")
-		os.Exit(0)
+		return nil
 	}
 
 	// Move the folder
 	fmt.Fprintf(os.Stderr, "\n▶️  Moving %s → %s\n", absSourceFolder, archiveFolder)
 	if err := os.Rename(absSourceFolder, archiveFolder); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to move folder: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Get machine name
@@ -160,4 +160,5 @@ func runArchive(args []string) {
 
 	fmt.Fprintf(os.Stderr, "\n✓ Folder archived to %s\n", archiveFolder)
 	fmt.Fprintf(os.Stderr, "  Files are still tracked in manifest at new location\n")
+	return nil
 }

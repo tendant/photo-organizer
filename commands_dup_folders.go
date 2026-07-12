@@ -35,7 +35,7 @@ func distinctDevices(folders []*FolderInfo, machinesCfg map[string]string) int {
 	return len(set)
 }
 
-func runFindDuplicateFolders(args []string) {
+func runFindDuplicateFolders(args []string) error {
 	// Convert short flags to long form
 	var processedArgs []string
 	for i := 0; i < len(args); i++ {
@@ -88,7 +88,7 @@ func runFindDuplicateFolders(args []string) {
 
 	if len(matches) == 0 {
 		fmt.Fprintf(os.Stderr, "No manifests found\n")
-		return
+		return nil
 	}
 
 	var sources []ManifestSource
@@ -105,7 +105,7 @@ func runFindDuplicateFolders(args []string) {
 
 	if len(sources) == 0 {
 		fmt.Fprintf(os.Stderr, "No manifests found\n")
-		return
+		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "Using manifest data from %d manifest(s)...\n\n", len(sources))
@@ -195,7 +195,7 @@ func runFindDuplicateFolders(args []string) {
 
 	if len(duplicates) == 0 {
 		fmt.Printf("✓ No duplicate folders found\n")
-		return
+		return nil
 	}
 
 	// Sort by wasted space or copy count
@@ -265,7 +265,7 @@ func runFindDuplicateFolders(args []string) {
 				formatBytes(dup.TotalWasted), archive)
 		}
 		fmt.Printf("\n\"Devices\" counts distinct non-removable machines; archive only when >= 2.\n")
-		return
+		return nil
 	}
 
 	// Full output
@@ -329,4 +329,5 @@ func runFindDuplicateFolders(args []string) {
 			fmt.Printf("\n")
 		}
 	}
+	return nil
 }

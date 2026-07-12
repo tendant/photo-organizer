@@ -19,7 +19,7 @@ type machineInfo struct {
 	totalSize int64
 }
 
-func runMachines(args []string) {
+func runMachines(args []string) error {
 	// Parse flags
 	writeConf := false
 	for _, arg := range args {
@@ -35,7 +35,7 @@ func runMachines(args []string) {
 	allCSVs, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
 	if len(allCSVs) == 0 {
 		fmt.Fprintf(os.Stderr, "No manifests found in %s\n", manifestDir)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Collect all machines and their metadata.
@@ -79,7 +79,7 @@ func runMachines(args []string) {
 
 	if len(names) == 0 {
 		fmt.Println("No machines found in manifests.")
-		return
+		return nil
 	}
 
 	// If --write-conf flag, generate and write machines.conf
@@ -93,12 +93,12 @@ func runMachines(args []string) {
 			fmt.Fprintf(os.Stderr, "Backup: cp %s %s.backup\n", confPath, confPath)
 			fmt.Fprintf(os.Stderr, "Then overwrite with:\n")
 			fmt.Fprintf(os.Stderr, "  cat > %s << 'EOF'\n%sEOF\n", confPath, confContent)
-			return
+			return nil
 		}
 
 		if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", confPath, err)
-			os.Exit(1)
+			return errFailed
 		}
 		fmt.Fprintf(os.Stderr, "✓ Generated machines.conf at %s\n", confPath)
 		fmt.Fprintf(os.Stderr, "\nEdit the file to add SSH targets for remote machines:\n")
@@ -106,7 +106,7 @@ func runMachines(args []string) {
 		fmt.Fprintf(os.Stderr, "\nFormat: machine-name=user@host:/path\n")
 		fmt.Fprintf(os.Stderr, "Example: nas-backup=admin@192.168.1.100:/mnt/backup\n")
 		fmt.Fprintf(os.Stderr, "\nNote: Removable media (marked with [removable]) don't need SSH targets.\n")
-		return
+		return nil
 	}
 
 	// Get current machine ID to mark it in the list
@@ -149,14 +149,13 @@ func runMachines(args []string) {
 
 	fmt.Printf("Use: photo-organizer dups to find duplicate files across machines\n")
 	fmt.Printf("     photo-organizer dup-folders to find duplicate folders for cleanup review\n")
+	return nil
 }
 
 // =============================================================================
 // Machines Config (~/manifests/machines.conf)
 // =============================================================================
 
-// isRemovableMedia asks the OS whether the filesystem at path is removable.
-// On macOS: uses diskutil info to check "Removable Media: Removable" or "Ejectable: Yes".
 // isRemovableSource reports whether a manifest source lives on removable media
 // (SD card, USB drive) rather than a durable device.
 //
@@ -174,6 +173,8 @@ func isRemovableSource(machineName, scanPath string, cfg map[string]string) bool
 	return isRemovablePath(scanPath)
 }
 
+// isRemovableMedia asks the OS whether the filesystem at path is removable.
+// On macOS: uses diskutil info to check "Removable Media: Removable" or "Ejectable: Yes".
 // On Linux: resolves the mount device via /proc/mounts, then checks /sys/block/<dev>/removable.
 // Falls back to false (no warning) if detection fails — better a missed warning than a false one.
 func isRemovableMedia(path string) bool {

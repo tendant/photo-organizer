@@ -10,14 +10,14 @@ import (
 // ============================================================================
 
 // runSignManifest signs a manifest for integrity verification
-func runSignManifest(args []string) {
+func runSignManifest(args []string) error {
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "\n🔐 SIGN MANIFEST FOR INTEGRITY VERIFICATION\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer sign <manifest-path> --key <secret-key>\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer sign ~/manifests/photos.csv --key \"my-secret-key\"\n\n")
 		fmt.Fprintf(os.Stderr, "This creates a cryptographic signature (HMAC-SHA256) to prevent tampering.\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	manifestPath := args[0]
@@ -33,14 +33,14 @@ func runSignManifest(args []string) {
 
 	if key == "" {
 		fmt.Fprintf(os.Stderr, "❌ --key flag required\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Sign the manifest
 	sig, err := SignManifest(manifestPath, key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Cannot sign manifest: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	fmt.Printf("✓ Manifest signed successfully\n\n")
@@ -52,17 +52,18 @@ func runSignManifest(args []string) {
 	fmt.Printf("  Signed At:       %s\n\n", sig.SignedAt.Format("2006-01-02 15:04:05"))
 	fmt.Printf("💡 Save this information to verify the manifest later.\n")
 	fmt.Printf("   Use: photo-organizer verify-archive <manifest-path>\n")
+	return nil
 }
 
 // runVerifyBackup verifies backup integrity
-func runVerifyBackup(args []string) {
+func runVerifyBackup(args []string) error {
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "\n✓ VERIFY BACKUP INTEGRITY\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer verify-archive <manifest-path>\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer verify-archive ~/manifests/photos.csv\n\n")
 		fmt.Fprintf(os.Stderr, "This checks that all files in the archive match the manifest.\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	manifestPath := args[0]
@@ -71,19 +72,19 @@ func runVerifyBackup(args []string) {
 	manifest, err := readManifest(manifestPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Cannot read manifest: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Get archive path from first manifest entry
 	if len(manifest.Rows) == 0 {
 		fmt.Fprintf(os.Stderr, "❌ Manifest is empty\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	archivePath := manifest.ScanPath
 	if archivePath == "" {
 		fmt.Fprintf(os.Stderr, "❌ Cannot determine archive path from manifest\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Verify archive integrity
@@ -114,15 +115,14 @@ func runVerifyBackup(args []string) {
 	// Overall status
 	if result.CorruptedFiles == 0 && result.MissingFiles == 0 {
 		fmt.Printf("\n✓ Backup is healthy and ready for use\n")
-		os.Exit(0)
-	} else {
-		fmt.Printf("\n❌ Backup has issues. Use 'fix' to repair the manifest.\n")
-		os.Exit(1)
+		return nil
 	}
+	fmt.Printf("\n❌ Backup has issues. Use 'fix' to repair the manifest.\n")
+	return errFailed
 }
 
 // runRepairManifest repairs a corrupted manifest
-func runRepairManifest(args []string) {
+func runRepairManifest(args []string) error {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "\n🔧 REPAIR CORRUPTED MANIFEST\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer fix <manifest-path> <archive-path>\n\n")
@@ -130,7 +130,7 @@ func runRepairManifest(args []string) {
 		fmt.Fprintf(os.Stderr, "  photo-organizer fix ~/manifests/photos.csv /mnt/archive/2026-06-20-143022-Photos\n\n")
 		fmt.Fprintf(os.Stderr, "This removes entries for missing/corrupted files and fixes issues.\n")
 		fmt.Fprintf(os.Stderr, "A backup is created before modifications.\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	manifestPath := args[0]
@@ -139,7 +139,7 @@ func runRepairManifest(args []string) {
 	// Verify archive path exists
 	if _, err := os.Stat(archivePath); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Archive path not found: %s\n", archivePath)
-		os.Exit(1)
+		return errFailed
 	}
 
 	fmt.Printf("🔧 Repairing manifest...\n\n")
@@ -148,7 +148,7 @@ func runRepairManifest(args []string) {
 	result, err := RepairManifest(manifestPath, archivePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Cannot repair manifest: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Display results
@@ -160,4 +160,5 @@ func runRepairManifest(args []string) {
 	fmt.Printf("Backup Created: %s\n", result.BackupPath)
 	fmt.Printf("Repaired File:  %s\n\n", manifestPath)
 	fmt.Printf("✓ Manifest is now repaired and ready to use\n")
+	return nil
 }

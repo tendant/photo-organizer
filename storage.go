@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-func runStorageStatus(args []string) {
+func runStorageStatus(args []string) error {
 	// Load all manifests
 	manifestRoot := filepath.Join(userHomeDir(), "manifests")
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
@@ -18,7 +18,7 @@ func runStorageStatus(args []string) {
 
 	if len(matches) == 0 {
 		fmt.Fprintf(os.Stderr, "No manifests found\n")
-		return
+		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "Loading manifests...\n\n")
@@ -34,7 +34,7 @@ func runStorageStatus(args []string) {
 
 	if len(sources) == 0 {
 		fmt.Fprintf(os.Stderr, "No valid manifests found\n")
-		return
+		return nil
 	}
 
 	// Build hash index for deduplication analysis
@@ -203,6 +203,7 @@ func runStorageStatus(args []string) {
 	fmt.Printf("Total files:      %s (%s)\n", formatCount(len(idx)), formatSize(totalGlobalBytes))
 	fmt.Printf("Duplicated files: %s\n", formatCount(len(duplicates)))
 	fmt.Printf("\n")
+	return nil
 }
 
 // machineDisplayLabel prefixes a machine name with its device-type icon:
@@ -220,7 +221,7 @@ func machineDisplayLabel(machine, scanPath string, cfg map[string]string) string
 }
 
 // runStoragePlan recommends backup priorities and storage planning
-func runStoragePlan(args []string) {
+func runStoragePlan(args []string) error {
 	// Load all manifests
 	manifestRoot := filepath.Join(userHomeDir(), "manifests")
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
@@ -228,7 +229,7 @@ func runStoragePlan(args []string) {
 
 	if len(matches) == 0 {
 		fmt.Fprintf(os.Stderr, "No manifests found\n")
-		return
+		return nil
 	}
 
 	var sources []ManifestSource
@@ -242,7 +243,7 @@ func runStoragePlan(args []string) {
 
 	if len(sources) == 0 {
 		fmt.Fprintf(os.Stderr, "No valid manifests found\n")
-		return
+		return nil
 	}
 
 	// Build hash index for deduplication analysis
@@ -390,17 +391,18 @@ func runStoragePlan(args []string) {
 	}
 	fmt.Printf("Total capacity:    %s across %d machines\n", formatSize(totalCapacity), len(machines))
 	fmt.Printf("\n")
+	return nil
 }
 
 // runCheckBackupStatus checks if a folder is backed up and shows per-machine coverage
-func runCheckBackupStatus(args []string) {
+func runCheckBackupStatus(args []string) error {
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "\n✓ CHECK BACKUP STATUS\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer check-backup <folder>\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer check-backup ~/Photos\n\n")
 		fmt.Fprintf(os.Stderr, "Shows backup coverage per machine and at-risk files.\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	folderPath := args[0]
@@ -409,7 +411,7 @@ func runCheckBackupStatus(args []string) {
 	absPath, err := filepath.Abs(folderPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Cannot resolve folder path: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Load all manifests
@@ -419,7 +421,7 @@ func runCheckBackupStatus(args []string) {
 
 	if len(matches) == 0 {
 		fmt.Fprintf(os.Stderr, "No manifests found\n")
-		return
+		return nil
 	}
 
 	var sources []ManifestSource
@@ -433,7 +435,7 @@ func runCheckBackupStatus(args []string) {
 
 	if len(sources) == 0 {
 		fmt.Fprintf(os.Stderr, "No valid manifests found\n")
-		return
+		return nil
 	}
 
 	// Find local manifest for this folder and build hash index
@@ -473,7 +475,7 @@ func runCheckBackupStatus(args []string) {
 		fmt.Printf("❌ NOT SCANNED\n")
 		fmt.Printf("   This folder has not been scanned yet.\n")
 		fmt.Printf("   Run: photo-organizer scan %s\n", folderPath)
-		return
+		return nil
 	}
 
 	// Get current machine to exclude it from backup count
@@ -671,6 +673,7 @@ func runCheckBackupStatus(args []string) {
 		fmt.Printf("\n")
 	}
 
+	return nil
 }
 
 // detectMountPoint returns the likely mount point for a given path

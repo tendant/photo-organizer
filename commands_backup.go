@@ -15,7 +15,7 @@ import (
 // ============================================================================
 
 // runBackup backs up a folder to timestamped archive
-func runBackup(args []string) {
+func runBackup(args []string) error {
 	// Parse arguments
 	folderPath := ""
 	archiveRoot := ""
@@ -39,7 +39,7 @@ func runBackup(args []string) {
 		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/iPhone /mnt/archive --new-only\n\n")
 		fmt.Fprintf(os.Stderr, "Creates timestamped archive folder and copies files.\n")
 		fmt.Fprintf(os.Stderr, "--new-only: Only backup files not already backed up elsewhere.\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Verify archive root exists or create it
@@ -47,12 +47,12 @@ func runBackup(args []string) {
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(archiveRoot, 0755); err != nil {
 				fmt.Fprintf(os.Stderr, "❌ Cannot create archive root: %v\n", err)
-				os.Exit(1)
+				return errFailed
 			}
 			fmt.Printf("📁 Created archive root: %s\n\n", archiveRoot)
 		} else {
 			fmt.Fprintf(os.Stderr, "❌ Cannot access archive root: %v\n", err)
-			os.Exit(1)
+			return errFailed
 		}
 	}
 
@@ -60,25 +60,25 @@ func runBackup(args []string) {
 	absPath, err := filepath.Abs(folderPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Cannot resolve folder path: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Verify folder exists
 	if _, err := os.Stat(absPath); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Folder not found: %s\n", absPath)
-		os.Exit(1)
+		return errFailed
 	}
 
 	manifest, found := findManifestForScanPath(absPath)
 	if !found {
 		fmt.Fprintf(os.Stderr, "❌ No manifest found for %s\n", absPath)
 		fmt.Fprintf(os.Stderr, "   Run 'photo-organizer scan %s' first\n", absPath)
-		os.Exit(1)
+		return errFailed
 	}
 
 	if len(manifest.Rows) == 0 {
 		fmt.Fprintf(os.Stderr, "❌ Manifest is empty\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	fmt.Printf("📦 BACKUP WORKFLOW\n\n")
@@ -104,7 +104,7 @@ func runBackup(args []string) {
 
 	if err := os.Mkdir(archivePath, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Cannot create archive folder: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	fmt.Printf("Archive folder: %s\n\n", archiveFolderName)
@@ -160,17 +160,18 @@ func runBackup(args []string) {
 	} else {
 		fmt.Printf("✓ All files successfully backed up!\n")
 	}
+	return nil
 }
 
 // runRestore restores files from archive to destination
-func runRestore(args []string) {
+func runRestore(args []string) error {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "\n📥 RESTORE FILES FROM ARCHIVE\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer restore <archive-path> <destination>\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer restore /mnt/archive/2026-06-20-143022-Photos ~/Restored\n\n")
 		fmt.Fprintf(os.Stderr, "Restores all files from archive to destination folder.\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	archivePath := args[0]
@@ -179,13 +180,13 @@ func runRestore(args []string) {
 	// Verify archive exists
 	if _, err := os.Stat(archivePath); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Archive not found: %s\n", archivePath)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Create destination if needed
 	if err := os.MkdirAll(destination, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Cannot create destination: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	fmt.Printf("📥 RESTORE FROM ARCHIVE\n\n")
@@ -235,17 +236,18 @@ func runRestore(args []string) {
 	} else {
 		fmt.Printf("✓ All files successfully restored!\n")
 	}
+	return nil
 }
 
 // runListArchives shows all available backups
-func runListArchives(args []string) {
+func runListArchives(args []string) error {
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "\n📋 LIST AVAILABLE ARCHIVES\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer list-archives <archive-root>\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer list-archives /mnt/archive\n\n")
 		fmt.Fprintf(os.Stderr, "Shows all timestamped backup folders with their contents.\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	archiveRoot := args[0]
@@ -253,7 +255,7 @@ func runListArchives(args []string) {
 	// Verify archive root exists
 	if _, err := os.Stat(archiveRoot); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Archive root not found: %s\n", archiveRoot)
-		os.Exit(1)
+		return errFailed
 	}
 
 	fmt.Printf("📋 AVAILABLE ARCHIVES\n\n")
@@ -263,7 +265,7 @@ func runListArchives(args []string) {
 	entries, err := os.ReadDir(archiveRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Cannot read archive root: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	archives := make([]os.DirEntry, 0)
@@ -275,7 +277,7 @@ func runListArchives(args []string) {
 
 	if len(archives) == 0 {
 		fmt.Printf("No archives found.\n")
-		return
+		return nil
 	}
 
 	fmt.Printf("Archives Found:\n\n")
@@ -291,6 +293,7 @@ func runListArchives(args []string) {
 		fmt.Printf("   Files:    %d\n", metrics.FileCount)
 		fmt.Printf("   Size:     %s\n\n", formatSize(metrics.TotalSize))
 	}
+	return nil
 }
 
 // copyFile copies a single file from source to destination
@@ -325,7 +328,7 @@ func copyFile(src, dst string) error {
 // Backup Missing Command
 // =============================================================================
 
-func runBackupMissing(args []string) {
+func runBackupMissing(args []string) error {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup-missing <folder> --dest <target>\n\n")
 		fmt.Fprintf(os.Stderr, "Ensures all files in folder are backed up to target destination.\n")
@@ -334,7 +337,7 @@ func runBackupMissing(args []string) {
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  backup-missing ~/Photos --dest ubuntu-max:/backups\n")
 		fmt.Fprintf(os.Stderr, "  backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	sourceFolder := args[0]
@@ -342,7 +345,7 @@ func runBackupMissing(args []string) {
 
 	if destLocation == "" {
 		fmt.Fprintf(os.Stderr, "Error: --dest is required (e.g., user@host:/backups)\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Resolve source folder to absolute path
@@ -353,7 +356,7 @@ func runBackupMissing(args []string) {
 		} else {
 			fmt.Fprintf(os.Stderr, "Error: invalid source path %q\n", sourceFolder)
 		}
-		os.Exit(1)
+		return errFailed
 	}
 
 	fmt.Fprintf(os.Stderr, "Checking which files need backup...\n")
@@ -409,7 +412,7 @@ func runBackupMissing(args []string) {
 
 	if missingCount == 0 {
 		fmt.Fprintf(os.Stderr, "✓ All files already backed up\n")
-		return
+		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "Backing up %d files (%.1f GB)...\n", missingCount, float64(missingSize)/(1024*1024*1024))
@@ -429,14 +432,14 @@ func runBackupMissing(args []string) {
 		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max-acb605:/backups\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max:/backups\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Step 2: Create temporary file list for rsync
 	tmpFile, err := os.CreateTemp("", "backup-missing-*.txt")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot create temp file: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 	defer os.Remove(tmpFile.Name())
 
@@ -451,13 +454,13 @@ func runBackupMissing(args []string) {
 	rsyncCmd.Stderr = os.Stderr
 	if err := rsyncCmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: rsync failed: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	if remoteMachineID == "" {
 		fmt.Fprintf(os.Stderr, "⚠ Backup copied, but manifest refresh was skipped.\n")
 		fmt.Fprintf(os.Stderr, "  Add this host first: photo-organizer collect --add <machine-id>=%s\n", remoteUserHost)
-		return
+		return nil
 	}
 
 	// Scan remote location
@@ -465,7 +468,7 @@ func runBackupMissing(args []string) {
 	sshCmd := exec.Command("ssh", remoteUserHost, scanCmd)
 	if err := sshCmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: remote scan failed after copying files. photo-organizer must be installed on remote machine.\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Collect updated manifests
@@ -474,8 +477,9 @@ func runBackupMissing(args []string) {
 	collectCmd.Stderr = os.Stderr
 	if err := collectCmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: files were copied, but manifest collection failed: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	fmt.Fprintf(os.Stderr, "✓ Backup complete\n")
+	return nil
 }

@@ -15,7 +15,7 @@ import (
 // Collect (pull manifests from remote machines)
 // =============================================================================
 
-func runCollect(args []string) {
+func runCollect(args []string) error {
 	// Use pure function to parse arguments
 	parsed := parseCollectArgs(args)
 	fromMachines := parsed.FromMachines
@@ -52,17 +52,17 @@ func runCollect(args []string) {
 		parts := strings.SplitN(*addFlag, "=", 2)
 		if len(parts) != 2 {
 			fmt.Fprintln(os.Stderr, "collect: --add format is machine_id=user@host")
-			os.Exit(1)
+			return errFailed
 		}
 		id, target := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 		cfg[id] = target
 		if err := saveMachinesConfig(cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "collect: could not save config: %v\n", err)
-			os.Exit(1)
+			return errFailed
 		}
 		fmt.Printf("Registered: %-30s → %s\n", id, target)
 		fmt.Printf("Config saved to %s\n", machinesConfFile())
-		return
+		return nil
 	}
 
 	// --list: show all configured machines.
@@ -70,7 +70,7 @@ func runCollect(args []string) {
 		if len(cfg) == 0 {
 			fmt.Fprintf(os.Stderr, "No machines configured. Add one with:\n")
 			fmt.Fprintf(os.Stderr, "  photo-organizer collect --add machine_id=user@host\n")
-			return
+			return nil
 		}
 		fmt.Println("Configured machines:")
 		ids := make([]string, 0, len(cfg))
@@ -81,7 +81,7 @@ func runCollect(args []string) {
 		for _, id := range ids {
 			fmt.Printf("  %-30s → %s\n", id, cfg[id])
 		}
-		return
+		return nil
 	}
 
 	// If no --from specified, collect from all configured machines.
@@ -89,7 +89,7 @@ func runCollect(args []string) {
 		if len(cfg) == 0 {
 			fmt.Fprintln(os.Stderr, "collect: no machines configured. Add one with:")
 			fmt.Fprintln(os.Stderr, "  photo-organizer collect --add machine_id=user@host")
-			os.Exit(1)
+			return errFailed
 		}
 		// Collect from all machines.
 		for id := range cfg {
@@ -105,7 +105,7 @@ func runCollect(args []string) {
 	localDir := filepath.Join(manifestRoot, "_Manifest") + "/"
 	if err := os.MkdirAll(localDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "collect: cannot create local manifest dir: %v\n", err)
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Get local machine ID to avoid collecting from ourselves
@@ -221,6 +221,7 @@ func runCollect(args []string) {
 			}
 		}
 	}
+	return nil
 }
 
 func deleteStaleManifests(machine, target, localDir string) {

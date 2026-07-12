@@ -11,7 +11,7 @@ import (
 // Lookup (Find manifests containing a folder)
 // =============================================================================
 
-func runLookup(args []string) {
+func runLookup(args []string) error {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "\n🔍 LOOKUP FILE/FOLDER - Show complete details\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer lookup <name-or-path>\n\n")
@@ -20,7 +20,7 @@ func runLookup(args []string) {
 		fmt.Fprintf(os.Stderr, "  photo-organizer lookup \"Vacation/\"\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer lookup \"2026/06/\"\n\n")
 		fmt.Fprintf(os.Stderr, "Shows: location, scan path, machine, date, size, hash, backup status\n")
-		os.Exit(1)
+		return errFailed
 	}
 
 	lookupPath := filepath.Clean(args[0])
@@ -31,7 +31,7 @@ func runLookup(args []string) {
 
 	if len(matches) == 0 {
 		fmt.Fprintf(os.Stderr, "No manifests found\n")
-		return
+		return nil
 	}
 
 	type FileMatch struct {
@@ -91,7 +91,7 @@ func runLookup(args []string) {
 	if len(results) == 0 {
 		fmt.Fprintf(os.Stderr, "\n🔍 LOOKUP: %s\n\n", lookupPath)
 		fmt.Fprintf(os.Stderr, "❌ Not found in any manifests\n")
-		return
+		return nil
 	}
 
 	// Display results
@@ -106,8 +106,9 @@ func runLookup(args []string) {
 		fmt.Fprintf(os.Stderr, "   Hash:        %s\n", match.hash)
 		fmt.Fprintf(os.Stderr, "   Modified:    %s\n\n", match.fileModified)
 	}
+	return nil
 }
 
-func runSearch(args []string) {
-	runSearchAnalyze(args)
+func runSearch(args []string) error {
+	return runSearchAnalyze(args)
 }

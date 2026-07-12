@@ -736,7 +736,7 @@ func writeFoldersCSV(path string, stats []FolderStats) error {
 // runAnalyze Entry Point
 // =============================================================================
 
-func runAnalyze(args []string) {
+func runAnalyze(args []string) error {
 	// Pre-separate flags from positional args so flags work in any position.
 	var flagArgs, posArgs []string
 	for i := 0; i < len(args); i++ {
@@ -775,7 +775,7 @@ func runAnalyze(args []string) {
 		} else {
 			fmt.Fprintf(os.Stderr, "analyze: no manifests specified and none found in %s\n", defaultDir)
 			fs.Usage()
-			os.Exit(1)
+			return errFailed
 		}
 	}
 
@@ -786,7 +786,7 @@ func runAnalyze(args []string) {
 		checks = append(checks, CheckFileReadable(path, fmt.Sprintf("Manifest %s readable", filepath.Base(path))))
 	}
 	if !RunPreflightChecks(checks) {
-		os.Exit(1)
+		return errFailed
 	}
 
 	var sources []ManifestSource
@@ -802,7 +802,7 @@ func runAnalyze(args []string) {
 	}
 	if len(sources) == 0 {
 		fmt.Fprintln(os.Stderr, "analyze: no valid manifests loaded")
-		os.Exit(1)
+		return errFailed
 	}
 
 	// Print distinct machine names — useful for choosing --keep in plan.
@@ -824,7 +824,8 @@ func runAnalyze(args []string) {
 		fmt.Fprintln(os.Stdout)
 		if err := writeAnalysisCSV(sources, *csvPrefix); err != nil {
 			fmt.Fprintln(os.Stderr, "Error writing CSV:", err)
-			os.Exit(1)
+			return errFailed
 		}
 	}
+	return nil
 }
