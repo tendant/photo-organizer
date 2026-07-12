@@ -726,5 +726,3 @@ func getDiskUsageLocal() string {
 	}
 	return ""
 }
-
-// getDiskUsageRemote returns disk usage info for a remote machine via SSH

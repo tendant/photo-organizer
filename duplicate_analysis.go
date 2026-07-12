@@ -22,6 +22,9 @@ func indexKey(partialHash string, sizeBytes int64) string {
 	return fmt.Sprintf("%s|%d", partialHash, sizeBytes)
 }
 
+// buildHashIndex returns (partial_hash|size) → list of (sourceIndex, rowIndex) pairs.
+// Including size in the key ensures hash collisions between files of different
+// sizes are never treated as duplicates.
 func buildHashIndex(sources []ManifestSource) map[string][]hashLocation {
 	idx := make(map[string][]hashLocation)
 
@@ -825,5 +828,3 @@ func runAnalyze(args []string) {
 		}
 	}
 }
-
-// =============================================================================

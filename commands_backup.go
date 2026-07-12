@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -317,4 +319,163 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.Chmod(dst, srcInfo.Mode())
+}
+
+// =============================================================================
+// Backup Missing Command
+// =============================================================================
+
+func runBackupMissing(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup-missing <folder> --dest <target>\n\n")
+		fmt.Fprintf(os.Stderr, "Ensures all files in folder are backed up to target destination.\n")
+		fmt.Fprintf(os.Stderr, "Only copies missing files via rsync.\n\n")
+		fmt.Fprintf(os.Stderr, "Target formats: machine-id:/path or user@host:/path\n\n")
+		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  backup-missing ~/Photos --dest ubuntu-max:/backups\n")
+		fmt.Fprintf(os.Stderr, "  backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
+		os.Exit(1)
+	}
+
+	sourceFolder := args[0]
+	destLocation := parseRequiredDestFlag(args)
+
+	if destLocation == "" {
+		fmt.Fprintf(os.Stderr, "Error: --dest is required (e.g., user@host:/backups)\n")
+		os.Exit(1)
+	}
+
+	// Resolve source folder to absolute path
+	absSourceFolder, err := resolveExistingFolder(sourceFolder)
+	if err != nil {
+		if _, statErr := os.Stat(sourceFolder); statErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: source folder not found: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: invalid source path %q\n", sourceFolder)
+		}
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Checking which files need backup...\n")
+
+	// Get local machine ID to distinguish local from remote backups
+	localMachineID := resolveMachineID("")
+
+	// Load all manifests
+	sources := loadManifestSources(localMachineID)
+
+	// Build hash index
+	idx := buildHashIndex(sources)
+
+	// Config distinguishes durable machines from removable media
+	machinesCfg := loadMachinesConfig()
+
+	// Find missing files (files without non-removable backups)
+	var missingFiles []string
+	var missingCount int
+	var missingSize int64
+
+	filepath.WalkDir(absSourceFolder, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path == absSourceFolder {
+			return nil
+		}
+
+		info, _ := os.Stat(path)
+		if info == nil {
+			return nil
+		}
+
+		// Skip unwanted system/sync files
+		if shouldSkipFile(path) {
+			return nil
+		}
+
+		// Compute partial hash
+		partialHash, _ := processFile(path)
+		if partialHash == "" {
+			return nil
+		}
+
+		if !hasIndependentBackup(sources, idx, machinesCfg, localMachineID, partialHash, info.Size()) {
+			// This file needs backing up
+			relPath, _ := filepath.Rel(absSourceFolder, path)
+			missingFiles = append(missingFiles, relPath)
+			missingCount++
+			missingSize += info.Size()
+		}
+
+		return nil
+	})
+
+	if missingCount == 0 {
+		fmt.Fprintf(os.Stderr, "✓ All files already backed up\n")
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "Backing up %d files (%.1f GB)...\n", missingCount, float64(missingSize)/(1024*1024*1024))
+
+	// Look up remote machine config
+	machines := loadMachinesConfig()
+	remoteUserHost, remoteMachineID, remotePath, err := resolveBackupDestination(destLocation, machines)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Available options:\n")
+		for machID, sshHost := range machines {
+			if !strings.HasPrefix(sshHost, "[removable]") {
+				fmt.Fprintf(os.Stderr, "  - %s (machine-id: %s)\n", sshHost, machID)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "\nUsage examples:\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max-acb605:/backups\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max:/backups\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
+		os.Exit(1)
+	}
+
+	// Step 2: Create temporary file list for rsync
+	tmpFile, err := os.CreateTemp("", "backup-missing-*.txt")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot create temp file: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	for _, f := range missingFiles {
+		fmt.Fprintln(tmpFile, f)
+	}
+	tmpFile.Close()
+
+	// Copy files via rsync
+	rsyncCmd := exec.Command("rsync", "-az", "--files-from="+tmpFile.Name(), absSourceFolder+"/", remoteUserHost+":"+remotePath+"/")
+	rsyncCmd.Stdout = os.Stderr
+	rsyncCmd.Stderr = os.Stderr
+	if err := rsyncCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: rsync failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if remoteMachineID == "" {
+		fmt.Fprintf(os.Stderr, "⚠ Backup copied, but manifest refresh was skipped.\n")
+		fmt.Fprintf(os.Stderr, "  Add this host first: photo-organizer collect --add <machine-id>=%s\n", remoteUserHost)
+		return
+	}
+
+	// Scan remote location
+	scanCmd := fmt.Sprintf("cd %s && for path in photo-organizer ~/bin/photo-organizer /usr/local/bin/photo-organizer; do if command -v $path &>/dev/null || [ -f $path ]; then $path scan . --machine %s >/dev/null 2>&1; exit $?; fi; done; exit 1", shellQuote(remotePath), shellQuote(remoteMachineID))
+	sshCmd := exec.Command("ssh", remoteUserHost, scanCmd)
+	if err := sshCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: remote scan failed after copying files. photo-organizer must be installed on remote machine.\n")
+		os.Exit(1)
+	}
+
+	// Collect updated manifests
+	collectCmd := exec.Command("photo-organizer", "collect", "--from", remoteMachineID)
+	collectCmd.Stdout = os.Stderr
+	collectCmd.Stderr = os.Stderr
+	if err := collectCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: files were copied, but manifest collection failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "✓ Backup complete\n")
 }

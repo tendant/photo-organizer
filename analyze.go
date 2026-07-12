@@ -144,9 +144,6 @@ func overlapWarnings(sources []ManifestSource, pairs map[[2]int]bool) []string {
 // Analysis
 // =============================================================================
 
-// buildHashIndex returns (partial_hash|size) → list of (sourceIndex, rowIndex) pairs.
-// Including size in the key ensures hash collisions between files of different
-// sizes are never treated as duplicates.
 // =============================================================================
 // Plan (safe-delete script)
 // =============================================================================
@@ -1140,7 +1137,3 @@ func extractDeviceInfo(machineInfo string) string {
 	}
 	return ""
 }
-
-// =============================================================================
-// Storage Status - Machine & Device Level Storage Analysis
-// =============================================================================
