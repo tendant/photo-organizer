@@ -112,6 +112,11 @@ func runScan(args []string) error {
 		}
 	}
 
+	// Ensure the manifest directory exists — on a fresh machine nothing has
+	// created it yet, and the writability preflight below would fail otherwise.
+	// If MkdirAll fails, the preflight reports the directory as unwritable.
+	_ = os.MkdirAll(filepath.Join(manifestRoot, "_Manifest"), 0755)
+
 	// Pre-flight checks
 	fmt.Fprintf(os.Stderr, "Pre-flight checks:\n")
 	checks := []PreflightCheck{
