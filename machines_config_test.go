@@ -54,6 +54,41 @@ proc /proc proc rw 0 0
 }
 
 // =============================================================================
+// isRemovablePath — the pure scan-path heuristic (fallback of isRemovableSource)
+// =============================================================================
+
+func TestIsRemovablePath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		// macOS removable mounts
+		{"/Volumes/Untitled", true},
+		{"/volumes/MyUSB", true},
+		// Linux removable mounts
+		{"/mnt/external", true},
+		{"/media/pi", true}, // /media/<one> — 3 parts, treated as removable
+		// Windows removable drives
+		{"D:", true},
+		{"E:", true},
+		{"C:", false}, // system drive is not removable
+		// Permanent storage
+		{"/Users/lei/Photos", false},
+		{"/home/user/Photos", false},
+		{"/volume1/photos", false}, // NAS share, not /volumes/
+		// /media paths with permanent-storage keywords
+		{"/media/Photos/archived", false},
+		{"/media/backups/2023", false},
+		{"/media/tank/data", false},
+	}
+	for _, tt := range tests {
+		if got := isRemovablePath(tt.path); got != tt.want {
+			t.Errorf("isRemovablePath(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+// =============================================================================
 // isRemovableSource — config tag is authoritative, path heuristic is fallback
 // =============================================================================
 
