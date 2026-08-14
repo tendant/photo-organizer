@@ -51,23 +51,21 @@ Review the output manually before deleting anything. The tool reports overlap; i
 
 ## 4. Back Up A Folder
 
-Create a timestamped archive, on a local path or on another machine:
+Keep a second copy somewhere else — another machine, or a local disk:
 
 ```bash
-photo-organizer backup ~/Photos /mnt/archive
-photo-organizer backup ~/Photos /mnt/archive --new-only
-photo-organizer backup ~/Photos nas:/backups/photos
+photo-organizer backup ~/Photos --dest nas:/backups/photos
+photo-organizer backup ~/Photos --dest /Volumes/External/photos
 ```
 
-A remote archive root (`machine-id:/path` or `user@host:/path`) transfers over
-SSH with `rsync`, then rescans the archive on the remote machine so the copy
-counts as a real backup.
+The destination mirrors the source tree. Files already there, and files that
+already have a copy on another durable machine, are skipped — so running it again
+after adding photos copies only the new ones. Use `--all` to copy everything
+regardless.
 
-Back up only files that are missing from known manifests:
-
-```bash
-photo-organizer backup-missing ~/Photos --dest nas:/backups/photos
-```
+A remote destination (`machine-id:/path` or `user@host:/path`) transfers over SSH
+with `rsync`, then rescans the destination on that machine so the copies count as
+a real backup. Local destinations are rescanned in place.
 
 ## 5. Check Backup Coverage
 
@@ -146,11 +144,16 @@ photo-organizer manifests --remove ~/Photos/OldImport
 
 ## 9. Work With Archives
 
-Move a local folder into a timestamped archive:
+Retire a folder into a dated snapshot such as `2026-06-20-143022-OldImport/`:
 
 ```bash
-photo-organizer archive ~/Photos/OldImport
+photo-organizer archive ~/Photos/OldImport --dest /mnt/archive
+photo-organizer archive ~/Photos/OldImport --dest nas:/archive
 ```
+
+A local archive moves the folder and repoints the manifests at it; `--keep`
+copies instead. A remote archive always keeps the source — verify with
+`check-backup`, then remove it yourself.
 
 List archive contents:
 

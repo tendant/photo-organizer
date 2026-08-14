@@ -60,43 +60,68 @@ Recommend what to back up next.
 photo-organizer storage-plan
 ```
 
-## Backup And Restore
+## Backup And Archive
+
+`backup` and `archive` answer different questions:
+
+| | `backup` | `archive` |
+|---|---|---|
+| Question | "does a second copy exist?" | "can this folder leave my library?" |
+| Layout | mirrors the source tree | dated snapshot folder |
+| Repeat runs | converge — copy only what is missing | each run makes a new snapshot |
+| Source folder | untouched | moved (kept with `--keep`) |
+
+Both accept a local path or a remote `machine-id:/path` or `user@host:/path`.
 
 ### backup
-Back up a folder to a timestamped archive, locally or on a remote machine.
+Keep a second copy of a folder somewhere else.
 
 ```bash
-photo-organizer backup ~/Photos /mnt/archive
-photo-organizer backup ~/Photos /mnt/archive --new-only
-photo-organizer backup ~/Photos nas:/backups/photos
-photo-organizer backup ~/Photos ubuntu@192.168.1.100:/backups --new-only
+photo-organizer backup ~/Photos --dest nas:/backups/photos
+photo-organizer backup ~/Photos --dest ubuntu@192.168.1.100:/backups
+photo-organizer backup ~/Photos --dest /Volumes/External/photos
+photo-organizer backup ~/Photos --dest nas:/backups/photos --all
 ```
 
-Creates an archive folder such as `/mnt/archive/2026-06-20-143022-Photos/`.
+The destination mirrors the source tree, so repeated runs are safe to schedule:
+files already at the destination, and files that already have a copy on another
+durable machine, are skipped. `--all` copies everything regardless.
 
-An archive root of the form `machine-id:/path` or `user@host:/path` is treated as
-a remote destination: files are copied with `rsync` over SSH, then the archive
-folder is scanned on the remote machine and its manifest collected, so the copy
-counts as a backup for `dups`, `check-backup`, and `--new-only`.
+Afterwards the destination is scanned — over SSH for a remote target, in place
+for a local one — so the new copies count for `dups`, `check-backup`, and the
+next `backup` run.
 
 Remote destinations require SSH key access and `photo-organizer` installed on the
 remote machine. A `user@host` that is not in `machines.conf` still transfers the
 files, but the manifest refresh is skipped — add it with
 `photo-organizer collect --add <machine-id>=user@host` to make the copy count.
 
-### backup-missing
-Copy only files that are not already represented in collected manifests.
+`backup-missing` is the former name of this command and still works, with a
+deprecation notice.
+
+### archive
+Retire a folder into a dated snapshot and repoint the manifests at it.
 
 ```bash
-photo-organizer backup-missing ~/Photos --dest nas:/backups/photos
-photo-organizer backup-missing ~/Photos --dest user@host:/backups/photos
+photo-organizer archive ~/Photos/OldImport --dest /mnt/archive
+photo-organizer archive ~/Photos/OldImport --dest nas:/archive
+photo-organizer archive ~/Photos/OldImport --dest /mnt/archive --keep
 ```
 
+Creates a folder such as `/mnt/archive/2026-06-20-143022-OldImport/`. The
+timestamp keeps every snapshot distinct, so a later run never overwrites an
+earlier one.
+
+A local archive moves the folder, then prunes the old manifest entries and scans
+the new location. `--keep` copies instead, leaving the source in place. A remote
+archive always copies and always keeps the source — deleting across the network
+is never automatic. Verify with `check-backup`, then remove the source yourself.
+
 ### restore
-Restore files from an archive.
+Restore files from an archive snapshot.
 
 ```bash
-photo-organizer restore /mnt/archive/2026-06-20-143022-Photos ~/Recovered
+photo-organizer restore /mnt/archive/2026-06-20-143022-OldImport ~/Recovered
 ```
 
 ### list
@@ -184,13 +209,6 @@ photo-organizer collect --from nas --sync-delete
 Machine config is stored at `~/manifests/machines.conf`.
 
 ## Cleanup Helpers
-
-### archive
-Move a folder to a timestamped local archive location.
-
-```bash
-photo-organizer archive ~/Photos/OldImport
-```
 
 ### check-backup
 Check whether a folder is backed up and where copies exist.

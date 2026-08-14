@@ -2,20 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
-
-func parseRequiredDestFlag(args []string) string {
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--dest" && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return ""
-}
 
 func resolveExistingFolder(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
@@ -44,25 +36,6 @@ func loadManifestSources(currentMachineID string) []ManifestSource {
 		sources = append(sources, src)
 	}
 	return sources
-}
-
-func findManifestForScanPath(absPath string) (ManifestSource, bool) {
-	manifestDir := filepath.Join(userHomeDir(), "manifests", "_Manifest")
-	entries, err := os.ReadDir(manifestDir)
-	if err != nil {
-		return ManifestSource{}, false
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".csv") {
-			continue
-		}
-		fullPath := filepath.Join(manifestDir, entry.Name())
-		src, err := readManifest(fullPath)
-		if err == nil && src.ScanPath == absPath {
-			return src, true
-		}
-	}
-	return ManifestSource{}, false
 }
 
 func hasIndependentBackup(sources []ManifestSource, idx map[string][]hashLocation, machinesCfg map[string]string, machineName, partialHash string, sizeBytes int64) bool {
@@ -130,6 +103,75 @@ func printBackupDestinationOptions(machines map[string]string) {
 			fmt.Fprintf(os.Stderr, "  - %s (machine-id: %s)\n", sshHost, machID)
 		}
 	}
+}
+
+// remoteArchivePath joins a remote archive root and a snapshot folder name.
+// Remote paths are always POSIX, so filepath.Join is not used here.
+func remoteArchivePath(remoteRoot, folderName string) string {
+	return strings.TrimSuffix(remoteRoot, "/") + "/" + folderName
+}
+
+// listFilesUnder returns every backup-worthy file under root, as paths relative
+// to root, along with their total size.
+func listFilesUnder(root string) ([]string, int64) {
+	var relPaths []string
+	var totalSize int64
+
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path == root || shouldSkipFile(path) {
+			return nil
+		}
+		relPath, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		relPaths = append(relPaths, relPath)
+		if info, err := d.Info(); err == nil {
+			totalSize += info.Size()
+		}
+		return nil
+	})
+
+	return relPaths, totalSize
+}
+
+// copyFile copies a single file from source to destination, preserving mode.
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(dst, srcInfo.Mode())
+}
+
+// refreshLocalManifest rescans a local destination so copies there show up in
+// dups, check-backup, and storage-status.
+func refreshLocalManifest(destPath string) error {
+	machineName := resolveMachineID("")
+	files, _, err := scanDirectory(destPath, make(map[string]CacheEntry), nil)
+	if err != nil {
+		return err
+	}
+
+	manifestFile := filepath.Join(userHomeDir(), "manifests", "_Manifest", manifestFilename(machineName, destPath))
+	_, err = updateManifest(destPath, files, manifestFile, machineName, false)
+	return err
 }
 
 // rsyncRelPaths copies the given srcRoot-relative paths to remoteUserHost:remotePath,

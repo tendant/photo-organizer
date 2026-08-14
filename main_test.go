@@ -854,19 +854,19 @@ func TestGenerateArchiveFolderName(t *testing.T) {
 			name:       "basic case",
 			folderName: "DJI_001",
 			timestamp:  time.Date(2026, 6, 19, 6, 0, 12, 0, time.UTC),
-			want:       "2026-06-19-060012DJI_001",
+			want:       "2026-06-19-060012-DJI_001",
 		},
 		{
 			name:       "complex folder name",
 			folderName: "Camera-Roll-Photos",
 			timestamp:  time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC),
-			want:       "2026-12-31-235959Camera-Roll-Photos",
+			want:       "2026-12-31-235959-Camera-Roll-Photos",
 		},
 		{
 			name:       "folder name with underscores",
 			folderName: "DJI_20230704_001",
 			timestamp:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-			want:       "2026-01-01-000000DJI_20230704_001",
+			want:       "2026-01-01-000000-DJI_20230704_001",
 		},
 	}
 

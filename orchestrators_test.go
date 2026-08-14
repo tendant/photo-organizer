@@ -91,38 +91,56 @@ func TestRunBackup(t *testing.T) {
 	home := setupHome(t)
 	captureBoth(t, func() { wantFailed(t, runBackup(nil), "usage") })
 	captureBoth(t, func() {
-		wantFailed(t, runBackup([]string{filepath.Join(home, "nope"), filepath.Join(home, "arch")}), "no manifest")
+		wantFailed(t, runBackup([]string{filepath.Join(home, "nope"), "--dest", filepath.Join(home, "arch")}), "missing source")
 	})
 
 	writeManifestFixture(t, home, "machine-a", "photos", map[string]string{
 		"trip/a.jpg": "aaa", "b.jpg": "bbb",
 	})
+	writeMachineID(t, home, "machine-a")
 	scanDir := filepath.Join(home, "photos")
-	archiveRoot := filepath.Join(home, "archive")
+	dest := filepath.Join(home, "backup")
 
 	out := captureBoth(t, func() {
-		wantNil(t, runBackup([]string{scanDir, archiveRoot}), "backup")
+		wantNil(t, runBackup([]string{scanDir, "--dest", dest}), "backup")
 	})
-	if !strings.Contains(out, "BACKUP COMPLETE") {
-		t.Errorf("expected completion banner, got:\n%s", out)
+	if !strings.Contains(out, "Files copied:        2") {
+		t.Errorf("expected copied count, got:\n%s", out)
 	}
-	archived, _ := filepath.Glob(filepath.Join(archiveRoot, "*", "trip", "a.jpg"))
-	if len(archived) != 1 {
-		t.Errorf("expected trip/a.jpg inside timestamped archive, glob found %v", archived)
+	// The destination mirrors the source: no timestamped folder in between.
+	if _, err := os.Stat(filepath.Join(dest, "trip", "a.jpg")); err != nil {
+		t.Errorf("expected trip/a.jpg mirrored into the destination: %v", err)
+	}
+
+	// A second run has nothing left to do.
+	out = captureBoth(t, func() {
+		wantNil(t, runBackup([]string{scanDir, "--dest", dest}), "backup again")
+	})
+	if !strings.Contains(out, "Nothing to copy") {
+		t.Errorf("expected converged no-op, got:\n%s", out)
 	}
 }
 
-func TestRunBackupNewOnly(t *testing.T) {
+func TestRunBackupSkipsFilesBackedUpElsewhere(t *testing.T) {
 	home := setupHome(t)
 	shared := map[string]string{"a.jpg": "same-bytes", "b.jpg": "same-two"}
 	writeManifestFixture(t, home, "machine-a", "photos", shared)
 	writeManifestFixture(t, home, "machine-b", "mirror", shared) // independent backup
+	writeMachineID(t, home, "machine-a")
 
 	out := captureBoth(t, func() {
-		wantNil(t, runBackup([]string{filepath.Join(home, "photos"), filepath.Join(home, "arch"), "--new-only"}), "new-only")
+		wantNil(t, runBackup([]string{filepath.Join(home, "photos"), "--dest", filepath.Join(home, "arch")}), "dedup")
 	})
-	if !strings.Contains(out, "Files skipped:   2") {
+	if !strings.Contains(out, "Nothing to copy") || !strings.Contains(out, "2 files already backed up elsewhere") {
 		t.Errorf("expected both files skipped (backed up on machine-b), got:\n%s", out)
+	}
+
+	// --all ignores the dedup index.
+	out = captureBoth(t, func() {
+		wantNil(t, runBackup([]string{filepath.Join(home, "photos"), "--dest", filepath.Join(home, "arch"), "--all"}), "all")
+	})
+	if !strings.Contains(out, "Files copied:        2") {
+		t.Errorf("expected --all to copy every file, got:\n%s", out)
 	}
 }
 

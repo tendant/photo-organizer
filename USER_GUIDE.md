@@ -24,12 +24,11 @@ Use `dups` for file-level duplicate groups. Use `dup-folders` when deciding whic
 ### 3. Back Up
 
 ```bash
-photo-organizer backup ~/Photos /mnt/archive
-photo-organizer backup ~/Photos nas:/backups/photos
-photo-organizer backup-missing ~/Photos --dest nas:/backups/photos
+photo-organizer backup ~/Photos --dest nas:/backups/photos
+photo-organizer backup ~/Photos --dest /Volumes/External/photos
 ```
 
-`backup` creates timestamped archives, either on a local path or on a remote machine (`machine-id:/path` or `user@host:/path`, copied over SSH). `backup-missing` copies only files that do not already appear in collected manifests.
+`backup` mirrors the folder into the destination, copying only files that are missing there or not yet backed up on another durable machine. The destination may be a local path or a remote machine (`machine-id:/path` or `user@host:/path`, copied over SSH). Use `archive` instead when you want a dated snapshot you keep untouched.
 
 ### 4. Verify
 
@@ -100,7 +99,7 @@ Stable media IDs prevent a removable device from looking like a new source every
 ```bash
 photo-organizer dup-folders --top 20
 photo-organizer check-backup ~/Photos/OldImport
-photo-organizer archive ~/Photos/OldImport
+photo-organizer archive ~/Photos/OldImport --dest /mnt/archive
 ```
 
 The recommended cleanup workflow is review first, verify backup coverage, then archive or manually delete.

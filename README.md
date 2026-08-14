@@ -29,17 +29,19 @@ Shows folders with overlapping file sets so you can clean up whole folders safel
 
 ### Back up to another machine
 ```bash
-photo-organizer backup ~/Photos nas:/backups/photos
+photo-organizer backup ~/Photos --dest nas:/backups/photos
 ```
-Copies to a timestamped archive on the remote machine over SSH, then refreshes
-that machine's manifest so the copy counts as a backup. A local path such as
-`/mnt/archive` works the same way without SSH.
+Mirrors the folder over SSH, copying only files that are missing there or not yet
+backed up anywhere else, then refreshes that machine's manifest so the copies
+count. Run it again and it copies only what changed. A local path such as
+`/Volumes/External/photos` works the same way without SSH.
 
-### Back up files missing from an archive
+### Retire a folder into a dated archive
 ```bash
-photo-organizer backup-missing ~/Photos --dest nas:/backups/photos
+photo-organizer archive ~/Photos/OldImport --dest /mnt/archive
 ```
-Copies only files that are not already represented in collected manifests.
+Moves the folder into `2026-06-20-143022-OldImport/` and repoints the manifests at
+it. Use `--keep` to copy instead of move; remote archives always keep the source.
 
 ### Search across all machines
 ```bash
@@ -66,8 +68,9 @@ photo-organizer search -hash abc123def456
 | `dup-folders` | Find duplicate folders for cleanup |
 | `storage-status` | Show storage breakdown by machine and device |
 | `storage-plan` | Recommend what to back up next |
-| `backup` | Back up a folder to a timestamped archive, local or remote |
-| `backup-missing` | Copy only files not already backed up |
+| `backup` | Mirror a folder to a second location, local or remote |
+| `archive` | Retire a folder into a dated snapshot, local or remote |
+| `restore` | Restore files from an archive snapshot |
 | `search` | Query manifests by name/hash/size/date |
 | `collect` | Pull manifests from remote machines |
 | `machines` | List all machines in manifests |

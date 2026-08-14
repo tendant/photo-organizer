@@ -248,10 +248,10 @@ func findStalledManifests(
 
 // generateArchiveFolderName creates a timestamped archive folder name.
 // Pure: deterministic, no side effects. Time is passed as parameter for testability.
-// Format: YYYY-MM-DD-HHMMSSfoldername (e.g., 2026-06-19-060012DJI_001)
+// Format: YYYY-MM-DD-HHMMSS-foldername (e.g., 2026-06-19-060012-DJI_001)
 func generateArchiveFolderName(folderName string, timestamp time.Time) string {
 	timeStr := timestamp.Format("2006-01-02-150405")
-	return fmt.Sprintf("%s%s", timeStr, folderName)
+	return fmt.Sprintf("%s-%s", timeStr, folderName)
 }
 
 // =============================================================================

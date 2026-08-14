@@ -127,7 +127,7 @@ touch /path/to/destination/.write-test
 rm /path/to/destination/.write-test
 ```
 
-### rsync Failed During backup-missing
+### rsync Failed During backup
 
 Check the configured destination and remote path:
 
@@ -140,7 +140,7 @@ ssh user@host ls -la /backups
 Then retry:
 
 ```bash
-photo-organizer backup-missing ~/Photos --dest user@host:/backups/photos
+photo-organizer backup ~/Photos --dest user@host:/backups/photos
 ```
 
 ### check-backup Shows At-Risk Files
@@ -148,7 +148,7 @@ photo-organizer backup-missing ~/Photos --dest user@host:/backups/photos
 Back up the folder, collect manifests, then check again:
 
 ```bash
-photo-organizer backup ~/Photos /mnt/archive
+photo-organizer backup ~/Photos --dest /mnt/archive
 photo-organizer collect
 photo-organizer check-backup ~/Photos
 ```
@@ -169,7 +169,7 @@ photo-organizer fix ~/manifests/_Manifest/photos.csv /mnt/archive/2026-06-20-143
 Prefer `archive` before deletion so folders are recoverable:
 
 ```bash
-photo-organizer archive ~/Photos/OldImport
+photo-organizer archive ~/Photos/OldImport --dest ~/Photos/_archive
 photo-organizer list ~/Photos/_archive
 ```
 

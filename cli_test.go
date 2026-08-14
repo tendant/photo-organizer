@@ -194,7 +194,8 @@ func TestCLIHelpCurrentSurface(t *testing.T) {
 	for _, want := range []string{
 		"photo-organizer dups",
 		"photo-organizer dup-folders",
-		"photo-organizer backup-missing",
+		"photo-organizer backup",
+		"photo-organizer archive",
 		"photo-organizer check-backup",
 		"verify-archive",
 		"storage-status",
@@ -256,7 +257,7 @@ func TestCLIActiveCommandsRoute(t *testing.T) {
 		{"sign", []string{"sign"}, "Usage: photo-organizer sign"},
 		{"verify-archive", []string{"verify-archive"}, "Usage: photo-organizer verify-archive"},
 		{"fix", []string{"fix"}, "Usage: photo-organizer fix"},
-		{"backup-missing", []string{"backup-missing"}, "Usage: photo-organizer backup-missing"},
+		{"backup-missing", []string{"backup-missing"}, "'backup-missing' is deprecated"},
 		{"collect-list", []string{"collect", "--list"}, "No machines configured"},
 	}
 
@@ -581,40 +582,369 @@ func TestCLIArchiveCancelledLeavesSourceUntouched(t *testing.T) {
 	}
 }
 
-func TestCLIBackupAndRestoreWorkflow(t *testing.T) {
+// fakeRsync copies files listed by --files-from into the destination path,
+// standing in for a real rsync over SSH.
+const fakeRsync = "#!/bin/sh\nset -eu\nfiles_from=\nsrc=\ndest=\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    --files-from=*) files_from=${arg#--files-from=} ;;\n    -*) ;;\n    *)\n      if [ -z \"$src\" ]; then src=$arg; elif [ -z \"$dest\" ]; then dest=$arg; fi ;;\n  esac\ndone\nremote_path=${dest#*:}\nmkdir -p \"$remote_path\"\nwhile IFS= read -r rel; do\n  mkdir -p \"$remote_path/$(dirname \"$rel\")\"\n  cp \"$src$rel\" \"$remote_path/$rel\"\ndone < \"$files_from\"\n"
+
+// setupRemoteShims installs fake rsync/ssh/photo-organizer binaries and returns
+// the env entry that puts them on PATH.
+func setupRemoteShims(t *testing.T, homeDir, rsyncScript string) string {
+	t.Helper()
+
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "rsync"), rsyncScript)
+	writeExecutable(t, filepath.Join(binDir, "ssh"), "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "photo-organizer"), "#!/bin/sh\nexit 0\n")
+	return prependPathEnv(binDir)
+}
+
+func writeMachineID(t *testing.T, homeDir, machineID string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Join(homeDir, "manifests"), 0o755); err != nil {
+		t.Fatalf("mkdir manifests: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte(machineID+"\n"), 0o644); err != nil {
+		t.Fatalf("write machine-id: %v", err)
+	}
+}
+
+// =============================================================================
+// backup — mirrors a folder, converging on every run
+// =============================================================================
+
+func TestCLIBackupMirrorsToLocalDest(t *testing.T) {
 	homeDir := t.TempDir()
 	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	archiveRoot := filepath.Join(homeDir, "backups")
+	destDir := filepath.Join(homeDir, "external", "photos")
+
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+		"album/photo2.jpg": "photo-two",
+	})
+	writeMachineID(t, homeDir, "local-machine")
+
+	out, code := runCLIWithHome(t, homeDir, "backup", sourceDir, "--dest", destDir)
+	if code != 0 {
+		t.Fatalf("backup exit code = %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "Files copied:        2") {
+		t.Fatalf("backup output missing copied count:\n%s", out)
+	}
+
+	// The destination mirrors the source tree: no timestamped folder in between.
+	for relPath, want := range map[string]string{
+		filepath.Join("album", "photo1.jpg"): "photo-one",
+		filepath.Join("album", "photo2.jpg"): "photo-two",
+	} {
+		data, err := os.ReadFile(filepath.Join(destDir, relPath))
+		if err != nil {
+			t.Fatalf("read mirrored file %s: %v", relPath, err)
+		}
+		if string(data) != want {
+			t.Fatalf("mirrored file %s = %q, want %q", relPath, string(data), want)
+		}
+	}
+
+	// The destination is scanned, so its copies are visible to other commands.
+	foundDestManifest := false
+	for _, src := range readAllManifestSources(t, homeDir) {
+		if src.ScanPath == destDir {
+			foundDestManifest = true
+		}
+	}
+	if !foundDestManifest {
+		t.Fatalf("no manifest was written for the backup destination %s", destDir)
+	}
+
+	// Running again converges: everything is already there.
+	out, code = runCLIWithHome(t, homeDir, "backup", sourceDir, "--dest", destDir)
+	if code != 0 {
+		t.Fatalf("second backup exit code = %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "Nothing to copy") {
+		t.Fatalf("second backup should be a no-op:\n%s", out)
+	}
+	if entries, err := os.ReadDir(destDir); err != nil || len(entries) != 1 {
+		t.Fatalf("destination should hold only the mirrored tree, got %v (err %v)", entries, err)
+	}
+}
+
+func TestCLIBackupSkipsFilesBackedUpElsewhere(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	destDir := filepath.Join(homeDir, "external", "photos")
+
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/shared.jpg": "shared-photo",
+		"album/unique.jpg": "unique-photo",
+	})
+	writeManifestFixture(t, homeDir, "other-machine", filepath.Join("mirror", "Photos"), map[string]string{
+		"album/shared.jpg": "shared-photo",
+	})
+	writeMachineID(t, homeDir, "local-machine")
+
+	out, code := runCLIWithHome(t, homeDir, "backup", sourceDir, "--dest", destDir)
+	if code != 0 {
+		t.Fatalf("backup exit code = %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "Files copied:        1") || !strings.Contains(out, "Backed up elsewhere: 1") {
+		t.Fatalf("backup output missing dedup counts:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "album", "unique.jpg")); err != nil {
+		t.Fatalf("unique file missing from backup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "album", "shared.jpg")); !os.IsNotExist(err) {
+		t.Fatalf("file backed up on another machine should be skipped")
+	}
+
+	// --all ignores the dedup index and copies everything.
+	out, code = runCLIWithHome(t, homeDir, "backup", sourceDir, "--dest", destDir, "--all")
+	if code != 0 {
+		t.Fatalf("backup --all exit code = %d, output:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "album", "shared.jpg")); err != nil {
+		t.Fatalf("--all should copy files backed up elsewhere: %v", err)
+	}
+}
+
+func TestCLIBackupNoOpWhenAlreadyBackedUp(t *testing.T) {
+	homeDir := t.TempDir()
+	localDir := filepath.Join(homeDir, "library", "Photos")
+	shared := map[string]string{
+		"album/photo1.jpg": "photo-one",
+	}
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), shared)
+	writeManifestFixture(t, homeDir, "remote-machine", filepath.Join("remote-backup", "Photos"), shared)
+	writeMachineID(t, homeDir, "local-machine")
+
+	destDir := filepath.Join(homeDir, "external", "photos")
+	out, code := runCLIWithHome(t, homeDir, "backup", localDir, "--dest", destDir)
+	if code != 0 {
+		t.Fatalf("backup exit code = %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "Nothing to copy") || !strings.Contains(out, "already backed up elsewhere") {
+		t.Fatalf("backup output missing no-op message:\n%s", out)
+	}
+	if entries, _ := os.ReadDir(destDir); len(entries) != 0 {
+		t.Fatalf("no-op backup should not write anything, got %v", entries)
+	}
+}
+
+func TestCLIBackupSameMachineCopyDoesNotCountAsBackup(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	remoteRoot := filepath.Join(homeDir, "remote-dest")
+
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+	})
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("other-local-copy", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+	})
+	writeMachineID(t, homeDir, "local-machine")
+	pathEnv := setupRemoteShims(t, homeDir, fakeRsync)
+
+	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{pathEnv}, "backup", sourceDir, "--dest", "backup@example:"+remoteRoot)
+	if code != 0 {
+		t.Fatalf("backup exit code = %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "manifest refresh was skipped") {
+		t.Fatalf("backup output missing direct-host warning:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(remoteRoot, "album", "photo1.jpg")); err != nil {
+		t.Fatalf("file was not copied when only same-machine duplicate existed: %v", err)
+	}
+}
+
+func TestCLIBackupToRemoteMirrorsWithConfiguredMachine(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	remoteRoot := filepath.Join(homeDir, "remote-dest")
+	t.Setenv("HOME", homeDir)
+
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+		"album/photo2.jpg": "photo-two",
+	})
+	writeMachineID(t, homeDir, "local-machine")
+	if err := saveMachinesConfig(map[string]string{"remote-machine": "backup@example"}); err != nil {
+		t.Fatalf("saveMachinesConfig: %v", err)
+	}
+	pathEnv := setupRemoteShims(t, homeDir, fakeRsync)
+
+	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{pathEnv}, "backup", sourceDir, "--dest", "remote-machine:"+remoteRoot)
+	if code != 0 {
+		t.Fatalf("backup exit code = %d, output:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"Checking which files need backup...",
+		"Backing up 2 files",
+		"Backup complete",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("backup output missing %q:\n%s", want, out)
+		}
+	}
+
+	// Remote backups mirror too — no dated folder in the path.
+	for relPath, want := range map[string]string{
+		filepath.Join("album", "photo1.jpg"): "photo-one",
+		filepath.Join("album", "photo2.jpg"): "photo-two",
+	} {
+		data, err := os.ReadFile(filepath.Join(remoteRoot, relPath))
+		if err != nil {
+			t.Fatalf("read remote copied file %s: %v", relPath, err)
+		}
+		if string(data) != want {
+			t.Fatalf("remote copied file %s = %q, want %q", relPath, string(data), want)
+		}
+	}
+}
+
+func TestCLIBackupToRemoteFailsWhenRsyncFails(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	remoteRoot := filepath.Join(homeDir, "remote-dest")
+	t.Setenv("HOME", homeDir)
+
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+	})
+	writeMachineID(t, homeDir, "local-machine")
+	if err := saveMachinesConfig(map[string]string{"remote-machine": "backup@example"}); err != nil {
+		t.Fatalf("saveMachinesConfig: %v", err)
+	}
+	pathEnv := setupRemoteShims(t, homeDir, "#!/bin/sh\nexit 12\n")
+
+	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{pathEnv}, "backup", sourceDir, "--dest", "remote-machine:"+remoteRoot)
+	if code == 0 {
+		t.Fatalf("backup exit code = 0, want nonzero\n%s", out)
+	}
+	if !strings.Contains(out, "Error: rsync failed") {
+		t.Fatalf("backup failure output missing rsync error:\n%s", out)
+	}
+	if _, err := os.Stat(remoteRoot); !os.IsNotExist(err) {
+		t.Fatalf("remote root should not exist after rsync failure")
+	}
+}
+
+func TestCLIBackupToRemoteFailsWhenCollectFailsAfterCopy(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	remoteRoot := filepath.Join(homeDir, "remote-dest")
+	t.Setenv("HOME", homeDir)
+
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+	})
+	writeMachineID(t, homeDir, "local-machine")
+	if err := saveMachinesConfig(map[string]string{"remote-machine": "backup@example"}); err != nil {
+		t.Fatalf("saveMachinesConfig: %v", err)
+	}
+	pathEnv := setupRemoteShims(t, homeDir, fakeRsync)
+	writeExecutable(t, filepath.Join(homeDir, "bin", "photo-organizer"), "#!/bin/sh\nexit 9\n")
+
+	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{pathEnv}, "backup", sourceDir, "--dest", "remote-machine:"+remoteRoot)
+	if code == 0 {
+		t.Fatalf("collect-failure exit code = 0, want nonzero\n%s", out)
+	}
+	if !strings.Contains(out, "manifest collection failed") {
+		t.Fatalf("collect-failure output missing message:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(remoteRoot, "album", "photo1.jpg")); err != nil {
+		t.Fatalf("file copy should complete before collect failure: %v", err)
+	}
+}
+
+func TestCLIBackupRemoteUnknownMachineDoesNotCreateLocalDir(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	t.Setenv("HOME", homeDir)
+
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+	})
+	if err := saveMachinesConfig(map[string]string{"remote-machine": "backup@example"}); err != nil {
+		t.Fatalf("saveMachinesConfig: %v", err)
+	}
+
+	out, code := runCLIWithHome(t, homeDir, "backup", sourceDir, "--dest", "nope:/backups")
+	if code == 0 {
+		t.Fatalf("unknown machine exit code = 0, want nonzero\n%s", out)
+	}
+	for _, want := range []string{"not found in machines.conf", "Available options", "backup@example"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unknown machine output missing %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(homeDir, "nope:")); !os.IsNotExist(err) {
+		t.Fatalf("remote-looking dest must not create a local directory")
+	}
+}
+
+func TestCLIBackupMissingAliasForwardsToBackup(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	destDir := filepath.Join(homeDir, "external", "photos")
+
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
+		"album/photo1.jpg": "photo-one",
+	})
+	writeMachineID(t, homeDir, "local-machine")
+
+	out, code := runCLIWithHome(t, homeDir, "backup-missing", sourceDir, "--dest", destDir)
+	if code != 0 {
+		t.Fatalf("backup-missing exit code = %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "'backup-missing' is deprecated") {
+		t.Fatalf("backup-missing output missing deprecation notice:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "album", "photo1.jpg")); err != nil {
+		t.Fatalf("deprecated alias did not copy the file: %v", err)
+	}
+}
+
+// =============================================================================
+// archive — dated snapshots, local and remote
+// =============================================================================
+
+func TestCLIArchiveKeepCopiesAndRestores(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	archiveRoot := filepath.Join(homeDir, "archive")
 	restoreDir := filepath.Join(homeDir, "restored")
 
 	writeManifestFixture(t, homeDir, "test-machine", filepath.Join("library", "Photos"), map[string]string{
 		"album/photo1.jpg": "photo-one",
 		"album/photo2.jpg": "photo-two",
 	})
+	writeMachineID(t, homeDir, "test-machine")
 
-	backupOut, backupCode := runCLIWithHome(t, homeDir, "backup", sourceDir, archiveRoot)
-	if backupCode != 0 {
-		t.Fatalf("backup exit code = %d, output:\n%s", backupCode, backupOut)
+	out, code := runCLIWithHomeInput(t, homeDir, "y\n", "archive", sourceDir, "--dest", archiveRoot, "--keep")
+	if code != 0 {
+		t.Fatalf("archive --keep exit code = %d, output:\n%s", code, out)
 	}
 	for _, want := range []string{
-		"BACKUP WORKFLOW",
-		"BACKUP COMPLETE",
-		"Files backed up: 2",
-		"All files successfully backed up",
+		"ARCHIVE PREVIEW",
+		"Source folder is kept",
+		"Folder archived to",
 	} {
-		if !strings.Contains(backupOut, want) {
-			t.Fatalf("backup output missing %q:\n%s", want, backupOut)
+		if !strings.Contains(out, want) {
+			t.Fatalf("archive --keep output missing %q:\n%s", want, out)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(sourceDir, "album", "photo1.jpg")); err != nil {
+		t.Fatalf("--keep must leave the source in place: %v", err)
+	}
 
+	// The snapshot folder is dated, so repeat runs never collide.
 	archiveDir := singleDirEntry(t, archiveRoot)
-	for _, relPath := range []string{
-		filepath.Join("album", "photo1.jpg"),
-		filepath.Join("album", "photo2.jpg"),
-	} {
-		if _, err := os.Stat(filepath.Join(archiveDir, relPath)); err != nil {
-			t.Fatalf("archived file missing %s: %v", relPath, err)
-		}
+	if !archiveTimestampPrefix.MatchString(filepath.Base(archiveDir)) {
+		t.Fatalf("archive folder %q is not timestamped", filepath.Base(archiveDir))
 	}
 
 	restoreOut, restoreCode := runCLIWithHome(t, homeDir, "restore", archiveDir, restoreDir)
@@ -631,7 +961,6 @@ func TestCLIBackupAndRestoreWorkflow(t *testing.T) {
 			t.Fatalf("restore output missing %q:\n%s", want, restoreOut)
 		}
 	}
-
 	for relPath, want := range map[string]string{
 		filepath.Join("album", "photo1.jpg"): "photo-one",
 		filepath.Join("album", "photo2.jpg"): "photo-two",
@@ -646,441 +975,53 @@ func TestCLIBackupAndRestoreWorkflow(t *testing.T) {
 	}
 }
 
-func TestCLIBackupNewOnlySkipsAlreadyBackedUpFiles(t *testing.T) {
+func TestCLIArchiveToRemoteCreatesDatedSnapshot(t *testing.T) {
 	homeDir := t.TempDir()
 	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	archiveRoot := filepath.Join(homeDir, "backups")
-
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
-		"album/shared.jpg": "shared-photo",
-		"album/unique.jpg": "unique-photo",
-	})
-	writeManifestFixture(t, homeDir, "remote-machine", filepath.Join("remote", "Photos"), map[string]string{
-		"album/shared.jpg": "shared-photo",
-	})
-
-	out, code := runCLIWithHome(t, homeDir, "backup", sourceDir, archiveRoot, "--new-only")
-	if code != 0 {
-		t.Fatalf("backup --new-only exit code = %d, output:\n%s", code, out)
-	}
-	if !strings.Contains(out, "Files backed up: 1") {
-		t.Fatalf("backup --new-only output missing filtered count:\n%s", out)
-	}
-
-	archiveDir := singleDirEntry(t, archiveRoot)
-	if _, err := os.Stat(filepath.Join(archiveDir, "album", "unique.jpg")); err != nil {
-		t.Fatalf("unique file missing from new-only backup: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(archiveDir, "album", "shared.jpg")); !os.IsNotExist(err) {
-		t.Fatalf("already-backed-up file should be skipped by --new-only")
-	}
-}
-
-func TestCLIBackupMissingNoOpWhenAlreadyBackedUp(t *testing.T) {
-	homeDir := t.TempDir()
-	localDir := filepath.Join(homeDir, "library", "Photos")
-	shared := map[string]string{
-		"album/photo1.jpg": "photo-one",
-	}
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), shared)
-	writeManifestFixture(t, homeDir, "remote-machine", filepath.Join("remote-backup", "Photos"), shared)
-	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("local-machine\n"), 0o644); err != nil {
-		t.Fatalf("write machine-id: %v", err)
-	}
-
-	out, code := runCLIWithHome(t, homeDir, "backup-missing", localDir, "--dest", "unused:/backups")
-	if code != 0 {
-		t.Fatalf("backup-missing exit code = %d, output:\n%s", code, out)
-	}
-	if !strings.Contains(out, "All files already backed up") {
-		t.Fatalf("backup-missing output missing no-op message:\n%s", out)
-	}
-}
-
-func TestCLIBackupMissingSameMachineCopyDoesNotCountAsBackup(t *testing.T) {
-	homeDir := t.TempDir()
-	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	remoteRoot := filepath.Join(homeDir, "remote-dest")
-	binDir := filepath.Join(homeDir, "bin")
-
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
-		"album/photo1.jpg": "photo-one",
-	})
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("other-local-copy", "Photos"), map[string]string{
-		"album/photo1.jpg": "photo-one",
-	})
-	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("local-machine\n"), 0o644); err != nil {
-		t.Fatalf("write machine-id: %v", err)
-	}
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	writeExecutable(t, filepath.Join(binDir, "rsync"), "#!/bin/sh\nset -eu\nfiles_from=\nsrc=\ndest=\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    --files-from=*) files_from=${arg#--files-from=} ;;\n    -*) ;;\n    *)\n      if [ -z \"$src\" ]; then src=$arg; elif [ -z \"$dest\" ]; then dest=$arg; fi ;;\n  esac\ndone\nremote_path=${dest#*:}\nmkdir -p \"$remote_path\"\nwhile IFS= read -r rel; do\n  mkdir -p \"$remote_path/$(dirname \"$rel\")\"\n  cp \"$src$rel\" \"$remote_path/$rel\"\ndone < \"$files_from\"\n")
-
-	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{prependPathEnv(binDir)}, "backup-missing", sourceDir, "--dest", "backup@example:"+remoteRoot)
-	if code != 0 {
-		t.Fatalf("backup-missing exit code = %d, output:\n%s", code, out)
-	}
-	if !strings.Contains(out, "manifest refresh was skipped") {
-		t.Fatalf("backup-missing output missing direct-host warning:\n%s", out)
-	}
-	if _, err := os.Stat(filepath.Join(remoteRoot, "album", "photo1.jpg")); err != nil {
-		t.Fatalf("file was not copied when only same-machine duplicate existed: %v", err)
-	}
-}
-
-func TestCLIBackupMissingFailsWhenRsyncFails(t *testing.T) {
-	homeDir := t.TempDir()
-	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	remoteRoot := filepath.Join(homeDir, "remote-dest")
-	binDir := filepath.Join(homeDir, "bin")
+	remoteRoot := filepath.Join(homeDir, "remote-archive")
 	t.Setenv("HOME", homeDir)
 
 	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
 		"album/photo1.jpg": "photo-one",
 	})
-	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("local-machine\n"), 0o644); err != nil {
-		t.Fatalf("write machine-id: %v", err)
-	}
-	if err := saveMachinesConfig(map[string]string{
-		"remote-machine": "backup@example",
-	}); err != nil {
-		t.Fatalf("saveMachinesConfig: %v", err)
-	}
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	for name, content := range map[string]string{
-		"rsync":           "#!/bin/sh\nexit 12\n",
-		"ssh":             "#!/bin/sh\nexit 0\n",
-		"photo-organizer": "#!/bin/sh\nexit 0\n",
-	} {
-		path := filepath.Join(binDir, name)
-		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
-			t.Fatalf("write shim %s: %v", name, err)
-		}
-	}
-
-	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{prependPathEnv(binDir)}, "backup-missing", sourceDir, "--dest", "remote-machine:"+remoteRoot)
-	if code == 0 {
-		t.Fatalf("backup-missing exit code = 0, want nonzero\n%s", out)
-	}
-	if !strings.Contains(out, "Error: rsync failed") {
-		t.Fatalf("backup-missing failure output missing rsync error:\n%s", out)
-	}
-	if _, err := os.Stat(remoteRoot); !os.IsNotExist(err) {
-		t.Fatalf("remote root should not exist after rsync failure")
-	}
-}
-
-func TestCLIBackupMissingDirectUserHostSkipsManifestRefresh(t *testing.T) {
-	homeDir := t.TempDir()
-	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	remoteRoot := filepath.Join(homeDir, "remote-dest")
-	binDir := filepath.Join(homeDir, "bin")
-
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
-		"album/photo1.jpg": "photo-one",
-	})
-	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("local-machine\n"), 0o644); err != nil {
-		t.Fatalf("write machine-id: %v", err)
-	}
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	writeExecutable(t, filepath.Join(binDir, "rsync"), "#!/bin/sh\nset -eu\nfiles_from=\nsrc=\ndest=\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    --files-from=*) files_from=${arg#--files-from=} ;;\n    -*) ;;\n    *)\n      if [ -z \"$src\" ]; then src=$arg; elif [ -z \"$dest\" ]; then dest=$arg; fi ;;\n  esac\ndone\nremote_path=${dest#*:}\nmkdir -p \"$remote_path\"\nwhile IFS= read -r rel; do\n  mkdir -p \"$remote_path/$(dirname \"$rel\")\"\n  cp \"$src$rel\" \"$remote_path/$rel\"\ndone < \"$files_from\"\n")
-
-	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{prependPathEnv(binDir)}, "backup-missing", sourceDir, "--dest", "backup@example:"+remoteRoot)
-	if code != 0 {
-		t.Fatalf("backup-missing direct-host exit code = %d, output:\n%s", code, out)
-	}
-	if !strings.Contains(out, "manifest refresh was skipped") {
-		t.Fatalf("backup-missing direct-host output missing warning:\n%s", out)
-	}
-	if _, err := os.Stat(filepath.Join(remoteRoot, "album", "photo1.jpg")); err != nil {
-		t.Fatalf("direct-host copy missing file: %v", err)
-	}
-}
-
-func TestCLIBackupMissingCopiesMissingFilesWithConfiguredMachine(t *testing.T) {
-	homeDir := t.TempDir()
-	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	remoteRoot := filepath.Join(homeDir, "remote-dest")
-	binDir := filepath.Join(homeDir, "bin")
-	t.Setenv("HOME", homeDir)
-
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
-		"album/photo1.jpg": "photo-one",
-		"album/photo2.jpg": "photo-two",
-	})
-	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("local-machine\n"), 0o644); err != nil {
-		t.Fatalf("write machine-id: %v", err)
-	}
-	if err := saveMachinesConfig(map[string]string{
-		"remote-machine": "backup@example",
-	}); err != nil {
-		t.Fatalf("saveMachinesConfig: %v", err)
-	}
-
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	rsyncScript := "#!/bin/sh\nset -eu\nfiles_from=\nsrc=\ndest=\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    --files-from=*) files_from=${arg#--files-from=} ;;\n    -*) ;;\n    *)\n      if [ -z \"$src\" ]; then\n        src=$arg\n      elif [ -z \"$dest\" ]; then\n        dest=$arg\n      fi\n      ;;\n  esac\ndone\nremote_path=${dest#*:}\nmkdir -p \"$remote_path\"\nwhile IFS= read -r rel; do\n  mkdir -p \"$remote_path/$(dirname \"$rel\")\"\n  cp \"$src$rel\" \"$remote_path/$rel\"\ndone < \"$files_from\"\n"
-	sshScript := "#!/bin/sh\nexit 0\n"
-	collectScript := "#!/bin/sh\nexit 0\n"
-	for name, content := range map[string]string{
-		"rsync":           rsyncScript,
-		"ssh":             sshScript,
-		"photo-organizer": collectScript,
-	} {
-		path := filepath.Join(binDir, name)
-		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
-			t.Fatalf("write shim %s: %v", name, err)
-		}
-	}
-
-	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{prependPathEnv(binDir)}, "backup-missing", sourceDir, "--dest", "remote-machine:"+remoteRoot)
-	if code != 0 {
-		t.Fatalf("backup-missing exit code = %d, output:\n%s", code, out)
-	}
-	for _, want := range []string{
-		"Checking which files need backup...",
-		"Backing up 2 files",
-		"Backup complete",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("backup-missing output missing %q:\n%s", want, out)
-		}
-	}
-
-	for relPath, want := range map[string]string{
-		filepath.Join("album", "photo1.jpg"): "photo-one",
-		filepath.Join("album", "photo2.jpg"): "photo-two",
-	} {
-		data, err := os.ReadFile(filepath.Join(remoteRoot, relPath))
-		if err != nil {
-			t.Fatalf("read remote copied file %s: %v", relPath, err)
-		}
-		if string(data) != want {
-			t.Fatalf("remote copied file %s = %q, want %q", relPath, string(data), want)
-		}
-	}
-}
-
-func TestCLIBackupMissingFailsWhenCollectFailsAfterCopy(t *testing.T) {
-	homeDir := t.TempDir()
-	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	remoteRoot := filepath.Join(homeDir, "remote-dest")
-	binDir := filepath.Join(homeDir, "bin")
-	t.Setenv("HOME", homeDir)
-
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
-		"album/photo1.jpg": "photo-one",
-	})
-	if err := os.WriteFile(filepath.Join(homeDir, "manifests", "machine-id"), []byte("local-machine\n"), 0o644); err != nil {
-		t.Fatalf("write machine-id: %v", err)
-	}
-	if err := saveMachinesConfig(map[string]string{
-		"remote-machine": "backup@example",
-	}); err != nil {
-		t.Fatalf("saveMachinesConfig: %v", err)
-	}
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	writeExecutable(t, filepath.Join(binDir, "rsync"), "#!/bin/sh\nset -eu\nfiles_from=\nsrc=\ndest=\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    --files-from=*) files_from=${arg#--files-from=} ;;\n    -*) ;;\n    *)\n      if [ -z \"$src\" ]; then src=$arg; elif [ -z \"$dest\" ]; then dest=$arg; fi ;;\n  esac\ndone\nremote_path=${dest#*:}\nmkdir -p \"$remote_path\"\nwhile IFS= read -r rel; do\n  mkdir -p \"$remote_path/$(dirname \"$rel\")\"\n  cp \"$src$rel\" \"$remote_path/$rel\"\ndone < \"$files_from\"\n")
-	writeExecutable(t, filepath.Join(binDir, "ssh"), "#!/bin/sh\nexit 0\n")
-	writeExecutable(t, filepath.Join(binDir, "photo-organizer"), "#!/bin/sh\nexit 9\n")
-
-	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{prependPathEnv(binDir)}, "backup-missing", sourceDir, "--dest", "remote-machine:"+remoteRoot)
-	if code == 0 {
-		t.Fatalf("backup-missing collect-failure exit code = 0, want nonzero\n%s", out)
-	}
-	if !strings.Contains(out, "manifest collection failed") {
-		t.Fatalf("backup-missing collect-failure output missing message:\n%s", out)
-	}
-	if _, err := os.Stat(filepath.Join(remoteRoot, "album", "photo1.jpg")); err != nil {
-		t.Fatalf("file copy should complete before collect failure: %v", err)
-	}
-}
-
-// fakeRsync copies files listed by --files-from into the destination path,
-// standing in for a real rsync over SSH.
-const fakeRsync = "#!/bin/sh\nset -eu\nfiles_from=\nsrc=\ndest=\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    --files-from=*) files_from=${arg#--files-from=} ;;\n    -*) ;;\n    *)\n      if [ -z \"$src\" ]; then src=$arg; elif [ -z \"$dest\" ]; then dest=$arg; fi ;;\n  esac\ndone\nremote_path=${dest#*:}\nmkdir -p \"$remote_path\"\nwhile IFS= read -r rel; do\n  mkdir -p \"$remote_path/$(dirname \"$rel\")\"\n  cp \"$src$rel\" \"$remote_path/$rel\"\ndone < \"$files_from\"\n"
-
-// setupRemoteBackupShims installs fake rsync/ssh/photo-organizer binaries and
-// returns the env entry that puts them on PATH.
-func setupRemoteBackupShims(t *testing.T, homeDir, rsyncScript string) string {
-	t.Helper()
-
-	binDir := filepath.Join(homeDir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	writeExecutable(t, filepath.Join(binDir, "rsync"), rsyncScript)
-	writeExecutable(t, filepath.Join(binDir, "ssh"), "#!/bin/sh\nexit 0\n")
-	writeExecutable(t, filepath.Join(binDir, "photo-organizer"), "#!/bin/sh\nexit 0\n")
-	return prependPathEnv(binDir)
-}
-
-func TestCLIBackupToRemoteArchive(t *testing.T) {
-	homeDir := t.TempDir()
-	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	remoteRoot := filepath.Join(homeDir, "remote-dest")
-	t.Setenv("HOME", homeDir)
-
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
-		"album/photo1.jpg": "photo-one",
-		"album/photo2.jpg": "photo-two",
-	})
+	writeMachineID(t, homeDir, "local-machine")
 	if err := saveMachinesConfig(map[string]string{"remote-machine": "backup@example"}); err != nil {
 		t.Fatalf("saveMachinesConfig: %v", err)
 	}
-	pathEnv := setupRemoteBackupShims(t, homeDir, fakeRsync)
+	pathEnv := setupRemoteShims(t, homeDir, fakeRsync)
 
-	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{pathEnv}, "backup", sourceDir, "remote-machine:"+remoteRoot)
+	out, code := runCLIWithHomeInputEnv(t, homeDir, "y\n", []string{pathEnv}, "archive", sourceDir, "--dest", "remote-machine:"+remoteRoot)
 	if code != 0 {
-		t.Fatalf("remote backup exit code = %d, output:\n%s", code, out)
+		t.Fatalf("remote archive exit code = %d, output:\n%s", code, out)
 	}
-	for _, want := range []string{
-		"BACKUP WORKFLOW",
-		"BACKUP COMPLETE",
-		"Files backed up: 2",
-		"backup@example:" + remoteRoot,
-		"All files successfully backed up",
-	} {
+	for _, want := range []string{"ARCHIVE PREVIEW", "Folder archived to", "Source folder was kept"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("remote backup output missing %q:\n%s", want, out)
+			t.Fatalf("remote archive output missing %q:\n%s", want, out)
 		}
 	}
 
 	archiveDir := singleDirEntry(t, remoteRoot)
-	for relPath, want := range map[string]string{
-		filepath.Join("album", "photo1.jpg"): "photo-one",
-		filepath.Join("album", "photo2.jpg"): "photo-two",
-	} {
-		data, err := os.ReadFile(filepath.Join(archiveDir, relPath))
-		if err != nil {
-			t.Fatalf("read remote archived file %s: %v", relPath, err)
-		}
-		if string(data) != want {
-			t.Fatalf("remote archived file %s = %q, want %q", relPath, string(data), want)
-		}
+	if !archiveTimestampPrefix.MatchString(filepath.Base(archiveDir)) {
+		t.Fatalf("remote archive folder %q is not timestamped", filepath.Base(archiveDir))
+	}
+	data, err := os.ReadFile(filepath.Join(archiveDir, "album", "photo1.jpg"))
+	if err != nil {
+		t.Fatalf("read remote archived file: %v", err)
+	}
+	if string(data) != "photo-one" {
+		t.Fatalf("remote archived file = %q, want %q", string(data), "photo-one")
+	}
+
+	// Archiving across the network never deletes the source.
+	if _, err := os.Stat(filepath.Join(sourceDir, "album", "photo1.jpg")); err != nil {
+		t.Fatalf("remote archive must leave the source in place: %v", err)
 	}
 }
 
-func TestCLIBackupToRemoteNewOnlySkipsBackedUpFiles(t *testing.T) {
-	homeDir := t.TempDir()
-	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	remoteRoot := filepath.Join(homeDir, "remote-dest")
-	t.Setenv("HOME", homeDir)
-
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
-		"album/shared.jpg": "shared-photo",
-		"album/unique.jpg": "unique-photo",
-	})
-	writeManifestFixture(t, homeDir, "other-machine", filepath.Join("mirror", "Photos"), map[string]string{
-		"album/shared.jpg": "shared-photo",
-	})
-	if err := saveMachinesConfig(map[string]string{"remote-machine": "backup@example"}); err != nil {
-		t.Fatalf("saveMachinesConfig: %v", err)
-	}
-	pathEnv := setupRemoteBackupShims(t, homeDir, fakeRsync)
-
-	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{pathEnv}, "backup", sourceDir, "remote-machine:"+remoteRoot, "--new-only")
-	if code != 0 {
-		t.Fatalf("remote backup --new-only exit code = %d, output:\n%s", code, out)
-	}
-	if !strings.Contains(out, "Files backed up: 1") || !strings.Contains(out, "Files skipped:   1") {
-		t.Fatalf("remote backup --new-only output missing filtered counts:\n%s", out)
-	}
-
-	archiveDir := singleDirEntry(t, remoteRoot)
-	if _, err := os.Stat(filepath.Join(archiveDir, "album", "unique.jpg")); err != nil {
-		t.Fatalf("unique file missing from remote new-only backup: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(archiveDir, "album", "shared.jpg")); !os.IsNotExist(err) {
-		t.Fatalf("already-backed-up file should be skipped by --new-only")
-	}
-}
-
-func TestCLIBackupToRemoteDirectUserHostSkipsManifestRefresh(t *testing.T) {
-	homeDir := t.TempDir()
-	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	remoteRoot := filepath.Join(homeDir, "remote-dest")
-
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
-		"album/photo1.jpg": "photo-one",
-	})
-	pathEnv := setupRemoteBackupShims(t, homeDir, fakeRsync)
-
-	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{pathEnv}, "backup", sourceDir, "backup@example:"+remoteRoot)
-	if code != 0 {
-		t.Fatalf("remote backup direct-host exit code = %d, output:\n%s", code, out)
-	}
-	if !strings.Contains(out, "manifest refresh was skipped") {
-		t.Fatalf("remote backup direct-host output missing warning:\n%s", out)
-	}
-	archiveDir := singleDirEntry(t, remoteRoot)
-	if _, err := os.Stat(filepath.Join(archiveDir, "album", "photo1.jpg")); err != nil {
-		t.Fatalf("direct-host archive missing file: %v", err)
-	}
-}
-
-func TestCLIBackupToRemoteFailsWhenRsyncFails(t *testing.T) {
-	homeDir := t.TempDir()
-	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	remoteRoot := filepath.Join(homeDir, "remote-dest")
-	t.Setenv("HOME", homeDir)
-
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
-		"album/photo1.jpg": "photo-one",
-	})
-	if err := saveMachinesConfig(map[string]string{"remote-machine": "backup@example"}); err != nil {
-		t.Fatalf("saveMachinesConfig: %v", err)
-	}
-	pathEnv := setupRemoteBackupShims(t, homeDir, "#!/bin/sh\nexit 12\n")
-
-	out, code := runCLIWithHomeInputEnv(t, homeDir, "", []string{pathEnv}, "backup", sourceDir, "remote-machine:"+remoteRoot)
-	if code == 0 {
-		t.Fatalf("remote backup exit code = 0, want nonzero\n%s", out)
-	}
-	if !strings.Contains(out, "rsync failed") {
-		t.Fatalf("remote backup failure output missing rsync error:\n%s", out)
-	}
-	if _, err := os.Stat(remoteRoot); !os.IsNotExist(err) {
-		t.Fatalf("remote root should not exist after rsync failure")
-	}
-}
-
-func TestCLIBackupToRemoteUnknownMachineDoesNotCreateLocalDir(t *testing.T) {
-	homeDir := t.TempDir()
-	sourceDir := filepath.Join(homeDir, "library", "Photos")
-	t.Setenv("HOME", homeDir)
-
-	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), map[string]string{
-		"album/photo1.jpg": "photo-one",
-	})
-	if err := saveMachinesConfig(map[string]string{"remote-machine": "backup@example"}); err != nil {
-		t.Fatalf("saveMachinesConfig: %v", err)
-	}
-
-	out, code := runCLIWithHome(t, homeDir, "backup", sourceDir, "nope:/backups")
-	if code == 0 {
-		t.Fatalf("unknown machine exit code = 0, want nonzero\n%s", out)
-	}
-	for _, want := range []string{"not found in machines.conf", "Available options", "backup@example"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("unknown machine output missing %q:\n%s", want, out)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(homeDir, "nope:")); !os.IsNotExist(err) {
-		t.Fatalf("remote-looking dest must not create a local directory")
-	}
-}
+var archiveTimestampPrefix = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-\d{6}-`)
 
 func TestDocsUseCurrentCommandExamples(t *testing.T) {
-	stale := regexp.MustCompile(`photo-organizer\s+(analyze|plan|migrate|rescan|risk-report|verify-backup|sign-manifest|repair-manifest)\b`)
+	stale := regexp.MustCompile(`photo-organizer\s+(analyze|plan|migrate|rescan|risk-report|verify-backup|sign-manifest|repair-manifest|backup-missing)\b`)
 	files, err := filepath.Glob("*.md")
 	if err != nil {
 		t.Fatal(err)

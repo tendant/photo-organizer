@@ -4,7 +4,7 @@
 
 ```
 photo-organizer/
-├── main.go              # CLI dispatch, archive, manifests, lookup, and backup-missing
+├── main.go              # CLI dispatch, usage, and command routing
 ├── analyze.go           # Shared duplicate/search/compliance helpers
 ├── duplicate_analysis.go # Duplicate index, reports, CSV exports, dups command
 ├── storage.go           # Storage status, storage plan, and check-backup commands
@@ -15,7 +15,9 @@ photo-organizer/
 ├── checkpoint.go        # Scan checkpoint storage and startup hints
 ├── config_paths.go      # Shared manifest/config path helpers
 ├── machines_config.go   # Machine listing, removable detection, config IO
-├── commands_backup.go   # Backup, restore, and archive listing commands
+├── commands_backup.go   # Backup command (mirror a folder to another location)
+├── commands_archive.go  # Archive, restore, and archive listing commands
+├── backup_helpers.go    # Shared destination, transfer, and manifest-refresh helpers
 ├── commands_integrity.go # Manifest/archive integrity commands
 ├── integrity.go         # Integrity verification helpers
 ├── photoignore.go       # .photoignore parsing

@@ -620,7 +620,7 @@ func runCheckBackupStatus(args []string) error {
 			fmt.Printf("   Not found on any configured backup machines\n")
 		}
 		fmt.Printf("   May exist on other machines or need explicit backup\n")
-		fmt.Printf("   Run: photo-organizer backup %s <archive-path>\n", folderPath)
+		fmt.Printf("   Run: photo-organizer backup %s --dest <target>\n", folderPath)
 	} else {
 		fmt.Printf("✓ ALL FILES BACKED UP\n")
 		fmt.Printf("   Every file has copies on reliable machines\n")
