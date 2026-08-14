@@ -25,10 +25,11 @@ Use `dups` for file-level duplicate groups. Use `dup-folders` when deciding whic
 
 ```bash
 photo-organizer backup ~/Photos /mnt/archive
+photo-organizer backup ~/Photos nas:/backups/photos
 photo-organizer backup-missing ~/Photos --dest nas:/backups/photos
 ```
 
-`backup` creates timestamped archives. `backup-missing` copies only files that do not already appear in collected manifests.
+`backup` creates timestamped archives, either on a local path or on a remote machine (`machine-id:/path` or `user@host:/path`, copied over SSH). `backup-missing` copies only files that do not already appear in collected manifests.
 
 ### 4. Verify
 

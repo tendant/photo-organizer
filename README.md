@@ -27,6 +27,14 @@ photo-organizer dup-folders --top 20 ~/manifests/_Manifest/*.csv
 ```
 Shows folders with overlapping file sets so you can clean up whole folders safely.
 
+### Back up to another machine
+```bash
+photo-organizer backup ~/Photos nas:/backups/photos
+```
+Copies to a timestamped archive on the remote machine over SSH, then refreshes
+that machine's manifest so the copy counts as a backup. A local path such as
+`/mnt/archive` works the same way without SSH.
+
 ### Back up files missing from an archive
 ```bash
 photo-organizer backup-missing ~/Photos --dest nas:/backups/photos
@@ -58,7 +66,7 @@ photo-organizer search -hash abc123def456
 | `dup-folders` | Find duplicate folders for cleanup |
 | `storage-status` | Show storage breakdown by machine and device |
 | `storage-plan` | Recommend what to back up next |
-| `backup` | Back up a folder to a timestamped archive |
+| `backup` | Back up a folder to a timestamped archive, local or remote |
 | `backup-missing` | Copy only files not already backed up |
 | `search` | Query manifests by name/hash/size/date |
 | `collect` | Pull manifests from remote machines |

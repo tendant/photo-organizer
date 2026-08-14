@@ -188,6 +188,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "Examples:\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer scan ~/Photos\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos /mnt/archive\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos nas:/backups/photos\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders --top 10 -s\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer check-backup ~/Photos\n")
 }

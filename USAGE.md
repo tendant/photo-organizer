@@ -51,12 +51,17 @@ Review the output manually before deleting anything. The tool reports overlap; i
 
 ## 4. Back Up A Folder
 
-Create a timestamped archive:
+Create a timestamped archive, on a local path or on another machine:
 
 ```bash
 photo-organizer backup ~/Photos /mnt/archive
 photo-organizer backup ~/Photos /mnt/archive --new-only
+photo-organizer backup ~/Photos nas:/backups/photos
 ```
+
+A remote archive root (`machine-id:/path` or `user@host:/path`) transfers over
+SSH with `rsync`, then rescans the archive on the remote machine so the copy
+counts as a real backup.
 
 Back up only files that are missing from known manifests:
 

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -34,16 +33,33 @@ func runBackup(args []string) error {
 	if folderPath == "" || archiveRoot == "" {
 		fmt.Fprintf(os.Stderr, "\n📦 BACKUP FILES TO ARCHIVE\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup <folder> <archive-root> [--new-only]\n\n")
-		fmt.Fprintf(os.Stderr, "Example:\n")
+		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos /mnt/archive\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/iPhone /mnt/archive --new-only\n\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos nas:/backups/photos\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/iPhone ubuntu@192.168.1.100:/backups --new-only\n\n")
 		fmt.Fprintf(os.Stderr, "Creates timestamped archive folder and copies files.\n")
+		fmt.Fprintf(os.Stderr, "Archive root may be a local path or a remote machine-id:/path or user@host:/path.\n")
 		fmt.Fprintf(os.Stderr, "--new-only: Only backup files not already backed up elsewhere.\n")
 		return errFailed
 	}
 
-	// Verify archive root exists or create it
-	if _, err := os.Stat(archiveRoot); err != nil {
+	// A remote archive root goes over SSH; a local one is a plain directory.
+	var remoteUserHost, remoteMachineID, remotePath string
+	remote := isRemoteDestination(archiveRoot)
+	if remote {
+		machines := loadMachinesConfig()
+		var err error
+		remoteUserHost, remoteMachineID, remotePath, err = resolveBackupDestination(archiveRoot, machines)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+			printBackupDestinationOptions(machines)
+			fmt.Fprintf(os.Stderr, "\nUsage examples:\n")
+			fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos nas:/backups/photos\n")
+			fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos ubuntu@192.168.1.100:/backups\n")
+			return errFailed
+		}
+	} else if _, err := os.Stat(archiveRoot); err != nil {
+		// Verify archive root exists or create it
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(archiveRoot, 0755); err != nil {
 				fmt.Fprintf(os.Stderr, "❌ Cannot create archive root: %v\n", err)
@@ -90,18 +106,37 @@ func runBackup(args []string) error {
 	}
 	fmt.Printf("\n")
 
-	var idx map[string][]hashLocation
-	var sources []ManifestSource
+	// Select the rows this run will copy; --new-only drops files that already
+	// have a copy on another durable machine.
+	var rows []ManifestRow
+	filesSkipped := 0
 	if newOnlyFlag {
-		sources = loadManifestSources(manifest.MachineName)
-		idx = buildHashIndex(sources)
+		sources := loadManifestSources(manifest.MachineName)
+		idx := buildHashIndex(sources)
+		machinesCfg := loadMachinesConfig()
+		for _, row := range manifest.Rows {
+			if hasIndependentBackup(sources, idx, machinesCfg, manifest.MachineName, row.PartialHash, row.SizeBytes) {
+				filesSkipped++
+				continue
+			}
+			rows = append(rows, row)
+		}
+	} else {
+		rows = manifest.Rows
 	}
 
 	// Create timestamped archive folder
 	timestamp := time.Now()
 	archiveFolderName := generateArchiveFolderName(filepath.Base(manifest.ScanPath), timestamp)
-	archivePath := filepath.Join(archiveRoot, archiveFolderName)
 
+	if remote {
+		return backupToRemoteArchive(manifest, rows, filesSkipped, archiveFolderName, remoteUserHost, remoteMachineID, remotePath)
+	}
+	return backupToLocalArchive(manifest, rows, filesSkipped, filepath.Join(archiveRoot, archiveFolderName), archiveFolderName)
+}
+
+// backupToLocalArchive copies the selected rows into a local timestamped folder.
+func backupToLocalArchive(manifest ManifestSource, rows []ManifestRow, filesSkipped int, archivePath, archiveFolderName string) error {
 	if err := os.Mkdir(archivePath, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Cannot create archive folder: %v\n", err)
 		return errFailed
@@ -109,19 +144,12 @@ func runBackup(args []string) error {
 
 	fmt.Printf("Archive folder: %s\n\n", archiveFolderName)
 
-	// Count files to backup
 	filesToBackup := 0
-	filesSkipped := 0
+	filesFailed := 0
 
 	// Backup each file
 	fmt.Printf("Backing up files...\n")
-	machinesCfg := loadMachinesConfig()
-	for i, row := range manifest.Rows {
-		if newOnlyFlag && hasIndependentBackup(sources, idx, machinesCfg, manifest.MachineName, row.PartialHash, row.SizeBytes) {
-			filesSkipped++
-			continue
-		}
-
+	for i, row := range rows {
 		sourceFile := filepath.Join(manifest.ScanPath, row.RelativePath)
 		destFile := filepath.Join(archivePath, row.RelativePath)
 
@@ -129,14 +157,14 @@ func runBackup(args []string) error {
 		destDir := filepath.Dir(destFile)
 		if err := os.MkdirAll(destDir, 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Cannot create directory for %s: %v\n", row.RelativePath, err)
-			filesSkipped++
+			filesFailed++
 			continue
 		}
 
 		// Copy file
 		if err := copyFile(sourceFile, destFile); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Cannot backup %s: %v\n", row.RelativePath, err)
-			filesSkipped++
+			filesFailed++
 			continue
 		}
 
@@ -144,23 +172,74 @@ func runBackup(args []string) error {
 
 		// Progress
 		if (i+1)%100 == 0 {
-			fmt.Printf("  %d / %d files backed up...\n", i+1, len(manifest.Rows))
+			fmt.Printf("  %d / %d files backed up...\n", i+1, len(rows))
 		}
 	}
 
+	printBackupSummary(filesToBackup, filesSkipped, filesFailed, archivePath,
+		formatSize(calculateFolderMetrics(archivePath).TotalSize))
+	return nil
+}
+
+// backupToRemoteArchive rsyncs the selected rows into a timestamped folder on a
+// remote machine, then refreshes that machine's manifest so the copy is visible
+// to dedup and coverage checks.
+func backupToRemoteArchive(manifest ManifestSource, rows []ManifestRow, filesSkipped int, archiveFolderName, remoteUserHost, remoteMachineID, remotePath string) error {
+	remoteArchivePath := strings.TrimSuffix(remotePath, "/") + "/" + archiveFolderName
+	fmt.Printf("Archive folder: %s\n\n", archiveFolderName)
+
+	relPaths := make([]string, 0, len(rows))
+	var totalSize int64
+	for _, row := range rows {
+		relPaths = append(relPaths, row.RelativePath)
+		totalSize += row.SizeBytes
+	}
+
+	if len(relPaths) == 0 {
+		printBackupSummary(0, filesSkipped, 0, remoteUserHost+":"+remoteArchivePath, formatSize(0))
+		return nil
+	}
+
+	fmt.Printf("Copying %d files (%s) to %s...\n", len(relPaths), formatSize(totalSize), remoteUserHost)
+	if err := rsyncRelPaths(manifest.ScanPath, relPaths, remoteUserHost, remoteArchivePath); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ rsync failed: %v\n", err)
+		return errFailed
+	}
+
+	printBackupSummary(len(relPaths), filesSkipped, 0, remoteUserHost+":"+remoteArchivePath, formatSize(totalSize))
+
+	if remoteMachineID == "" {
+		fmt.Fprintf(os.Stderr, "⚠ Backup copied, but manifest refresh was skipped.\n")
+		fmt.Fprintf(os.Stderr, "  Add this host first: photo-organizer collect --add <machine-id>=%s\n", remoteUserHost)
+		return nil
+	}
+
+	if err := refreshRemoteManifest(remoteUserHost, remoteMachineID, remoteArchivePath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return errFailed
+	}
+	return nil
+}
+
+func printBackupSummary(filesToBackup, filesSkipped, filesFailed int, location, size string) {
 	fmt.Printf("\n✓ BACKUP COMPLETE\n\n")
 	fmt.Printf("Results:\n")
 	fmt.Printf("  Files backed up: %d\n", filesToBackup)
 	fmt.Printf("  Files skipped:   %d\n", filesSkipped)
-	fmt.Printf("  Archive folder:  %s\n", archivePath)
-	fmt.Printf("  Archive size:    %s\n\n", formatSize(calculateFolderMetrics(archivePath).TotalSize))
+	if filesFailed > 0 {
+		fmt.Printf("  Files failed:    %d\n", filesFailed)
+	}
+	fmt.Printf("  Archive folder:  %s\n", location)
+	fmt.Printf("  Archive size:    %s\n\n", size)
 
-	if filesSkipped > 0 {
+	switch {
+	case filesFailed > 0:
 		fmt.Printf("⚠️  Some files could not be backed up. Check permissions and disk space.\n")
-	} else {
+	case filesToBackup == 0 && filesSkipped > 0:
+		fmt.Printf("✓ Nothing to copy — every file is already backed up elsewhere.\n")
+	default:
 		fmt.Printf("✓ All files successfully backed up!\n")
 	}
-	return nil
 }
 
 // runRestore restores files from archive to destination
@@ -422,12 +501,7 @@ func runBackupMissing(args []string) error {
 	remoteUserHost, remoteMachineID, remotePath, err := resolveBackupDestination(destLocation, machines)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Available options:\n")
-		for machID, sshHost := range machines {
-			if !strings.HasPrefix(sshHost, "[removable]") {
-				fmt.Fprintf(os.Stderr, "  - %s (machine-id: %s)\n", sshHost, machID)
-			}
-		}
+		printBackupDestinationOptions(machines)
 		fmt.Fprintf(os.Stderr, "\nUsage examples:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max-acb605:/backups\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer backup-missing ~/Photos --dest ubuntu-max:/backups\n")
@@ -435,24 +509,8 @@ func runBackupMissing(args []string) error {
 		return errFailed
 	}
 
-	// Step 2: Create temporary file list for rsync
-	tmpFile, err := os.CreateTemp("", "backup-missing-*.txt")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot create temp file: %v\n", err)
-		return errFailed
-	}
-	defer os.Remove(tmpFile.Name())
-
-	for _, f := range missingFiles {
-		fmt.Fprintln(tmpFile, f)
-	}
-	tmpFile.Close()
-
 	// Copy files via rsync
-	rsyncCmd := exec.Command("rsync", "-az", "--files-from="+tmpFile.Name(), absSourceFolder+"/", remoteUserHost+":"+remotePath+"/")
-	rsyncCmd.Stdout = os.Stderr
-	rsyncCmd.Stderr = os.Stderr
-	if err := rsyncCmd.Run(); err != nil {
+	if err := rsyncRelPaths(absSourceFolder, missingFiles, remoteUserHost, remotePath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: rsync failed: %v\n", err)
 		return errFailed
 	}
@@ -463,20 +521,8 @@ func runBackupMissing(args []string) error {
 		return nil
 	}
 
-	// Scan remote location
-	scanCmd := fmt.Sprintf("cd %s && for path in photo-organizer ~/bin/photo-organizer /usr/local/bin/photo-organizer; do if command -v $path &>/dev/null || [ -f $path ]; then $path scan . --machine %s >/dev/null 2>&1; exit $?; fi; done; exit 1", shellQuote(remotePath), shellQuote(remoteMachineID))
-	sshCmd := exec.Command("ssh", remoteUserHost, scanCmd)
-	if err := sshCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: remote scan failed after copying files. photo-organizer must be installed on remote machine.\n")
-		return errFailed
-	}
-
-	// Collect updated manifests
-	collectCmd := exec.Command("photo-organizer", "collect", "--from", remoteMachineID)
-	collectCmd.Stdout = os.Stderr
-	collectCmd.Stderr = os.Stderr
-	if err := collectCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: files were copied, but manifest collection failed: %v\n", err)
+	if err := refreshRemoteManifest(remoteUserHost, remoteMachineID, remotePath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return errFailed
 	}
 

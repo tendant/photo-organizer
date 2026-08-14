@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -109,4 +110,63 @@ func resolveBackupDestination(destLocation string, machines map[string]string) (
 	}
 
 	return "", "", "", fmt.Errorf("%q not found in machines.conf", destIdentifier)
+}
+
+// isRemoteDestination reports whether dest names an SSH target
+// (machine-id:/path or user@host:/path) rather than a local directory.
+// A local path never has a colon before its first slash.
+func isRemoteDestination(dest string) bool {
+	colon := strings.Index(dest, ":")
+	if colon <= 0 || strings.HasPrefix(dest, ".") || strings.HasPrefix(dest, "~") {
+		return false
+	}
+	return !strings.Contains(dest[:colon], "/")
+}
+
+func printBackupDestinationOptions(machines map[string]string) {
+	fmt.Fprintf(os.Stderr, "Available options:\n")
+	for machID, sshHost := range machines {
+		if !strings.HasPrefix(sshHost, "[removable]") {
+			fmt.Fprintf(os.Stderr, "  - %s (machine-id: %s)\n", sshHost, machID)
+		}
+	}
+}
+
+// rsyncRelPaths copies the given srcRoot-relative paths to remoteUserHost:remotePath,
+// creating the destination tree as needed.
+func rsyncRelPaths(srcRoot string, relPaths []string, remoteUserHost, remotePath string) error {
+	tmpFile, err := os.CreateTemp("", "photo-organizer-files-*.txt")
+	if err != nil {
+		return fmt.Errorf("cannot create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	for _, rel := range relPaths {
+		fmt.Fprintln(tmpFile, rel)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("cannot write file list: %w", err)
+	}
+
+	cmd := exec.Command("rsync", "-az", "--files-from="+tmpFile.Name(), srcRoot+"/", remoteUserHost+":"+remotePath+"/")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// refreshRemoteManifest rescans remotePath on the remote machine and pulls the
+// updated manifest back, so files copied there count as a backup locally.
+func refreshRemoteManifest(remoteUserHost, remoteMachineID, remotePath string) error {
+	scanCmd := fmt.Sprintf("cd %s && for path in photo-organizer ~/bin/photo-organizer /usr/local/bin/photo-organizer; do if command -v $path &>/dev/null || [ -f $path ]; then $path scan . --machine %s >/dev/null 2>&1; exit $?; fi; done; exit 1", shellQuote(remotePath), shellQuote(remoteMachineID))
+	if err := exec.Command("ssh", remoteUserHost, scanCmd).Run(); err != nil {
+		return fmt.Errorf("remote scan failed after copying files. photo-organizer must be installed on remote machine")
+	}
+
+	collectCmd := exec.Command("photo-organizer", "collect", "--from", remoteMachineID)
+	collectCmd.Stdout = os.Stderr
+	collectCmd.Stderr = os.Stderr
+	if err := collectCmd.Run(); err != nil {
+		return fmt.Errorf("files were copied, but manifest collection failed: %v", err)
+	}
+	return nil
 }

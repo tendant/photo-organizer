@@ -21,6 +21,61 @@ func TestSshTargetFor(t *testing.T) {
 }
 
 // =============================================================================
+// isRemoteDestination / resolveBackupDestination
+// =============================================================================
+
+func TestIsRemoteDestination(t *testing.T) {
+	tests := []struct {
+		dest string
+		want bool
+	}{
+		{"nas:/backups/photos", true},
+		{"ubuntu@192.168.1.100:/backups", true},
+		{"nas:", true},
+		{"/mnt/archive", false},
+		{"/Volumes/nas/archive", false},
+		{"./archive", false},
+		{"~/archive", false},
+		{"archive", false},
+		{"/mnt/odd:name/archive", false},
+		{":/backups", false},
+	}
+	for _, tt := range tests {
+		if got := isRemoteDestination(tt.dest); got != tt.want {
+			t.Errorf("isRemoteDestination(%q) = %v, want %v", tt.dest, got, tt.want)
+		}
+	}
+}
+
+func TestResolveBackupDestination(t *testing.T) {
+	machines := map[string]string{"nas": "admin@nas.local"}
+
+	host, machID, path, err := resolveBackupDestination("nas:/backups", machines)
+	if err != nil || host != "admin@nas.local" || machID != "nas" || path != "/backups" {
+		t.Errorf("machine-id dest = (%q, %q, %q, %v)", host, machID, path, err)
+	}
+
+	// A raw user@host that matches a configured machine still resolves its id.
+	host, machID, _, err = resolveBackupDestination("admin@nas.local:/backups", machines)
+	if err != nil || host != "admin@nas.local" || machID != "nas" {
+		t.Errorf("known user@host dest = (%q, %q, %v)", host, machID, err)
+	}
+
+	// An unconfigured user@host works, but has no machine id to refresh.
+	host, machID, _, err = resolveBackupDestination("backup@example:/backups", machines)
+	if err != nil || host != "backup@example" || machID != "" {
+		t.Errorf("unknown user@host dest = (%q, %q, %v)", host, machID, err)
+	}
+
+	if _, _, _, err = resolveBackupDestination("nope:/backups", machines); err == nil {
+		t.Error("unknown machine id should error")
+	}
+	if _, _, _, err = resolveBackupDestination("/mnt/archive", machines); err == nil {
+		t.Error("dest without a colon should error")
+	}
+}
+
+// =============================================================================
 // provideSshErrorHelp
 // =============================================================================
 

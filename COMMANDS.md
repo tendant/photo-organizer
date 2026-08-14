@@ -63,14 +63,26 @@ photo-organizer storage-plan
 ## Backup And Restore
 
 ### backup
-Back up a folder to a timestamped archive.
+Back up a folder to a timestamped archive, locally or on a remote machine.
 
 ```bash
 photo-organizer backup ~/Photos /mnt/archive
 photo-organizer backup ~/Photos /mnt/archive --new-only
+photo-organizer backup ~/Photos nas:/backups/photos
+photo-organizer backup ~/Photos ubuntu@192.168.1.100:/backups --new-only
 ```
 
 Creates an archive folder such as `/mnt/archive/2026-06-20-143022-Photos/`.
+
+An archive root of the form `machine-id:/path` or `user@host:/path` is treated as
+a remote destination: files are copied with `rsync` over SSH, then the archive
+folder is scanned on the remote machine and its manifest collected, so the copy
+counts as a backup for `dups`, `check-backup`, and `--new-only`.
+
+Remote destinations require SSH key access and `photo-organizer` installed on the
+remote machine. A `user@host` that is not in `machines.conf` still transfers the
+files, but the manifest refresh is skipped — add it with
+`photo-organizer collect --add <machine-id>=user@host` to make the copy count.
 
 ### backup-missing
 Copy only files that are not already represented in collected manifests.
