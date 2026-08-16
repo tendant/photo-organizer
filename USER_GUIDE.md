@@ -24,8 +24,8 @@ Use `dups` for file-level duplicate groups. Use `dup-folders` when deciding whic
 ### 3. Back Up
 
 ```bash
-photo-organizer backup ~/Photos --dest nas:/backups/photos
-photo-organizer backup ~/Photos --dest /Volumes/External/photos
+photo-organizer backup ~/Photos --dest nas:/backups
+photo-organizer backup ~/Photos --dest /Volumes/External
 ```
 
 `backup` mirrors the folder into the destination, copying only files that are missing there or not yet backed up on another durable machine. The destination may be a local path or a remote machine (`machine-id:/path` or `user@host:/path`, copied over SSH). Use `archive` instead when you want a dated snapshot you keep untouched.

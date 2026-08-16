@@ -77,15 +77,24 @@ Both accept a local path or a remote `machine-id:/path` or `user@host:/path`.
 Keep a second copy of a folder somewhere else.
 
 ```bash
-photo-organizer backup ~/Photos --dest nas:/backups/photos
+photo-organizer backup ~/Photos --dest nas:/backups
 photo-organizer backup ~/Photos --dest ubuntu@192.168.1.100:/backups
-photo-organizer backup ~/Photos --dest /Volumes/External/photos
-photo-organizer backup ~/Photos --dest nas:/backups/photos --all
+photo-organizer backup ~/Photos --dest /Volumes/External
+photo-organizer backup ~/Photos --dest nas:/backups --all
 ```
 
-The destination mirrors the source tree, so repeated runs are safe to schedule:
-files already at the destination, and files that already have a copy on another
-durable machine, are skipped. `--all` copies everything regardless.
+The folder is mirrored into a folder of the same name inside the target, so the
+first example fills `nas:/backups/Photos`. That keeps one target usable for
+several folders: backing up `~/Photos` and `~/email-export` to `nas:/backups`
+gives `nas:/backups/Photos` and `nas:/backups/email-export`, rather than merging
+both trees and letting same-named files overwrite each other.
+
+To back a folder up to a specific name, name it in the target:
+`--dest nas:/backups/photos-2026` writes to `nas:/backups/photos-2026/Photos`.
+
+Repeated runs are safe to schedule: files already at the destination, and files
+that already have a copy on another durable machine, are skipped. `--all` copies
+everything regardless.
 
 Afterwards the destination is scanned — over SSH for a remote target, in place
 for a local one — so the new copies count for `dups`, `check-backup`, and the

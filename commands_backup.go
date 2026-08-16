@@ -52,11 +52,12 @@ func runBackup(args []string) error {
 		fmt.Fprintf(os.Stderr, "\n📦 BACK UP A FOLDER\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: photo-organizer backup <folder> --dest <target> [--all] [--no-progress]\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos --dest nas:/backups/photos\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos --dest nas:/backups\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
-		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos --dest /Volumes/External/photos --all\n\n")
-		fmt.Fprintf(os.Stderr, "Mirrors the folder into the destination. Repeated runs copy only what\n")
-		fmt.Fprintf(os.Stderr, "is missing, so it is safe to run on a schedule.\n\n")
+		fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos --dest /Volumes/External --all\n\n")
+		fmt.Fprintf(os.Stderr, "The folder is mirrored into a folder of the same name inside the target,\n")
+		fmt.Fprintf(os.Stderr, "so 'backup ~/Photos --dest nas:/backups' fills nas:/backups/Photos.\n")
+		fmt.Fprintf(os.Stderr, "Repeated runs copy only what is missing, so it is safe to schedule.\n\n")
 		fmt.Fprintf(os.Stderr, "Target: local path, or machine-id:/path or user@host:/path for SSH.\n")
 		fmt.Fprintf(os.Stderr, "--all:  Copy every file, even ones already backed up on another machine.\n")
 		fmt.Fprintf(os.Stderr, "--no-progress: Suppress the progress lines (also PHOTO_ORGANIZER_PROGRESS=0).\n\n")
@@ -74,6 +75,10 @@ func runBackup(args []string) error {
 		return errFailed
 	}
 
+	// The backup lands in a folder named after the source, so one target can
+	// hold several backed-up folders without their trees running together.
+	sourceName := filepath.Base(absSourceFolder)
+
 	// A remote destination goes over SSH; a local one is a plain directory.
 	var remoteUserHost, remoteMachineID, remotePath, localDest string
 	remote := isRemoteDestination(destLocation)
@@ -84,24 +89,25 @@ func runBackup(args []string) error {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			printBackupDestinationOptions(machines)
 			fmt.Fprintf(os.Stderr, "\nUsage examples:\n")
-			fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos --dest nas:/backups/photos\n")
+			fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos --dest nas:/backups\n")
 			fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos --dest ubuntu@192.168.1.100:/backups\n")
 			return errFailed
 		}
+		// Remote paths are always POSIX, so filepath.Join is not used here.
+		remotePath = remoteArchivePath(remotePath, sourceName)
 	} else {
 		localDest, err = filepath.Abs(destLocation)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid destination path %q\n", destLocation)
 			return errFailed
 		}
+		localDest = filepath.Join(localDest, sourceName)
 		if localDest == absSourceFolder {
 			fmt.Fprintf(os.Stderr, "Error: destination is the source folder\n")
 			return errFailed
 		}
-		if err := os.MkdirAll(localDest, 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot create destination: %v\n", err)
-			return errFailed
-		}
+		// The directory is created once there is something to put in it, so a
+		// converged run leaves no empty folder behind.
 	}
 
 	selection := selectFilesToBackup(absSourceFolder, localDest, copyAll, showProgress)
@@ -113,6 +119,13 @@ func runBackup(args []string) error {
 		}
 		fmt.Fprintf(os.Stderr, "\n")
 		return nil
+	}
+
+	if !remote {
+		if err := os.MkdirAll(localDest, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot create destination: %v\n", err)
+			return errFailed
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "Backing up %d files (%s)...\n", len(selection.relPaths), formatSize(selection.totalSize))
@@ -156,7 +169,13 @@ func runBackup(args []string) error {
 	prog.Done(fmt.Sprintf("Copied %s files (%s)",
 		formatCount(len(selection.relPaths)), formatSize(selection.totalSize)))
 
-	printBackupSummary(selection, destLocation)
+	// Report where the files actually went, not what was typed — with nesting
+	// the two differ.
+	destDisplay := localDest
+	if remote {
+		destDisplay = remoteUserHost + ":" + remotePath
+	}
+	printBackupSummary(selection, destDisplay)
 
 	if !remote {
 		fmt.Fprintf(os.Stderr, "Updating destination manifest (%s)...\n", localDest)

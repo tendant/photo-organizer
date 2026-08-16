@@ -54,14 +54,17 @@ Review the output manually before deleting anything. The tool reports overlap; i
 Keep a second copy somewhere else — another machine, or a local disk:
 
 ```bash
-photo-organizer backup ~/Photos --dest nas:/backups/photos
-photo-organizer backup ~/Photos --dest /Volumes/External/photos
+photo-organizer backup ~/Photos --dest nas:/backups
+photo-organizer backup ~/Photos --dest /Volumes/External
 ```
 
-The destination mirrors the source tree. Files already there, and files that
-already have a copy on another durable machine, are skipped — so running it again
-after adding photos copies only the new ones. Use `--all` to copy everything
-regardless.
+The folder is mirrored into a folder of the same name inside the target, so the
+first example fills `nas:/backups/Photos`. One target can therefore hold several
+backed-up folders without their trees running together.
+
+Files already there, and files that already have a copy on another durable
+machine, are skipped — so running it again after adding photos copies only the
+new ones. Use `--all` to copy everything regardless.
 
 A remote destination (`machine-id:/path` or `user@host:/path`) transfers over SSH
 with `rsync`, then rescans the destination on that machine so the copies count as

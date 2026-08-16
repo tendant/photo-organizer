@@ -26,7 +26,7 @@ photo-organizer storage-plan
 4. Copy missing files to a destination.
 
 ```bash
-photo-organizer backup ~/Photos --dest nas:/backups/photos
+photo-organizer backup ~/Photos --dest nas:/backups
 ```
 
 5. Collect manifests again and verify.

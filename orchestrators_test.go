@@ -115,7 +115,7 @@ func TestRunBackup(t *testing.T) {
 		}
 	}
 	// The destination mirrors the source: no timestamped folder in between.
-	if _, err := os.Stat(filepath.Join(dest, "trip", "a.jpg")); err != nil {
+	if _, err := os.Stat(filepath.Join(dest, "photos", "trip", "a.jpg")); err != nil {
 		t.Errorf("expected trip/a.jpg mirrored into the destination: %v", err)
 	}
 

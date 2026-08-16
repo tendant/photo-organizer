@@ -616,6 +616,40 @@ func writeMachineID(t *testing.T, homeDir, machineID string) {
 // backup — mirrors a folder, converging on every run
 // =============================================================================
 
+// The source folder's own name is part of the destination, so one target can
+// hold several backed-up folders without their trees running together.
+func TestCLIBackupNestsUnderSourceFolderName(t *testing.T) {
+	homeDir := t.TempDir()
+	destDir := filepath.Join(homeDir, "external")
+
+	for _, name := range []string{"Photos", "email-export"} {
+		writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", name), map[string]string{
+			"album/shot.jpg": name + "-content",
+		})
+	}
+	writeMachineID(t, homeDir, "local-machine")
+
+	// Two different sources, same target, colliding relative paths.
+	for _, name := range []string{"Photos", "email-export"} {
+		out, code := runCLIWithHome(t, homeDir, "backup",
+			filepath.Join(homeDir, "library", name), "--dest", destDir, "--all")
+		if code != 0 {
+			t.Fatalf("backup %s exit code = %d, output:\n%s", name, code, out)
+		}
+	}
+
+	for _, name := range []string{"Photos", "email-export"} {
+		path := filepath.Join(destDir, name, "album", "shot.jpg")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("expected %s to be mirrored under its own folder: %v", name, err)
+		}
+		if string(data) != name+"-content" {
+			t.Errorf("%s = %q, want %q — the two sources overwrote each other",
+				path, data, name+"-content")
+		}
+	}
+}
 func TestCLIBackupMirrorsToLocalDest(t *testing.T) {
 	homeDir := t.TempDir()
 	sourceDir := filepath.Join(homeDir, "library", "Photos")
@@ -640,7 +674,7 @@ func TestCLIBackupMirrorsToLocalDest(t *testing.T) {
 		filepath.Join("album", "photo1.jpg"): "photo-one",
 		filepath.Join("album", "photo2.jpg"): "photo-two",
 	} {
-		data, err := os.ReadFile(filepath.Join(destDir, relPath))
+		data, err := os.ReadFile(filepath.Join(destDir, "Photos", relPath))
 		if err != nil {
 			t.Fatalf("read mirrored file %s: %v", relPath, err)
 		}
@@ -650,14 +684,17 @@ func TestCLIBackupMirrorsToLocalDest(t *testing.T) {
 	}
 
 	// The destination is scanned, so its copies are visible to other commands.
+	// The mirror lives in a folder named after the source, so that is what the
+	// manifest records.
+	mirrorRoot := filepath.Join(destDir, "Photos")
 	foundDestManifest := false
 	for _, src := range readAllManifestSources(t, homeDir) {
-		if src.ScanPath == destDir {
+		if src.ScanPath == mirrorRoot {
 			foundDestManifest = true
 		}
 	}
 	if !foundDestManifest {
-		t.Fatalf("no manifest was written for the backup destination %s", destDir)
+		t.Fatalf("no manifest was written for the backup destination %s", mirrorRoot)
 	}
 
 	// Running again converges: everything is already there.
@@ -694,10 +731,10 @@ func TestCLIBackupSkipsFilesBackedUpElsewhere(t *testing.T) {
 	if !strings.Contains(out, "Files copied:        1") || !strings.Contains(out, "Backed up elsewhere: 1") {
 		t.Fatalf("backup output missing dedup counts:\n%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(destDir, "album", "unique.jpg")); err != nil {
+	if _, err := os.Stat(filepath.Join(destDir, "Photos", "album", "unique.jpg")); err != nil {
 		t.Fatalf("unique file missing from backup: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(destDir, "album", "shared.jpg")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(destDir, "Photos", "album", "shared.jpg")); !os.IsNotExist(err) {
 		t.Fatalf("file backed up on another machine should be skipped")
 	}
 
@@ -706,7 +743,7 @@ func TestCLIBackupSkipsFilesBackedUpElsewhere(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("backup --all exit code = %d, output:\n%s", code, out)
 	}
-	if _, err := os.Stat(filepath.Join(destDir, "album", "shared.jpg")); err != nil {
+	if _, err := os.Stat(filepath.Join(destDir, "Photos", "album", "shared.jpg")); err != nil {
 		t.Fatalf("--all should copy files backed up elsewhere: %v", err)
 	}
 }
@@ -755,7 +792,7 @@ func TestCLIBackupSameMachineCopyDoesNotCountAsBackup(t *testing.T) {
 	if !strings.Contains(out, "manifest refresh was skipped") {
 		t.Fatalf("backup output missing direct-host warning:\n%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(remoteRoot, "album", "photo1.jpg")); err != nil {
+	if _, err := os.Stat(filepath.Join(remoteRoot, "Photos", "album", "photo1.jpg")); err != nil {
 		t.Fatalf("file was not copied when only same-machine duplicate existed: %v", err)
 	}
 }
@@ -806,7 +843,7 @@ func TestCLIBackupToRemoteBatchesFileList(t *testing.T) {
 
 	// Batching must not lose or duplicate anything.
 	for rel, want := range files {
-		data, err := os.ReadFile(filepath.Join(remoteRoot, filepath.FromSlash(rel)))
+		data, err := os.ReadFile(filepath.Join(remoteRoot, "Photos", filepath.FromSlash(rel)))
 		if err != nil {
 			t.Fatalf("read remote %s: %v", rel, err)
 		}
@@ -854,7 +891,7 @@ func TestCLIBackupToRemoteMirrorsWithConfiguredMachine(t *testing.T) {
 		filepath.Join("album", "photo1.jpg"): "photo-one",
 		filepath.Join("album", "photo2.jpg"): "photo-two",
 	} {
-		data, err := os.ReadFile(filepath.Join(remoteRoot, relPath))
+		data, err := os.ReadFile(filepath.Join(remoteRoot, "Photos", relPath))
 		if err != nil {
 			t.Fatalf("read remote copied file %s: %v", relPath, err)
 		}
@@ -914,7 +951,7 @@ func TestCLIBackupToRemoteFailsWhenCollectFailsAfterCopy(t *testing.T) {
 	if !strings.Contains(out, "manifest collection failed") {
 		t.Fatalf("collect-failure output missing message:\n%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(remoteRoot, "album", "photo1.jpg")); err != nil {
+	if _, err := os.Stat(filepath.Join(remoteRoot, "Photos", "album", "photo1.jpg")); err != nil {
 		t.Fatalf("file copy should complete before collect failure: %v", err)
 	}
 }
@@ -962,7 +999,7 @@ func TestCLIBackupMissingAliasForwardsToBackup(t *testing.T) {
 	if !strings.Contains(out, "'backup-missing' is deprecated") {
 		t.Fatalf("backup-missing output missing deprecation notice:\n%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(destDir, "album", "photo1.jpg")); err != nil {
+	if _, err := os.Stat(filepath.Join(destDir, "Photos", "album", "photo1.jpg")); err != nil {
 		t.Fatalf("deprecated alias did not copy the file: %v", err)
 	}
 }

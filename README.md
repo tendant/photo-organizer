@@ -29,7 +29,7 @@ Shows folders with overlapping file sets so you can clean up whole folders safel
 
 ### Back up to another machine
 ```bash
-photo-organizer backup ~/Photos --dest nas:/backups/photos
+photo-organizer backup ~/Photos --dest nas:/backups
 ```
 Mirrors the folder over SSH, copying only files that are missing there or not yet
 backed up anywhere else, then refreshes that machine's manifest so the copies

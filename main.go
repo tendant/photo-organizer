@@ -190,7 +190,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  restore, sign, storage-plan, storage-status\n\n")
 	fmt.Fprintf(os.Stderr, "Examples:\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer scan ~/Photos\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos --dest nas:/backups/photos\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer backup ~/Photos --dest nas:/backups\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer archive ~/Photos/OldImport --dest /mnt/archive\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders --top 10 -s\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer check-backup ~/Photos\n")
