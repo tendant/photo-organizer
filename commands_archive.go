@@ -20,11 +20,16 @@ func runArchive(args []string) error {
 	folderPath := ""
 	destLocation := ""
 	keepSource := false
+	progMode := progressAuto
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--keep":
 			keepSource = true
+		case "--progress":
+			progMode = progressOn
+		case "--no-progress":
+			progMode = progressOff
 		case "--dest":
 			if i+1 < len(args) {
 				destLocation = args[i+1]
@@ -41,7 +46,7 @@ func runArchive(args []string) error {
 
 	if folderPath == "" || destLocation == "" {
 		fmt.Fprintf(os.Stderr, "\n🗄  ARCHIVE A FOLDER\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder> --dest <target> [--keep]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: photo-organizer archive <folder> --dest <target> [--keep] [--no-progress]\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer archive ~/Photos/OldImport --dest /mnt/archive\n")
 		fmt.Fprintf(os.Stderr, "  photo-organizer archive ~/Photos/OldImport --dest nas:/archive\n")
@@ -95,7 +100,8 @@ func runArchive(args []string) error {
 	// Timestamp keeps each snapshot distinct, so runs never overwrite each other.
 	archiveFolderName := generateArchiveFolderName(filepath.Base(absSourceFolder), time.Now())
 
-	relPaths, totalSize := listFilesUnder(absSourceFolder)
+	relPaths, relSizes, totalSize := listFilesUnder(absSourceFolder)
+	showProgress := progressEnabled(progMode)
 	destDisplay := filepath.Join(localArchiveDir, archiveFolderName)
 	if remote {
 		destDisplay = remoteUserHost + ":" + remoteArchivePath(remotePath, archiveFolderName)
@@ -120,21 +126,30 @@ func runArchive(args []string) error {
 	}
 
 	if remote {
-		return archiveToRemote(absSourceFolder, relPaths, archiveFolderName, remoteUserHost, remoteMachineID, remotePath)
+		return archiveToRemote(absSourceFolder, relPaths, relSizes, totalSize, archiveFolderName,
+			remoteUserHost, remoteMachineID, remotePath, showProgress)
 	}
-	return archiveToLocal(absSourceFolder, relPaths, filepath.Join(localArchiveDir, archiveFolderName), keepSource)
+	return archiveToLocal(absSourceFolder, relPaths, totalSize,
+		filepath.Join(localArchiveDir, archiveFolderName), keepSource, showProgress)
 }
 
 // archiveToRemote copies the folder into a dated snapshot on a remote machine
 // and refreshes that machine's manifest. The source folder is left in place.
-func archiveToRemote(absSourceFolder string, relPaths []string, archiveFolderName, remoteUserHost, remoteMachineID, remotePath string) error {
+func archiveToRemote(absSourceFolder string, relPaths []string, relSizes []int64, totalSize int64,
+	archiveFolderName, remoteUserHost, remoteMachineID, remotePath string, showProgress bool) error {
+
 	archivePath := remoteArchivePath(remotePath, archiveFolderName)
 
 	fmt.Fprintf(os.Stderr, "\n▶️  Copying %d files → %s:%s\n", len(relPaths), remoteUserHost, archivePath)
-	if err := rsyncRelPaths(absSourceFolder, relPaths, remoteUserHost, archivePath); err != nil {
+	prog := newProgressReporter("Copying", unitBytes, totalSize, int64(len(relPaths)), showProgress)
+	// No plan pre-pass: an archive always targets a fresh dated folder, so
+	// everything in the list is genuinely new work.
+	if err := rsyncRelPaths(absSourceFolder, relPaths, relSizes, remoteUserHost, archivePath, nil, prog); err != nil {
+		prog.Clear()
 		fmt.Fprintf(os.Stderr, "Error: rsync failed: %v\n", err)
 		return errFailed
 	}
+	prog.Done(fmt.Sprintf("Copied %s files (%s)", formatCount(len(relPaths)), formatSize(totalSize)))
 
 	if remoteMachineID == "" {
 		fmt.Fprintf(os.Stderr, "\n✓ Folder archived to %s:%s\n", remoteUserHost, archivePath)
@@ -156,13 +171,18 @@ func archiveToRemote(absSourceFolder string, relPaths []string, archiveFolderNam
 
 // archiveToLocal moves (or copies, with keepSource) the folder into a dated
 // snapshot on this machine and repoints the manifests at the new location.
-func archiveToLocal(absSourceFolder string, relPaths []string, archiveFolder string, keepSource bool) error {
+func archiveToLocal(absSourceFolder string, relPaths []string, totalSize int64,
+	archiveFolder string, keepSource, showProgress bool) error {
+
 	if keepSource {
 		fmt.Fprintf(os.Stderr, "\n▶️  Copying %s → %s\n", absSourceFolder, archiveFolder)
-		if err := copyRelPaths(absSourceFolder, relPaths, archiveFolder); err != nil {
+		prog := newProgressReporter("Copying", unitBytes, totalSize, int64(len(relPaths)), showProgress)
+		if err := copyRelPaths(absSourceFolder, relPaths, archiveFolder, prog); err != nil {
+			prog.Clear()
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return errFailed
 		}
+		prog.Done(fmt.Sprintf("Copied %s files (%s)", formatCount(len(relPaths)), formatSize(totalSize)))
 	} else {
 		fmt.Fprintf(os.Stderr, "\n▶️  Moving %s → %s\n", absSourceFolder, archiveFolder)
 		if err := os.Rename(absSourceFolder, archiveFolder); err != nil {

@@ -67,6 +67,19 @@ A remote destination (`machine-id:/path` or `user@host:/path`) transfers over SS
 with `rsync`, then rescans the destination on that machine so the copies count as
 a real backup. Local destinations are rescanned in place.
 
+Every long phase reports how far along it is and how much longer it needs:
+
+```
+Checking which files need backup...
+  Checking  38%  4,731 / 12,431 files  1,204 files/s  ETA 1m04s
+Backing up 1,204 files (5.4 GB)...
+  Copying  63%  3.4 GB / 5.4 GB  742 / 1,204 files  58.1 MB/s  ETA 35s
+```
+
+On a terminal this is a single line redrawn in place; when the output is piped or
+run from cron it becomes one line every few seconds instead. Turn it off with
+`--no-progress` or `PHOTO_ORGANIZER_PROGRESS=0`.
+
 ## 5. Check Backup Coverage
 
 Before cleanup, check whether a folder is backed up:

@@ -99,6 +99,37 @@ files, but the manifest refresh is skipped — add it with
 `backup-missing` is the former name of this command and still works, with a
 deprecation notice.
 
+#### Progress
+
+Each slow phase — working out what needs copying, the copy itself, and the
+destination rescan — reports percent done, amount done, throughput, and an ETA.
+The copy is accounted in **bytes**, not file counts, because photo sizes range
+from a few MB to several GB.
+
+```
+Checking which files need backup...
+  Checking  38%  4,731 / 12,431 files  1,204 files/s  ETA 1m04s
+Backing up 1,204 files (5.4 GB)...
+  Copying  63%  3.4 GB / 5.4 GB  742 / 1,204 files  58.1 MB/s  ETA 35s
+```
+
+Suppress it with `--no-progress`, or set `PHOTO_ORGANIZER_PROGRESS=0`. When
+stderr is not a terminal the same information is printed as ordinary lines every
+few seconds rather than redrawn in place, so logs and cron mail stay readable.
+
+Two things worth knowing about the numbers on a **remote** backup:
+
+- The rate is **source bytes per second, not link throughput**. `rsync`
+  compresses and reuses blocks it finds at the destination, so fewer bytes cross
+  the wire than are counted here. The figure answers "how fast is my backup
+  progressing", which is what the ETA needs.
+- The file list is sent to `rsync` in byte-bounded batches so progress can move
+  during the transfer. `rsync` still decides what actually needs sending and
+  still does per-file delta transfer — batching changes only how progress is
+  measured. A file large enough to be its own batch reports byte-level progress
+  where `rsync` supports `--info=progress2`, and otherwise names the file it is
+  sending so a slow-moving line is explained.
+
 ### archive
 Retire a folder into a dated snapshot and repoint the manifests at it.
 

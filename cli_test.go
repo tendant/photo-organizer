@@ -760,6 +760,65 @@ func TestCLIBackupSameMachineCopyDoesNotCountAsBackup(t *testing.T) {
 	}
 }
 
+// loggingRsync behaves like fakeRsync but also appends its file list to
+// $RSYNC_LOG, one line per invocation, so a test can count batches.
+const loggingRsync = "#!/bin/sh\nset -eu\nfiles_from=\nsrc=\ndest=\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    --files-from=*) files_from=${arg#--files-from=} ;;\n    --dry-run) exit 0 ;;\n    -*) ;;\n    *)\n      if [ -z \"$src\" ]; then src=$arg; elif [ -z \"$dest\" ]; then dest=$arg; fi ;;\n  esac\ndone\nremote_path=${dest#*:}\nmkdir -p \"$remote_path\"\nbatch=\nwhile IFS= read -r rel; do\n  mkdir -p \"$remote_path/$(dirname \"$rel\")\"\n  cp \"$src$rel\" \"$remote_path/$rel\"\n  batch=\"$batch $rel\"\ndone < \"$files_from\"\necho \"batch:$batch\" >> \"$RSYNC_LOG\"\n"
+
+// A remote backup must split its file list into byte-bounded batches and still
+// deliver every file exactly once.
+func TestCLIBackupToRemoteBatchesFileList(t *testing.T) {
+	homeDir := t.TempDir()
+	sourceDir := filepath.Join(homeDir, "library", "Photos")
+	remoteRoot := filepath.Join(homeDir, "remote-dest")
+	rsyncLog := filepath.Join(homeDir, "rsync.log")
+	t.Setenv("HOME", homeDir)
+
+	files := map[string]string{
+		"album/photo1.jpg": "photo-one",
+		"album/photo2.jpg": "photo-two",
+		"album/photo3.jpg": "photo-three",
+		"album/photo4.jpg": "photo-four",
+		"album/photo5.jpg": "photo-five",
+	}
+	writeManifestFixture(t, homeDir, "local-machine", filepath.Join("library", "Photos"), files)
+	writeMachineID(t, homeDir, "local-machine")
+	if err := saveMachinesConfig(map[string]string{"remote-machine": "backup@example"}); err != nil {
+		t.Fatalf("saveMachinesConfig: %v", err)
+	}
+	pathEnv := setupRemoteShims(t, homeDir, loggingRsync)
+
+	// Two files per batch over five files means three invocations.
+	out, code := runCLIWithHomeInputEnv(t, homeDir, "",
+		[]string{pathEnv, "RSYNC_LOG=" + rsyncLog, "PHOTO_ORGANIZER_RSYNC_BATCH_FILES=2"},
+		"backup", sourceDir, "--dest", "remote-machine:"+remoteRoot)
+	if code != 0 {
+		t.Fatalf("backup exit code = %d, output:\n%s", code, out)
+	}
+
+	log, err := os.ReadFile(rsyncLog)
+	if err != nil {
+		t.Fatalf("read rsync log: %v", err)
+	}
+	batches := strings.Count(string(log), "batch:")
+	if batches != 3 {
+		t.Errorf("rsync invoked %d times, want 3 (2 files per batch over 5 files)\nlog:\n%s", batches, log)
+	}
+
+	// Batching must not lose or duplicate anything.
+	for rel, want := range files {
+		data, err := os.ReadFile(filepath.Join(remoteRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatalf("read remote %s: %v", rel, err)
+		}
+		if string(data) != want {
+			t.Errorf("remote %s = %q, want %q", rel, data, want)
+		}
+		if got := strings.Count(string(log), " "+rel); got != 1 {
+			t.Errorf("%s appeared in %d batches, want 1", rel, got)
+		}
+	}
+}
+
 func TestCLIBackupToRemoteMirrorsWithConfiguredMachine(t *testing.T) {
 	homeDir := t.TempDir()
 	sourceDir := filepath.Join(homeDir, "library", "Photos")

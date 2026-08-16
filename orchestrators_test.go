@@ -107,6 +107,13 @@ func TestRunBackup(t *testing.T) {
 	if !strings.Contains(out, "Files copied:        2") {
 		t.Errorf("expected copied count, got:\n%s", out)
 	}
+	// The progress reporter closes each phase with a summary line. Only the
+	// wording is asserted — never an elapsed value or an in-flight line.
+	for _, want := range []string{"Checked 2 files", "Copied 2 files"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected progress summary %q, got:\n%s", want, out)
+		}
+	}
 	// The destination mirrors the source: no timestamped folder in between.
 	if _, err := os.Stat(filepath.Join(dest, "trip", "a.jpg")); err != nil {
 		t.Errorf("expected trip/a.jpg mirrored into the destination: %v", err)
