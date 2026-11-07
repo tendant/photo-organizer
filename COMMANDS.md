@@ -65,13 +65,24 @@ then modified time. Implausible dates (before 1990, in the future) go to
 - **Converges.** Content already in the library is skipped, so re-running after
   adding photos or after an interruption copies only what is missing. Matches
   are confirmed byte-for-byte, not just by the sampled hash.
-- **Pairs stay together.** `IMG_1.CR3`, `IMG_1.JPG` and `IMG_1.xmp` share one
-  date and folder. Sidecars with no photo beside them are ignored, as are macOS
-  `._*` files.
+- **Pairs stay together.** `IMG_1.CR3`, `IMG_1.JPG` and `IMG_1.xmp` (or
+  `IMG_1.jpg.xmp`) share one date and folder. A sidecar always follows its own
+  photo — even when two photos have identical sidecars, or the photo was already in
+  the library (the sidecar is placed beside that copy). A sidecar that differs from
+  the one already there is reported, never overwritten. Sidecars with no photo to
+  attach to are ignored, as are empty files and macOS `._*` files.
+- **Skips system folders.** `@eaDir`, `#recycle`, `.thumbnails`, `.Trash-*`,
+  `$RECYCLE.BIN`, `*.lrdata` and similar are not photos and are not copied; the
+  summary says which were skipped.
+- **Tells you what it leaves behind.** Files that are not photos, videos or
+  sidecars (`.pdf`, `.txt`, ...) are not copied. They are counted by extension in
+  the summary — keep them before you retire or delete the source.
+- **Checks free space** at the library before copying and refuses to start if the
+  copy would not fit.
 - **Never overwrites.** Same name with different content gets `_1`, `_2`...
   Files are written to a temporary name and linked into place.
 - **Separate trees.** The library may not be inside a source, nor a source inside
-  the library.
+  the library (symlinks are resolved before comparing).
 - A log of every copy goes to `<library>/_organize/`, and the library manifest is
   refreshed so the copies count for `dups` and `check-backup`.
 

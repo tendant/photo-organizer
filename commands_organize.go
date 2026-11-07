@@ -52,14 +52,20 @@ type plannedCopy struct {
 
 // organizePlan is everything a dry run reports and an apply run executes.
 type organizePlan struct {
-	copies         []plannedCopy
-	copyBytes      int64
-	duplicates     int // content already in the library or earlier in this run
-	duplicateBytes int64
-	orphanSidecars int // .xmp/.aae/... with no photo or video beside them
-	unreadable     []string
-	undated        int
-	byFolder       map[string]int // top-level year folder -> files
+	copies           []plannedCopy
+	copyBytes        int64
+	duplicates       int // content already in the library or earlier in this run
+	duplicateBytes   int64
+	orphanSidecars   int // .xmp/.aae/... with no photo or video to attach to
+	emptySkipped     int
+	conflictSidecars []string       // sidecar differs from the one already beside its photo
+	skippedTypes     map[string]int // non-media extensions left behind
+	junkDirs         map[string]int // system/thumbnail folders skipped
+	unreadable       []string
+	undated          int
+	byFolder         map[string]int // top-level year folder -> files
+	freeBytes        uint64
+	freeKnown        bool
 }
 
 func parseOrganizeArgs(args []string) (organizeOptions, error) {
@@ -151,8 +157,10 @@ func runOrganize(args []string) error {
 	}
 	// The library and the sources must be separate trees. If they overlapped,
 	// the library would be read back as a source (or the source rewritten).
+	realDest := resolveThroughSymlinks(dest)
 	for _, s := range sources {
-		if pathWithin(dest, s) || pathWithin(s, dest) {
+		realSrc := resolveThroughSymlinks(s)
+		if pathWithin(realDest, realSrc) || pathWithin(realSrc, realDest) {
 			fmt.Fprintf(os.Stderr, "Error: %s and the library %s overlap; choose a separate library folder\n", s, dest)
 			return errFailed
 		}
@@ -166,6 +174,11 @@ func runOrganize(args []string) error {
 		return errFailed
 	}
 	printOrganizePlan(plan, dest, opts.apply)
+
+	if opts.apply && plan.lacksSpace() {
+		fmt.Fprintf(os.Stderr, "\nError: not enough free space for the library; nothing was copied.\n")
+		return errFailed
+	}
 
 	if !opts.apply {
 		if len(plan.copies) > 0 {
@@ -194,6 +207,30 @@ func runOrganize(args []string) error {
 	return nil
 }
 
+// resolveThroughSymlinks resolves symlinks in path, including when the tail of
+// the path does not exist yet (a library about to be created), so an overlap
+// hidden behind a symlink is still caught.
+func resolveThroughSymlinks(path string) string {
+	path = filepath.Clean(path)
+	rest := ""
+	cur := path
+	for {
+		if _, err := os.Lstat(cur); err == nil {
+			real, err := filepath.EvalSymlinks(cur)
+			if err != nil {
+				return path
+			}
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
+}
+
 // pathWithin reports whether path is root or lies inside it.
 func pathWithin(path, root string) bool {
 	rel, err := filepath.Rel(root, path)
@@ -209,6 +246,30 @@ func pathWithin(path, root string) bool {
 
 func contentKey(size int64, hash string) string {
 	return fmt.Sprintf("%d:%s", size, hash)
+}
+
+// isJunkDir reports folders that hold system data, thumbnails or trash rather
+// than photos you took. Their contents would otherwise be copied as photos
+// (Synology @eaDir alone can hold a thumbnail for every picture).
+func isJunkDir(name string) bool {
+	l := strings.ToLower(name)
+	switch l {
+	case "@eadir", "#recycle", "@recycle", ".thumbnails", "$recycle.bin",
+		"system volume information", ".spotlight-v100", ".fseventsd",
+		".trashes", ".trash", "__macosx", ".appledouble", ".temporaryitems",
+		"lost+found", ".stversions", ".stfolder", organizeLogDir:
+		return true
+	}
+	return strings.HasPrefix(l, ".trash-") || strings.HasSuffix(l, ".lrdata")
+}
+
+// noiseFile reports OS litter that is not worth mentioning as "left behind".
+func noiseFile(name string) bool {
+	switch strings.ToLower(name) {
+	case "thumbs.db", "desktop.ini", ".ds_store", ".photoignore", ".localized":
+		return true
+	}
+	return strings.HasPrefix(name, "._")
 }
 
 // libraryIndex maps content to the library files that hold it, so a source
@@ -238,11 +299,11 @@ func indexLibrary(dest string, showProgress bool) (libraryIndex, map[string]bool
 			return nil
 		}
 		names[strings.ToLower(path)] = true
-		if shouldSkipFile(path) || !isMediaFile(filepath.Ext(path)) {
+		if shouldSkipFile(path) || !isMediaFile(filepath.Ext(path)) || isSidecarExt(filepath.Ext(path)) {
 			return nil
 		}
 		info, err := d.Info()
-		if err != nil {
+		if err != nil || info.Size() == 0 {
 			return nil
 		}
 		hash, _ := processFile(path)
@@ -263,11 +324,22 @@ type sourceFile struct {
 	size int64
 }
 
-// groupSources walks every source (read-only) and groups files that belong
+// sourceScan is what walking the source folders found.
+type sourceScan struct {
+	groups       map[string][]sourceFile
+	skippedTypes map[string]int // unrecognised extension -> files left behind
+	junkDirs     map[string]int // skipped system/thumbnail folder name -> count
+}
+
+// scanSources walks every source (read-only) and groups files that belong
 // together: same folder and same name apart from the extension, so IMG_1.CR3,
 // IMG_1.JPG and IMG_1.xmp are handled as one unit.
-func groupSources(sources []string, showProgress bool) map[string][]sourceFile {
-	groups := map[string][]sourceFile{}
+func scanSources(sources []string, showProgress bool) sourceScan {
+	res := sourceScan{
+		groups:       map[string][]sourceFile{},
+		skippedTypes: map[string]int{},
+		junkDirs:     map[string]int{},
+	}
 	prog := newProgressReporter("Finding files", unitFiles, 0, 0, showProgress)
 	var n int64
 	for _, root := range sources {
@@ -277,30 +349,44 @@ func groupSources(sources []string, showProgress bool) map[string][]sourceFile {
 				return nil
 			}
 			if d.IsDir() {
-				if d.Name() == organizeLogDir {
+				if path != root && isJunkDir(d.Name()) {
+					res.junkDirs[d.Name()]++
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			// "._name" files are macOS AppleDouble metadata, not photos.
-			if strings.HasPrefix(d.Name(), "._") || shouldSkipFile(path) ||
-				!isMediaFile(filepath.Ext(path)) || ignore.ShouldSkip(path) {
+			if shouldSkipFile(path) || noiseFile(d.Name()) || ignore.ShouldSkip(path) {
+				return nil
+			}
+			ext := filepath.Ext(path)
+			if !isMediaFile(ext) {
+				if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+					label := strings.ToLower(ext)
+					if label == "" {
+						label = "(no extension)"
+					}
+					res.skippedTypes[label]++
+				}
 				return nil
 			}
 			info, err := d.Info()
 			if err != nil || !info.Mode().IsRegular() {
 				return nil
 			}
-			ext := filepath.Ext(path)
-			key := filepath.Join(filepath.Dir(path), strings.ToLower(strings.TrimSuffix(filepath.Base(path), ext)))
-			groups[key] = append(groups[key], sourceFile{path: path, size: info.Size()})
+			stem := strings.TrimSuffix(filepath.Base(path), ext)
+			// "IMG_1.jpg.xmp" belongs with IMG_1.jpg, not in a group of its own.
+			if inner := filepath.Ext(stem); isSidecarExt(ext) && isMediaFile(inner) && !isSidecarExt(inner) {
+				stem = strings.TrimSuffix(stem, inner)
+			}
+			key := filepath.Join(filepath.Dir(path), strings.ToLower(stem))
+			res.groups[key] = append(res.groups[key], sourceFile{path: path, size: info.Size()})
 			n++
 			prog.Add(1, 1)
 			return nil
 		})
 	}
 	prog.Done(fmt.Sprintf("Found %s files", formatCount(int(n))))
-	return groups
+	return res
 }
 
 func isSidecarExt(ext string) bool { return sidecarExts[strings.ToLower(ext)] }
@@ -321,95 +407,204 @@ func plausibleDate(t time.Time) bool {
 	return t.Year() >= 1990 && t.Before(time.Now().Add(48*time.Hour))
 }
 
+// planner holds the state shared while deciding where every file goes.
+type planner struct {
+	dest string
+	opts organizeOptions
+	plan *organizePlan
+
+	idx          libraryIndex
+	taken        map[string]bool   // lowercased library + planned paths
+	plannedSrc   map[string]string // planned library path -> source it comes from
+	plannedBySrc map[string]string // source path -> library path it will have
+}
+
 func buildOrganizePlan(sources []string, dest string, opts organizeOptions, showProgress bool) (*organizePlan, error) {
 	idx, taken, err := indexLibrary(dest, showProgress)
 	if err != nil {
 		return nil, fmt.Errorf("read library %s: %w", dest, err)
 	}
 
-	groups := groupSources(sources, showProgress)
-	keys := make([]string, 0, len(groups))
+	found := scanSources(sources, showProgress)
+	keys := make([]string, 0, len(found.groups))
 	var totalFiles int64
-	for k, files := range groups {
+	for k, files := range found.groups {
 		keys = append(keys, k)
 		totalFiles += int64(len(files))
 	}
 	sort.Strings(keys) // deterministic: the same inputs always produce the same plan
 
-	plan := &organizePlan{byFolder: map[string]int{}}
+	plan := &organizePlan{
+		byFolder:     map[string]int{},
+		skippedTypes: found.skippedTypes,
+		junkDirs:     found.junkDirs,
+	}
+	pl := &planner{
+		dest: dest, opts: opts, plan: plan, idx: idx, taken: taken,
+		plannedSrc: map[string]string{}, plannedBySrc: map[string]string{},
+	}
+
 	prog := newProgressReporter("Examining", unitFiles, totalFiles, totalFiles, showProgress)
-
 	for _, key := range keys {
-		files := groups[key]
+		files := found.groups[key]
 		sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
+		pl.planGroup(files)
+		prog.Add(0, int64(len(files)))
+	}
+	prog.Done(fmt.Sprintf("Examined %s files", formatCount(int(totalFiles))))
 
-		// The first photo (else video) in the group sets the date for all of it,
-		// so sidecars and RAW+JPG pairs land together.
-		lead := -1
-		for i, f := range files {
-			if photoExts[strings.ToLower(filepath.Ext(f.path))] {
-				lead = i
-				break
-			}
+	plan.freeBytes, plan.freeKnown = freeSpaceFor(dest)
+	return plan, nil
+}
+
+// freeSpaceFor reports the free space on the filesystem that will hold dest,
+// looking at the nearest folder that already exists.
+func freeSpaceFor(dest string) (uint64, bool) {
+	p := dest
+	for {
+		if _, err := os.Stat(p); err == nil {
+			return diskFreeBytes(p)
 		}
-		if lead < 0 {
-			for i, f := range files {
-				if !isSidecarExt(filepath.Ext(f.path)) {
-					lead = i
-					break
-				}
-			}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return 0, false
 		}
-		if lead < 0 {
-			plan.orphanSidecars += len(files)
-			prog.Add(0, int64(len(files)))
+		p = parent
+	}
+}
+
+// planGroup decides the fate of one photo/video together with its sidecars.
+func (pl *planner) planGroup(files []sourceFile) {
+	plan := pl.plan
+
+	var media, sidecars []sourceFile
+	for _, f := range files {
+		if isSidecarExt(filepath.Ext(f.path)) {
+			sidecars = append(sidecars, f)
+		} else if f.size == 0 {
+			plan.emptySkipped++ // an empty file is not a photo, and all of them look identical
+		} else {
+			media = append(media, f)
+		}
+	}
+	if len(media) == 0 {
+		plan.orphanSidecars += len(sidecars)
+		return
+	}
+
+	// The first photo (else video) sets the date for the whole group, so
+	// RAW+JPG pairs and sidecars land together.
+	lead := 0
+	for i, f := range media {
+		if photoExts[strings.ToLower(filepath.Ext(f.path))] {
+			lead = i
+			break
+		}
+	}
+
+	type hashed struct {
+		hash string
+		date time.Time
+	}
+	results := make([]hashed, len(media))
+	for i, f := range media {
+		h, d := processFile(f.path)
+		results[i] = hashed{h, d}
+	}
+	date := results[lead].date
+	hasDate := plausibleDate(date)
+	folder := captureFolder(date, hasDate, pl.opts.byMonth)
+
+	// placed records where each source file's content lives (or will live) in
+	// the library, so sidecars can be put beside it.
+	placed := map[string]string{}
+	byName := map[string]string{} // lowercased base name -> source path
+
+	for i, f := range media {
+		byName[strings.ToLower(filepath.Base(f.path))] = f.path
+		if results[i].hash == "" {
+			plan.unreadable = append(plan.unreadable, f.path)
+			continue
+		}
+		k := contentKey(f.size, results[i].hash)
+
+		if dupOf := firstIdentical(pl.idx[k], f.path); dupOf != "" {
+			plan.duplicates++
+			plan.duplicateBytes += f.size
+			if pathWithin(dupOf, pl.dest) {
+				placed[f.path] = dupOf
+			} else {
+				placed[f.path] = pl.plannedBySrc[dupOf]
+			}
 			continue
 		}
 
-		type hashed struct {
-			hash string
-			date time.Time
-		}
-		results := make([]hashed, len(files))
-		for i, f := range files {
-			h, d := processFile(f.path)
-			results[i] = hashed{h, d}
-		}
-		date := results[lead].date
-		hasDate := plausibleDate(date)
-		folder := captureFolder(date, hasDate, opts.byMonth)
+		dst := uniqueDestination(filepath.Join(pl.dest, folder), filepath.Base(f.path), pl.taken)
+		pl.reserve(dst, f.path)
+		pl.idx[k] = append(pl.idx[k], f.path) // later copies of this content in the run are duplicates
+		placed[f.path] = dst
 
-		for i, f := range files {
-			prog.Add(0, 1)
-			if results[i].hash == "" {
-				plan.unreadable = append(plan.unreadable, f.path)
-				continue
-			}
-			k := contentKey(f.size, results[i].hash)
-
-			if dupOf := firstIdentical(idx[k], f.path); dupOf != "" {
-				plan.duplicates++
-				plan.duplicateBytes += f.size
-				continue
-			}
-
-			dst := uniqueDestination(filepath.Join(dest, folder), filepath.Base(f.path), taken)
-			taken[strings.ToLower(dst)] = true
-			idx[k] = append(idx[k], f.path) // later copies of this content in the run are duplicates
-
-			plan.copies = append(plan.copies, plannedCopy{
-				src: f.path, dst: dst, size: f.size, hash: results[i].hash,
-				date: date, hasDate: hasDate,
-			})
-			plan.copyBytes += f.size
-			if !hasDate {
-				plan.undated++
-			}
-			plan.byFolder[strings.SplitN(folder, string(filepath.Separator), 2)[0]]++
+		plan.addCopy(plannedCopy{src: f.path, dst: dst, size: f.size, hash: results[i].hash, date: date, hasDate: hasDate},
+			strings.SplitN(folder, string(filepath.Separator), 2)[0])
+		if !hasDate {
+			plan.undated++
 		}
 	}
-	prog.Done(fmt.Sprintf("Examined %s files", formatCount(int(totalFiles))))
-	return plan, nil
+
+	// Sidecars are never judged by content alone: two photos can legitimately
+	// have identical .xmp files. Each goes beside its own photo, named after it.
+	for _, sc := range sidecars {
+		ext := filepath.Ext(sc.path)
+		stem := strings.TrimSuffix(filepath.Base(sc.path), ext)
+
+		var base string
+		dotted := false
+		if owner, ok := byName[strings.ToLower(stem)]; ok { // IMG_1.jpg.xmp style
+			base, dotted = placed[owner], true
+		} else {
+			base = placed[media[lead].path]
+		}
+		if base == "" {
+			plan.orphanSidecars++
+			continue
+		}
+		var target string
+		if dotted {
+			target = base + ext
+		} else {
+			target = strings.TrimSuffix(base, filepath.Ext(base)) + ext
+		}
+
+		if pl.taken[strings.ToLower(target)] {
+			existing := target
+			if from, ok := pl.plannedSrc[target]; ok {
+				existing = from
+			}
+			if sameContent(existing, sc.path) {
+				plan.duplicates++
+				plan.duplicateBytes += sc.size
+			} else {
+				plan.conflictSidecars = append(plan.conflictSidecars, sc.path)
+			}
+			continue
+		}
+		pl.reserve(target, sc.path)
+		plan.addCopy(plannedCopy{src: sc.path, dst: target, size: sc.size, date: date, hasDate: hasDate}, "")
+	}
+}
+
+func (pl *planner) reserve(dst, src string) {
+	pl.taken[strings.ToLower(dst)] = true
+	pl.plannedSrc[dst] = src
+	pl.plannedBySrc[src] = dst
+}
+
+func (p *organizePlan) addCopy(c plannedCopy, yearFolder string) {
+	p.copies = append(p.copies, c)
+	p.copyBytes += c.size
+	if yearFolder != "" {
+		p.byFolder[yearFolder]++
+	}
 }
 
 // firstIdentical returns the first candidate whose bytes equal those of path.
@@ -486,6 +681,37 @@ func uniqueDestination(dir, name string, taken map[string]bool) string {
 	}
 }
 
+// topCounts renders "a ×3, b ×1" for the largest entries.
+func topCounts(m map[string]int, limit int) string {
+	type kv struct {
+		k string
+		n int
+	}
+	var all []kv
+	for k, n := range m {
+		all = append(all, kv{k, n})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].n != all[j].n {
+			return all[i].n > all[j].n
+		}
+		return all[i].k < all[j].k
+	})
+	var parts []string
+	for i, e := range all {
+		if i == limit {
+			parts = append(parts, fmt.Sprintf("and %d more", len(all)-limit))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s ×%s", e.k, formatCount(e.n)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (p *organizePlan) lacksSpace() bool {
+	return p.freeKnown && uint64(p.copyBytes) > p.freeBytes
+}
+
 func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 	verb := "Would copy"
 	if apply {
@@ -494,14 +720,41 @@ func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 	fmt.Fprintf(os.Stderr, "\n%s %s files (%s) into %s\n", verb, formatCount(len(p.copies)), formatSize(p.copyBytes), dest)
 	fmt.Fprintf(os.Stderr, "Skipping %s files (%s) already in the library or duplicated within the sources\n",
 		formatCount(p.duplicates), formatSize(p.duplicateBytes))
+	if p.emptySkipped > 0 {
+		fmt.Fprintf(os.Stderr, "Skipping %s empty (0-byte) files\n", formatCount(p.emptySkipped))
+	}
 	if p.orphanSidecars > 0 {
-		fmt.Fprintf(os.Stderr, "Ignoring %s sidecar files with no photo or video beside them\n", formatCount(p.orphanSidecars))
+		fmt.Fprintf(os.Stderr, "Ignoring %s sidecar files with no photo or video to attach to\n", formatCount(p.orphanSidecars))
 	}
 	if p.undated > 0 {
 		fmt.Fprintf(os.Stderr, "%s files have no usable date and go to %s/\n", formatCount(p.undated), undatedFolder)
 	}
+	if len(p.junkDirs) > 0 {
+		fmt.Fprintf(os.Stderr, "Skipped system/thumbnail folders: %s\n", topCounts(p.junkDirs, 6))
+	}
 	if len(p.unreadable) > 0 {
 		fmt.Fprintf(os.Stderr, "⚠  %d unreadable file(s) skipped, e.g. %s\n", len(p.unreadable), p.unreadable[0])
+	}
+	if len(p.conflictSidecars) > 0 {
+		fmt.Fprintf(os.Stderr, "⚠  %d sidecar(s) differ from the one already beside their photo and were not copied, e.g. %s\n",
+			len(p.conflictSidecars), p.conflictSidecars[0])
+	}
+	if len(p.skippedTypes) > 0 {
+		total := 0
+		for _, n := range p.skippedTypes {
+			total += n
+		}
+		fmt.Fprintf(os.Stderr, "⚠  %s other files are NOT photos/videos and will not be copied: %s\n",
+			formatCount(total), topCounts(p.skippedTypes, 8))
+		fmt.Fprintf(os.Stderr, "   They stay only in the source — keep them before you retire or delete it.\n")
+	}
+	if p.freeKnown {
+		if p.lacksSpace() {
+			fmt.Fprintf(os.Stderr, "⚠  Not enough free space: need %s, only %s available\n",
+				formatSize(p.copyBytes), formatSize(int64(p.freeBytes)))
+		} else {
+			fmt.Fprintf(os.Stderr, "Free space at the library: %s\n", formatSize(int64(p.freeBytes)))
+		}
 	}
 
 	if len(p.byFolder) > 0 {

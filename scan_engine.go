@@ -40,6 +40,18 @@ var photoExts = map[string]bool{
 	".webp":    true,
 	".raw":     true,
 	".afphoto": true, // Affinity Photo project file
+	".psd":     true,
+	".jxl":     true,
+	".pef":     true, // Pentax RAW
+	".srw":     true, // Samsung RAW
+	".3fr":     true, // Hasselblad RAW
+	".gpr":     true, // GoPro RAW
+	".x3f":     true, // Sigma RAW
+	".iiq":     true, // Phase One RAW
+	".dcr":     true,
+	".erf":     true,
+	".mef":     true,
+	".mrw":     true,
 }
 
 var videoExts = map[string]bool{
@@ -51,6 +63,14 @@ var videoExts = map[string]bool{
 	".3gp":  true,
 	".hevc": true,
 	".mts":  true,
+	".m2ts": true,
+	".braw": true, // Blackmagic RAW
+	".mxf":  true,
+	".mpg":  true,
+	".mpeg": true,
+	".wmv":  true,
+	".webm": true,
+	".insv": true, // Insta360
 }
 
 var audioExts = map[string]bool{
@@ -64,6 +84,10 @@ var sidecarExts = map[string]bool{
 	".aae":  true, // Apple photo edits
 	".json": true, // JSON metadata/config
 	".xml":  true, // XML metadata/config
+	".thm":  true, // camera video thumbnail
+	".pp3":  true, // RawTherapee profile
+	".dop":  true, // DxO profile
+	".srt":  true, // subtitles / GPS track
 }
 
 // =============================================================================

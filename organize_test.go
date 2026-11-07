@@ -253,3 +253,204 @@ func TestOrganizeIgnoresMacAppleDoubleFiles(t *testing.T) {
 		t.Errorf("library = %v, want only the real photo", got)
 	}
 }
+
+// Two different photos can have byte-identical sidecars; each must keep its own.
+func TestOrganizeIdenticalSidecarsStayWithTheirOwnPhoto(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "photoA")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.xmp"), "<x/>")
+	writeFile(t, filepath.Join(src, "IMG_20240316_101010.jpg"), "photoB")
+	writeFile(t, filepath.Join(src, "IMG_20240316_101010.xmp"), "<x/>")
+
+	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	got := strings.Join(listFiles(t, lib), ",")
+	for _, want := range []string{
+		"2024/2024-03-15/IMG_20240315_101010.xmp",
+		"2024/2024-03-16/IMG_20240316_101010.xmp",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in %s", want, got)
+		}
+	}
+}
+
+func TestOrganizeSidecarsFollowRenamedPhotoAndDottedNames(t *testing.T) {
+	home := t.TempDir()
+	s1 := filepath.Join(home, "s1")
+	s2 := filepath.Join(home, "s2")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(s1, "IMG_20240315_101010.jpg"), "first")
+	writeFile(t, filepath.Join(s2, "IMG_20240315_101010.jpg"), "second") // collides -> _1
+	writeFile(t, filepath.Join(s2, "IMG_20240315_101010.xmp"), "<second/>")
+	writeFile(t, filepath.Join(s2, "IMG_20240315_101010.jpg.xmp"), "<dotted/>")
+
+	if out, code := runCLIWithHome(t, home, "organize", s1, s2, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	got := strings.Join(listFiles(t, lib), ",")
+	for _, want := range []string{
+		"2024-03-15/IMG_20240315_101010_1.jpg",
+		"2024-03-15/IMG_20240315_101010_1.xmp",     // follows the renamed photo
+		"2024-03-15/IMG_20240315_101010_1.jpg.xmp", // dotted style
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in %s", want, got)
+		}
+	}
+}
+
+func TestOrganizeSidecarOfDuplicatePhotoLandsBesideLibraryCopy(t *testing.T) {
+	home := t.TempDir()
+	s1 := filepath.Join(home, "s1")
+	s2 := filepath.Join(home, "s2")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(s1, "IMG_20240315_101010.jpg"), "same")
+	if out, code := runCLIWithHome(t, home, "organize", s1, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	// Same photo shows up elsewhere under another name, with an edit sidecar.
+	writeFile(t, filepath.Join(s2, "renamed.jpg"), "same")
+	writeFile(t, filepath.Join(s2, "renamed.xmp"), "<edit/>")
+	if out, code := runCLIWithHome(t, home, "organize", s2, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	got := strings.Join(listFiles(t, lib), ",")
+	if !strings.Contains(got, "2024-03-15/IMG_20240315_101010.xmp") || strings.Contains(got, "renamed") {
+		t.Errorf("sidecar should sit beside the existing library photo, got %s", got)
+	}
+}
+
+func TestOrganizeConflictingSidecarIsReportedNotOverwritten(t *testing.T) {
+	home := t.TempDir()
+	s1 := filepath.Join(home, "s1")
+	s2 := filepath.Join(home, "s2")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(s1, "IMG_20240315_101010.jpg"), "same")
+	writeFile(t, filepath.Join(s1, "IMG_20240315_101010.xmp"), "<v1/>")
+	runCLIWithHome(t, home, "organize", s1, "--dest", lib, "--apply", "--no-progress")
+	writeFile(t, filepath.Join(s2, "IMG_20240315_101010.jpg"), "same")
+	writeFile(t, filepath.Join(s2, "IMG_20240315_101010.xmp"), "<v2/>")
+	out, code := runCLIWithHome(t, home, "organize", s2, "--dest", lib, "--apply", "--no-progress")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "differ") {
+		t.Errorf("conflict should be reported:\n%s", out)
+	}
+	data, _ := os.ReadFile(filepath.Join(lib, "2024/2024-03-15/IMG_20240315_101010.xmp"))
+	if string(data) != "<v1/>" {
+		t.Errorf("existing sidecar overwritten: %q", data)
+	}
+}
+
+func TestOrganizeSkipsSystemAndThumbnailFolders(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "real")
+	writeFile(t, filepath.Join(src, "@eaDir/IMG_20240315_101010.jpg/SYNOPHOTO_THUMB_M.jpg"), "thumb")
+	writeFile(t, filepath.Join(src, ".thumbnails/1234.jpg"), "thumb2")
+	writeFile(t, filepath.Join(src, "#recycle/old.jpg"), "trash")
+	writeFile(t, filepath.Join(src, "cat.lrdata/preview.jpg"), "preview")
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := listFiles(t, lib); len(got) != 1 {
+		t.Errorf("only the real photo should be copied, got %v", got)
+	}
+	if !strings.Contains(out, "@eaDir") {
+		t.Errorf("skipped folders should be reported:\n%s", out)
+	}
+}
+
+func TestOrganizeReportsFilesItDoesNotCopy(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "real")
+	writeFile(t, filepath.Join(src, "notes.txt"), "n")
+	writeFile(t, filepath.Join(src, "doc.pdf"), "p")
+	writeFile(t, filepath.Join(src, "doc2.pdf"), "p2")
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--no-progress")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	for _, want := range []string{"NOT photos", ".pdf ×2", ".txt ×1", "keep them before you retire"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestOrganizeRecognisesMoreCameraFormats(t *testing.T) {
+	for _, ext := range []string{".braw", ".mxf", ".pef", ".srw", ".3fr", ".gpr", ".psd", ".jxl", ".m2ts", ".thm"} {
+		if !isMediaFile(ext) {
+			t.Errorf("%s should be recognised", ext)
+		}
+	}
+}
+
+func TestOrganizeSkipsEmptyFiles(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "real")
+	writeFile(t, filepath.Join(src, "empty1.jpg"), "")
+	writeFile(t, filepath.Join(src, "empty2.jpg"), "")
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := listFiles(t, lib); len(got) != 1 {
+		t.Errorf("empty files must not be copied, got %v", got)
+	}
+	if !strings.Contains(out, "2 empty") {
+		t.Errorf("empty files should be reported:\n%s", out)
+	}
+}
+
+func TestOrganizeRejectsLibraryHiddenBehindSymlink(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "x")
+	link := filepath.Join(home, "shortcut")
+	if err := os.Symlink(src, link); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", filepath.Join(link, "Library"), "--apply", "--no-progress")
+	if code == 0 || !strings.Contains(out, "overlap") {
+		t.Errorf("expected overlap error, code=%d:\n%s", code, out)
+	}
+	if got := listFiles(t, src); len(got) != 1 {
+		t.Errorf("source modified: %v", got)
+	}
+}
+
+func TestOrganizeSpaceCheck(t *testing.T) {
+	p := &organizePlan{copyBytes: 100, freeBytes: 50, freeKnown: true}
+	if !p.lacksSpace() {
+		t.Errorf("100 bytes into 50 free must report lack of space")
+	}
+	p.freeBytes = 100
+	if p.lacksSpace() {
+		t.Errorf("exactly enough space must pass")
+	}
+	p.freeKnown = false
+	p.freeBytes = 0
+	if p.lacksSpace() {
+		t.Errorf("unknown free space must not block")
+	}
+	if _, ok := freeSpaceFor(filepath.Join(t.TempDir(), "not", "created", "yet")); !ok && runtimeSupportsDiskFree() {
+		t.Errorf("free space should resolve via the nearest existing parent")
+	}
+}
+
+func runtimeSupportsDiskFree() bool {
+	_, ok := diskFreeBytes(os.TempDir())
+	return ok
+}
