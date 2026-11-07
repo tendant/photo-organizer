@@ -66,6 +66,9 @@ type organizePlan struct {
 	byFolder         map[string]int // top-level year folder -> files
 	freeBytes        uint64
 	freeKnown        bool
+	dateSources      map[dateSource]int // how each copied photo/video was dated
+	mtimeExamples    []string           // a few files dated only by modified time
+	jan1             map[string]int     // EXIF dates that fall on January 1st
 }
 
 func parseOrganizeArgs(args []string) (organizeOptions, error) {
@@ -436,6 +439,8 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 
 	plan := &organizePlan{
 		byFolder:     map[string]int{},
+		dateSources:  map[dateSource]int{},
+		jan1:         map[string]int{},
 		skippedTypes: found.skippedTypes,
 		junkDirs:     found.junkDirs,
 	}
@@ -502,16 +507,11 @@ func (pl *planner) planGroup(files []sourceFile) {
 		}
 	}
 
-	type hashed struct {
-		hash string
-		date time.Time
-	}
-	results := make([]hashed, len(media))
+	hashes := make([]string, len(media))
 	for i, f := range media {
-		h, d := processFile(f.path)
-		results[i] = hashed{h, d}
+		hashes[i], _ = processFile(f.path)
 	}
-	date := results[lead].date
+	date, source := captureDateFor(media[lead].path)
 	hasDate := plausibleDate(date)
 	folder := captureFolder(date, hasDate, pl.opts.byMonth)
 
@@ -522,11 +522,11 @@ func (pl *planner) planGroup(files []sourceFile) {
 
 	for i, f := range media {
 		byName[strings.ToLower(filepath.Base(f.path))] = f.path
-		if results[i].hash == "" {
+		if hashes[i] == "" {
 			plan.unreadable = append(plan.unreadable, f.path)
 			continue
 		}
-		k := contentKey(f.size, results[i].hash)
+		k := contentKey(f.size, hashes[i])
 
 		if dupOf := firstIdentical(pl.idx[k], f.path); dupOf != "" {
 			plan.duplicates++
@@ -544,11 +544,12 @@ func (pl *planner) planGroup(files []sourceFile) {
 		pl.idx[k] = append(pl.idx[k], f.path) // later copies of this content in the run are duplicates
 		placed[f.path] = dst
 
-		plan.addCopy(plannedCopy{src: f.path, dst: dst, size: f.size, hash: results[i].hash, date: date, hasDate: hasDate},
+		plan.addCopy(plannedCopy{src: f.path, dst: dst, size: f.size, hash: hashes[i], date: date, hasDate: hasDate},
 			strings.SplitN(folder, string(filepath.Separator), 2)[0])
 		if !hasDate {
 			plan.undated++
 		}
+		plan.noteDate(date, source, hasDate, media[lead].path)
 	}
 
 	// Sidecars are never judged by content alone: two photos can legitimately
@@ -590,6 +591,17 @@ func (pl *planner) planGroup(files []sourceFile) {
 		}
 		pl.reserve(target, sc.path)
 		plan.addCopy(plannedCopy{src: sc.path, dst: target, size: sc.size, date: date, hasDate: hasDate}, "")
+	}
+}
+
+// noteDate records how a copied file was dated, for the summary.
+func (p *organizePlan) noteDate(date time.Time, source dateSource, hasDate bool, leadPath string) {
+	p.dateSources[source]++
+	if source == dateFromModTime && len(p.mtimeExamples) < 3 {
+		p.mtimeExamples = append(p.mtimeExamples, leadPath)
+	}
+	if hasDate && (source == dateFromEXIF || source == dateFromVideo) && date.Month() == time.January && date.Day() == 1 {
+		p.jan1[date.Format("2006-01-02")]++
 	}
 }
 
@@ -712,6 +724,34 @@ func (p *organizePlan) lacksSpace() bool {
 	return p.freeKnown && uint64(p.copyBytes) > p.freeBytes
 }
 
+// printDateSummary shows where the dates came from and flags the doubtful ones.
+func (p *organizePlan) printDateSummary() {
+	var parts []string
+	for _, src := range []dateSource{dateFromEXIF, dateFromVideo, dateFromFilename, dateFromModTime} {
+		if n := p.dateSources[src]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %s", src, formatCount(n)))
+		}
+	}
+	if len(parts) > 0 {
+		fmt.Fprintf(os.Stderr, "Dates taken from: %s\n", strings.Join(parts, " · "))
+	}
+	if n := p.dateSources[dateFromModTime]; n > 0 {
+		fmt.Fprintf(os.Stderr, "⚠  %s files have no date inside them and are placed by file modified time, which a copy or restore\n"+
+			"   changes — check these, e.g. %s\n", formatCount(n), strings.Join(p.mtimeExamples, ", "))
+	}
+	var suspect []string
+	for day, n := range p.jan1 {
+		if n >= 10 {
+			suspect = append(suspect, fmt.Sprintf("%s (%s files)", day, formatCount(n)))
+		}
+	}
+	sort.Strings(suspect)
+	if len(suspect) > 0 {
+		fmt.Fprintf(os.Stderr, "⚠  Many files are dated January 1st — a camera with an unset clock does this: %s\n",
+			strings.Join(suspect, ", "))
+	}
+}
+
 func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 	verb := "Would copy"
 	if apply {
@@ -729,6 +769,7 @@ func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 	if p.undated > 0 {
 		fmt.Fprintf(os.Stderr, "%s files have no usable date and go to %s/\n", formatCount(p.undated), undatedFolder)
 	}
+	p.printDateSummary()
 	if len(p.junkDirs) > 0 {
 		fmt.Fprintf(os.Stderr, "Skipped system/thumbnail folders: %s\n", topCounts(p.junkDirs, 6))
 	}

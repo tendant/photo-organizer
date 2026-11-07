@@ -57,9 +57,21 @@ photo-organizer organize /mnt/usb/DCIM --dest ~/Library --layout month --apply
 ```
 
 Files land in `<library>/YYYY/YYYY-MM-DD/` (or `YYYY/YYYY-MM/` with
-`--layout month`), dated by EXIF capture time, then the date in the filename,
-then modified time. Implausible dates (before 1990, in the future) go to
-`undated/`.
+`--layout month`). The date comes from, in order of trust:
+
+1. **EXIF** — JPEG, TIFF-based RAW (DNG, ARW, NEF, CR2...), and EXIF embedded in
+   HEIC, CR3, RAF, ORF and RW2. The shutter time is preferred over the
+   file-modified field.
+2. **Video metadata** — the creation time in MP4/MOV/M4V/3GP. Phones write it in
+   UTC, some cameras write local time; it is used as written.
+3. **Filename** — `IMG_20240315_101010`, `DJI_...`, `2024-03-15`. A bare run of
+   digits must stand alone, so counters like `IMG_120240315999` are not read as dates.
+4. **File modified time** — last resort; copying or restoring a folder changes it.
+
+The summary shows how many files were dated each way, warns about files that only
+have a modified time, and warns when many files are dated January 1st (a camera
+whose clock was never set — the tool cannot know the real date, so check those).
+Implausible dates (before 1990, in the future) go to `undated/`.
 
 - **Dry run by default.** Nothing is written until `--apply`.
 - **Converges.** Content already in the library is skipped, so re-running after
