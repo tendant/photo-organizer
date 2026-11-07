@@ -2,15 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -66,6 +69,7 @@ type organizePlan struct {
 	byFolder         map[string]int // top-level year folder -> files
 	freeBytes        uint64
 	freeKnown        bool
+	staleTmp         []string           // temp files left by an interrupted earlier run
 	dateSources      map[dateSource]int // how each copied photo/video was dated
 	mtimeExamples    []string           // a few files dated only by modified time
 	jan1             map[string]int     // EXIF dates that fall on January 1st
@@ -194,6 +198,10 @@ func runOrganize(args []string) error {
 	}
 
 	failed, err := applyOrganizePlan(plan, dest, showProgress)
+	if errors.Is(err, errInterrupted) {
+		fmt.Fprintf(os.Stderr, "Run 'photo-organizer scan %s' to record what was copied.\n", dest)
+		return errFailed
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return errFailed
@@ -279,14 +287,15 @@ func noiseFile(name string) bool {
 // file can be recognised as already present.
 type libraryIndex map[string][]string
 
-func indexLibrary(dest string, showProgress bool) (libraryIndex, map[string]bool, error) {
+func indexLibrary(dest string, showProgress bool) (libraryIndex, map[string]bool, []string, error) {
 	idx := libraryIndex{}
+	var staleTmp []string
 	names := map[string]bool{} // lowercased library paths, for collision checks
 	if _, err := os.Stat(dest); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return idx, names, nil
+			return idx, names, nil, nil
 		}
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	prog := newProgressReporter("Indexing library", unitFiles, 0, 0, showProgress)
@@ -302,6 +311,10 @@ func indexLibrary(dest string, showProgress bool) (libraryIndex, map[string]bool
 			return nil
 		}
 		names[strings.ToLower(path)] = true
+		if strings.HasPrefix(d.Name(), organizeTmpPrefix) {
+			staleTmp = append(staleTmp, path)
+			return nil
+		}
 		if shouldSkipFile(path) || !isMediaFile(filepath.Ext(path)) || isSidecarExt(filepath.Ext(path)) {
 			return nil
 		}
@@ -319,7 +332,7 @@ func indexLibrary(dest string, showProgress bool) (libraryIndex, map[string]bool
 		return nil
 	})
 	prog.Done(fmt.Sprintf("Indexed %s existing library files", formatCount(int(count))))
-	return idx, names, err
+	return idx, names, staleTmp, err
 }
 
 type sourceFile struct {
@@ -423,7 +436,7 @@ type planner struct {
 }
 
 func buildOrganizePlan(sources []string, dest string, opts organizeOptions, showProgress bool) (*organizePlan, error) {
-	idx, taken, err := indexLibrary(dest, showProgress)
+	idx, taken, staleTmp, err := indexLibrary(dest, showProgress)
 	if err != nil {
 		return nil, fmt.Errorf("read library %s: %w", dest, err)
 	}
@@ -439,6 +452,7 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 
 	plan := &organizePlan{
 		byFolder:     map[string]int{},
+		staleTmp:     staleTmp,
 		dateSources:  map[dateSource]int{},
 		jan1:         map[string]int{},
 		skippedTypes: found.skippedTypes,
@@ -769,6 +783,10 @@ func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 	if p.undated > 0 {
 		fmt.Fprintf(os.Stderr, "%s files have no usable date and go to %s/\n", formatCount(p.undated), undatedFolder)
 	}
+	if len(p.staleTmp) > 0 {
+		fmt.Fprintf(os.Stderr, "Found %d leftover temp file(s) from an interrupted run; --apply removes the ones older than %s\n",
+			len(p.staleTmp), staleTmpAge)
+	}
 	p.printDateSummary()
 	if len(p.junkDirs) > 0 {
 		fmt.Fprintf(os.Stderr, "Skipped system/thumbnail folders: %s\n", topCounts(p.junkDirs, 6))
@@ -823,7 +841,52 @@ func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 // Applying (the only part that writes — and only inside the library)
 // -----------------------------------------------------------------------------
 
+// staleTmpAge is how old a leftover temp file must be before it is removed.
+// A copy in progress keeps updating its file, so anything this old is dead.
+const staleTmpAge = time.Hour
+
+// errInterrupted means the user stopped the run with Ctrl-C or SIGTERM.
+var errInterrupted = errors.New("interrupted")
+
+// removeStaleTemp deletes temp files an earlier, killed run left behind.
+func removeStaleTemp(paths []string) int {
+	removed := 0
+	for _, p := range paths {
+		info, err := os.Lstat(p)
+		if err != nil || !info.Mode().IsRegular() || time.Since(info.ModTime()) < staleTmpAge {
+			continue
+		}
+		if os.Remove(p) == nil {
+			removed++
+		}
+	}
+	return removed
+}
+
+// ctxWriter stops a copy in the middle of a file once ctx is cancelled.
+type ctxWriter struct {
+	ctx context.Context
+	w   io.Writer
+}
+
+func (c ctxWriter) Write(b []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.w.Write(b)
+}
+
 func applyOrganizePlan(p *organizePlan, dest string, showProgress bool) (failed int, err error) {
+	// Ctrl-C (or SIGTERM) finishes cleanly: the half-written file is removed and
+	// the log is written. A second Ctrl-C kills the process immediately.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() { <-ctx.Done(); stop() }()
+
+	if n := removeStaleTemp(p.staleTmp); n > 0 {
+		fmt.Fprintf(os.Stderr, "Removed %d leftover temp file(s) from an earlier interrupted run\n", n)
+	}
+
 	logDir := filepath.Join(dest, organizeLogDir)
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return 0, fmt.Errorf("create log folder: %w", err)
@@ -841,9 +904,15 @@ func applyOrganizePlan(p *organizePlan, dest string, showProgress bool) (failed 
 	prog := newProgressReporter("Copying", unitBytes, p.copyBytes, int64(len(p.copies)), showProgress)
 	copied := 0
 	for _, c := range p.copies {
+		if ctx.Err() != nil {
+			break
+		}
 		prog.Note(filepath.Base(c.src))
-		if err := safeCopyIntoLibrary(c, prog); err != nil {
+		if err := safeCopyIntoLibrary(ctx, c, prog); err != nil {
 			prog.Clear()
+			if ctx.Err() != nil {
+				break
+			}
 			fmt.Fprintf(os.Stderr, "  failed: %s: %v\n", c.src, err)
 			lw.Write([]string{c.src, c.dst, fmt.Sprint(c.size), "failed: " + err.Error()})
 			failed++
@@ -853,6 +922,14 @@ func applyOrganizePlan(p *organizePlan, dest string, showProgress bool) (failed 
 		copied++
 		prog.Add(0, 1)
 	}
+	if ctx.Err() != nil {
+		prog.Clear()
+		fmt.Fprintf(os.Stderr, "\nInterrupted after copying %s of %s files. The file being copied was discarded;\n"+
+			"everything already copied is complete. Run the same command again to continue.\n",
+			formatCount(copied), formatCount(len(p.copies)))
+		fmt.Fprintf(os.Stderr, "Log: %s\n", logPath)
+		return failed, errInterrupted
+	}
 	prog.Done(fmt.Sprintf("Copied %s files (%s)", formatCount(copied), formatSize(p.copyBytes)))
 	fmt.Fprintf(os.Stderr, "Log: %s\n", logPath)
 	return failed, nil
@@ -861,7 +938,7 @@ func applyOrganizePlan(p *organizePlan, dest string, showProgress bool) (failed 
 // safeCopyIntoLibrary copies c.src to c.dst without ever replacing an existing
 // file: the bytes go to a temporary name first, are size-checked, and are then
 // linked into place (which fails if the name is taken). The source is only read.
-func safeCopyIntoLibrary(c plannedCopy, prog *progressReporter) (err error) {
+func safeCopyIntoLibrary(ctx context.Context, c plannedCopy, prog *progressReporter) (err error) {
 	dir := filepath.Dir(c.dst)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -887,7 +964,7 @@ func safeCopyIntoLibrary(c plannedCopy, prog *progressReporter) (err error) {
 		}
 	}()
 
-	n, copyErr := io.Copy(&progressWriter{tmp, prog}, src)
+	n, copyErr := io.Copy(ctxWriter{ctx, &progressWriter{tmp, prog}}, src)
 	if closeErr := tmp.Close(); copyErr == nil {
 		copyErr = closeErr
 	}

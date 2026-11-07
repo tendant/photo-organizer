@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -453,4 +457,139 @@ func TestOrganizeSpaceCheck(t *testing.T) {
 func runtimeSupportsDiskFree() bool {
 	_, ok := diskFreeBytes(os.TempDir())
 	return ok
+}
+
+func tmpFilesUnder(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasPrefix(d.Name(), organizeTmpPrefix) {
+			out = append(out, p)
+		}
+		return nil
+	})
+	return out
+}
+
+func TestSafeCopyCancelledLeavesNoTempFileAndNoDestination(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.jpg")
+	big := bytes.Repeat([]byte("x"), 4<<20)
+	os.WriteFile(src, big, 0o644)
+	dst := filepath.Join(dir, "lib", "2024", "a.jpg")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := safeCopyIntoLibrary(ctx, plannedCopy{src: src, dst: dst, size: int64(len(big))}, nil)
+	if err == nil {
+		t.Fatalf("a cancelled copy must report an error")
+	}
+	if _, statErr := os.Stat(dst); statErr == nil {
+		t.Errorf("destination must not exist after a cancelled copy")
+	}
+	if left := tmpFilesUnder(t, filepath.Join(dir, "lib")); len(left) != 0 {
+		t.Errorf("temp files left behind: %v", left)
+	}
+}
+
+func TestRemoveStaleTempOnlyRemovesOldFiles(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, organizeTmpPrefix+"old")
+	fresh := filepath.Join(dir, organizeTmpPrefix+"fresh")
+	os.WriteFile(old, []byte("a"), 0o644)
+	os.WriteFile(fresh, []byte("b"), 0o644)
+	past := time.Now().Add(-2 * staleTmpAge)
+	os.Chtimes(old, past, past)
+
+	if n := removeStaleTemp([]string{old, fresh}); n != 1 {
+		t.Errorf("removed %d, want 1", n)
+	}
+	if _, err := os.Stat(old); err == nil {
+		t.Errorf("old temp file should be gone")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("a recent temp file may belong to a running copy and must stay")
+	}
+}
+
+func TestOrganizeApplySweepsStaleTempFromLibrary(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "photo")
+	stale := filepath.Join(lib, "2024", "2024-03-15", organizeTmpPrefix+"12345")
+	writeFile(t, stale, "half a photo")
+	past := time.Now().Add(-3 * time.Hour)
+	os.Chtimes(stale, past, past)
+
+	// A dry run reports it but must not delete it.
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--no-progress")
+	if code != 0 || !strings.Contains(out, "leftover temp") {
+		t.Fatalf("dry run should mention leftovers (code %d):\n%s", code, out)
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("dry run must not delete anything")
+	}
+
+	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if left := tmpFilesUnder(t, lib); len(left) != 0 {
+		t.Errorf("stale temp not removed: %v", left)
+	}
+}
+
+// Send a real SIGINT to a running organize and check it stops cleanly.
+func TestOrganizeCtrlCMidCopyLeavesNoTempFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signals differ on windows")
+	}
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	os.MkdirAll(src, 0o755)
+	big := filepath.Join(src, "IMG_20240315_101010.mp4")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Truncate(1 << 30) // 1 GiB sparse: long enough to interrupt mid-copy
+	f.Close()
+	writeFile(t, filepath.Join(src, "IMG_20240316_101010.jpg"), "second")
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestCLIMainHelper", "--",
+		"organize", src, "--dest", lib, "--apply", "--no-progress")
+	cmd.Env = append(os.Environ(), "HOME="+home, "PHOTO_ORGANIZER_TEST_MAIN=1",
+		"PHOTO_ORGANIZER_CHECKPOINT_DIR="+filepath.Join(home, "checkpoints"))
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait until the copy is under way, then interrupt.
+	deadline := time.Now().Add(20 * time.Second)
+	for len(tmpFilesUnder(t, lib)) == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	cmd.Process.Signal(syscall.SIGINT)
+	waitErr := cmd.Wait()
+
+	if left := tmpFilesUnder(t, lib); len(left) != 0 {
+		t.Errorf("temp files left after Ctrl-C: %v\noutput:\n%s", left, out.String())
+	}
+	if waitErr == nil {
+		t.Logf("copy finished before the signal landed; nothing to assert about interruption")
+		return
+	}
+	if !strings.Contains(out.String(), "Interrupted") {
+		t.Errorf("expected an 'Interrupted' message, got:\n%s", out.String())
+	}
+	// A rerun picks up where it stopped and finishes the job.
+	if o, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("rerun exit %d:\n%s", code, o)
+	}
+	if got := listFiles(t, lib); len(got) != 2 {
+		t.Errorf("after rerun library = %v, want both files", got)
+	}
 }

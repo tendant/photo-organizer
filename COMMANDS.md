@@ -89,6 +89,11 @@ Implausible dates (before 1990, in the future) go to `undated/`.
 - **Tells you what it leaves behind.** Files that are not photos, videos or
   sidecars (`.pdf`, `.txt`, ...) are not copied. They are counted by extension in
   the summary — keep them before you retire or delete the source.
+- **Safe to interrupt.** Ctrl-C (or SIGTERM) stops after discarding the file being
+  copied, writes the log, and leaves only complete files; run the same command to
+  continue. A second Ctrl-C quits immediately. If the process is killed outright, the
+  leftover `.organize-tmp-*` files are reported by the next run and removed by
+  `--apply` once they are over an hour old.
 - **Checks free space** at the library before copying and refuses to start if the
   copy would not fit.
 - **Never overwrites.** Same name with different content gets `_1`, `_2`...
