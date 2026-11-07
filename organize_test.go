@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -591,5 +592,226 @@ func TestOrganizeCtrlCMidCopyLeavesNoTempFiles(t *testing.T) {
 	}
 	if got := listFiles(t, lib); len(got) != 2 {
 		t.Errorf("after rerun library = %v, want both files", got)
+	}
+}
+
+// ---- duplicate-check speed: cache, verify modes, parallelism -----------------
+
+func TestOrganizeWritesAndReusesLibraryHashCache(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	for i := 0; i < 5; i++ {
+		writeFile(t, filepath.Join(src, fmt.Sprintf("IMG_20240315_10101%d.jpg", i)), strings.Repeat("p", 100+i))
+	}
+	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	cache := filepath.Join(lib, organizeLogDir, cacheName)
+	data, err := os.ReadFile(cache)
+	if err != nil {
+		t.Fatalf("cache not written: %v", err)
+	}
+	if n := strings.Count(string(data), "\n"); n != 6 { // header + 5 photos
+		t.Errorf("cache has %d lines, want 6:\n%s", n, data)
+	}
+
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--progress")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "5 from cache") {
+		t.Errorf("second run should reuse the cache for all 5 files:\n%s", out)
+	}
+}
+
+func TestOrganizeCacheIgnoredWhenLibraryFileChanged(t *testing.T) {
+	home := t.TempDir()
+	s1 := filepath.Join(home, "s1")
+	s2 := filepath.Join(home, "s2")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(s1, "IMG_20240315_101010.jpg"), "original-content")
+	if out, code := runCLIWithHome(t, home, "organize", s1, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	// The library file is edited in place: same size, new modified time.
+	libFile := filepath.Join(lib, "2024/2024-03-15/IMG_20240315_101010.jpg")
+	os.WriteFile(libFile, []byte("edited!-content!!"[:len("original-content")]), 0o644)
+	future := time.Now().Add(time.Hour)
+	os.Chtimes(libFile, future, future)
+
+	// The original content turns up again elsewhere: it is no longer in the library.
+	writeFile(t, filepath.Join(s2, "again.jpg"), "original-content")
+	out, code := runCLIWithHome(t, home, "organize", s2, "--dest", lib, "--apply", "--no-progress")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := listFiles(t, lib); len(got) != 2 {
+		t.Errorf("stale cache entry hid a change; library = %v", got)
+	}
+}
+
+func TestOrganizeSurvivesCorruptCache(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "photo")
+	writeFile(t, filepath.Join(lib, organizeLogDir, cacheName), "garbage,\"unterminated\n\x00\x01")
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress")
+	if code != 0 {
+		t.Fatalf("a damaged cache must not fail the run (exit %d):\n%s", code, out)
+	}
+	if got := listFiles(t, lib); len(got) != 1 {
+		t.Errorf("library = %v", got)
+	}
+}
+
+// writeBigPair writes two sparse files of the given size that match everywhere
+// except one byte at diffAt.
+func writeBigPair(t *testing.T, a, b string, size, diffAt int64) {
+	t.Helper()
+	for _, p := range []string{a, b} {
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		f, err := os.Create(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Truncate(size)
+		f.Close()
+	}
+	f, _ := os.OpenFile(b, os.O_WRONLY, 0)
+	f.WriteAt([]byte{0xFF}, diffAt)
+	f.Close()
+}
+
+// offsetOutsideSamples returns an offset in the middle that no sample window covers.
+func offsetOutsideSamples(size int64) int64 {
+	for off := size / 3; ; off += 4096 {
+		covered := false
+		for i := int64(0); i < sampleChunks; i++ {
+			start := i * (size - sampleChunk) / (sampleChunks - 1)
+			if off >= start && off < start+sampleChunk {
+				covered = true
+			}
+		}
+		if !covered {
+			return off
+		}
+	}
+}
+
+func TestOrganizeAutoComparesEveryByteOfNormalSizedFiles(t *testing.T) {
+	home := t.TempDir()
+	s1 := filepath.Join(home, "s1")
+	s2 := filepath.Join(home, "s2")
+	lib := filepath.Join(home, "Library")
+	size := int64(8 << 20) // well under the 64 MB limit
+	writeBigPair(t, filepath.Join(s1, "IMG_20240315_101010.jpg"), filepath.Join(s2, "IMG_20240315_101010.jpg"), size, offsetOutsideSamples(size))
+	if out, code := runCLIWithHome(t, home, "organize", s1, s2, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := listFiles(t, lib); len(got) != 2 {
+		t.Errorf("a one-byte difference in an 8 MB file must keep both copies, got %v", got)
+	}
+}
+
+func TestOrganizeVerifyModesOnHugeFiles(t *testing.T) {
+	size := int64(80 << 20) // over the 64 MB auto limit
+	off := offsetOutsideSamples(size)
+	run := func(verify string) (files int, out string) {
+		home := t.TempDir()
+		s1 := filepath.Join(home, "s1")
+		s2 := filepath.Join(home, "s2")
+		lib := filepath.Join(home, "Library")
+		writeBigPair(t, filepath.Join(s1, "IMG_20240315_101010.mp4"), filepath.Join(s2, "IMG_20240315_101010.mp4"), size, off)
+		args := []string{"organize", s1, s2, "--dest", lib, "--apply", "--no-progress"}
+		if verify != "" {
+			args = append(args, "--verify", verify)
+		}
+		out, code := runCLIWithHome(t, home, args...)
+		if code != 0 {
+			t.Fatalf("exit %d:\n%s", code, out)
+		}
+		return len(listFiles(t, lib)), out
+	}
+
+	if n, _ := run("full"); n != 2 {
+		t.Errorf("--verify full must tell the files apart, library has %d", n)
+	}
+	// The documented trade-off: sampling large files can miss a change between sample points.
+	n, out := run("")
+	if n != 1 || !strings.Contains(out, "confirmed by sampling") {
+		t.Errorf("auto mode samples huge files and says so; library has %d files:\n%s", n, out)
+	}
+}
+
+func TestOrganizeResultIsIdenticalWithOneOrManyJobs(t *testing.T) {
+	build := func(jobs string) []string {
+		home := t.TempDir()
+		s1 := filepath.Join(home, "s1")
+		s2 := filepath.Join(home, "s2")
+		lib := filepath.Join(home, "Library")
+		for i := 0; i < 60; i++ {
+			day := 1 + i%9
+			name := fmt.Sprintf("IMG_202403%02d_%06d.jpg", day, i%7) // many same-name collisions
+			writeFile(t, filepath.Join(s1, fmt.Sprintf("d%d", i%5), name), fmt.Sprintf("photo-%d", i))
+			if i%3 == 0 { // every third photo is duplicated in s2 under another name
+				writeFile(t, filepath.Join(s2, fmt.Sprintf("copy-%d.jpg", i)), fmt.Sprintf("photo-%d", i))
+			}
+			writeFile(t, filepath.Join(s1, fmt.Sprintf("d%d", i%5), strings.TrimSuffix(name, ".jpg")+".xmp"), "<x/>")
+		}
+		if out, code := runCLIWithHome(t, home, "organize", s1, s2, "--dest", lib, "--apply", "--no-progress", "--jobs", jobs); code != 0 {
+			t.Fatalf("jobs=%s exit %d:\n%s", jobs, code, out)
+		}
+		// Compare names and contents.
+		var rows []string
+		for _, rel := range listFiles(t, lib) {
+			data, _ := os.ReadFile(filepath.Join(lib, rel))
+			rows = append(rows, rel+"="+string(data))
+		}
+		return rows
+	}
+	one, many := build("1"), build("8")
+	if strings.Join(one, "\n") != strings.Join(many, "\n") {
+		t.Errorf("--jobs changes the result:\n1 job:  %d files\n8 jobs: %d files", len(one), len(many))
+	}
+	if len(one) < 20 {
+		t.Errorf("fixture produced too few files: %d", len(one))
+	}
+}
+
+func TestOrganizeRejectsBadJobsAndVerify(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "x")
+	for _, bad := range [][]string{{"--jobs", "0"}, {"--jobs", "many"}, {"--verify", "maybe"}} {
+		args := append([]string{"organize", src, "--dest", filepath.Join(home, "L")}, bad...)
+		if out, code := runCLIWithHome(t, home, args...); code == 0 {
+			t.Errorf("%v should be rejected:\n%s", bad, out)
+		}
+	}
+}
+
+// An apply that copies nothing still learns library digests; they must be kept.
+func TestOrganizeNoOpApplyStillSavesLearnedDigests(t *testing.T) {
+	home := t.TempDir()
+	s1 := filepath.Join(home, "s1")
+	s2 := filepath.Join(home, "s2")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(s1, "IMG_20240315_101010.jpg"), "same-bytes")
+	writeFile(t, filepath.Join(s2, "other-name.jpg"), "same-bytes")
+	if out, code := runCLIWithHome(t, home, "organize", s1, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	before, _ := os.ReadFile(filepath.Join(lib, organizeLogDir, cacheName))
+
+	// s2 only holds duplicates: nothing is copied, but the library file gets compared.
+	if out, code := runCLIWithHome(t, home, "organize", s2, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	after, _ := os.ReadFile(filepath.Join(lib, organizeLogDir, cacheName))
+	rows := readCSV(t, filepath.Join(lib, organizeLogDir, cacheName))
+	if len(rows) != 2 || rows[1][4] == "" {
+		t.Errorf("library file's full digest should now be cached; before:\n%s\nafter:\n%s", before, after)
 	}
 }

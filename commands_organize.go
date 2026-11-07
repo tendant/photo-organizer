@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +42,8 @@ type organizeOptions struct {
 	apply    bool
 	byMonth  bool
 	progress progressMode
+	jobs     int
+	verify   verifyMode
 }
 
 // plannedCopy is one file that will be copied into the library.
@@ -49,6 +52,7 @@ type plannedCopy struct {
 	dst     string
 	size    int64
 	hash    string
+	mtime   int64 // source modified time (UnixNano); the copy keeps it
 	date    time.Time
 	hasDate bool
 }
@@ -69,6 +73,8 @@ type organizePlan struct {
 	byFolder         map[string]int // top-level year folder -> files
 	freeBytes        uint64
 	freeKnown        bool
+	hs               *hashStore
+	sampledDups      int                // large duplicates confirmed by sampling rather than every byte
 	staleTmp         []string           // temp files left by an interrupted earlier run
 	dateSources      map[dateSource]int // how each copied photo/video was dated
 	mtimeExamples    []string           // a few files dated only by modified time
@@ -76,7 +82,7 @@ type organizePlan struct {
 }
 
 func parseOrganizeArgs(args []string) (organizeOptions, error) {
-	opts := organizeOptions{progress: progressAuto}
+	opts := organizeOptions{progress: progressAuto, jobs: 4}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dest":
@@ -98,6 +104,31 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 				opts.byMonth = true
 			default:
 				return opts, fmt.Errorf("unknown layout %q (use 'day' or 'month')", args[i+1])
+			}
+			i++
+		case "--jobs":
+			if i+1 >= len(args) {
+				return opts, errors.New("--jobs needs a number")
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n < 1 || n > 64 {
+				return opts, fmt.Errorf("--jobs must be between 1 and 64, got %q", args[i+1])
+			}
+			opts.jobs = n
+			i++
+		case "--verify":
+			if i+1 >= len(args) {
+				return opts, errors.New("--verify needs 'auto', 'full' or 'quick'")
+			}
+			switch args[i+1] {
+			case "auto":
+				opts.verify = verifyAuto
+			case "full":
+				opts.verify = verifyFull
+			case "quick":
+				opts.verify = verifyQuick
+			default:
+				return opts, fmt.Errorf("unknown verify mode %q (use auto, full or quick)", args[i+1])
 			}
 			i++
 		case "--progress":
@@ -130,6 +161,10 @@ func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "  - Same name, different content: the newcomer gets a _1, _2... suffix.\n")
 	fmt.Fprintf(os.Stderr, "  - A log of every copy is written to <library>/%s/.\n", organizeLogDir)
 	fmt.Fprintf(os.Stderr, "  - --layout month uses YYYY/YYYY-MM/ instead of one folder per day.\n")
+	fmt.Fprintf(os.Stderr, "  - --jobs N hashes N files at once (default 4; 1 for a single spinning disk).\n")
+	fmt.Fprintf(os.Stderr, "  - --verify auto|full|quick: how duplicates are confirmed. auto compares every byte\n")
+	fmt.Fprintf(os.Stderr, "    up to 64 MB and samples 16 spread points in larger files; full always reads\n")
+	fmt.Fprintf(os.Stderr, "    every byte; quick samples anything over 1 MB.\n")
 }
 
 func runOrganize(args []string) error {
@@ -194,6 +229,15 @@ func runOrganize(args []string) error {
 		return nil
 	}
 	if len(plan.copies) == 0 {
+		// Nothing to copy, but keep what was learned about the library so the
+		// next run does not read it again.
+		if plan.hs.dirty {
+			if _, statErr := os.Stat(dest); statErr == nil {
+				if err := plan.hs.saveCache(dest, nil); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: could not save the library hash cache: %v\n", err)
+				}
+			}
+		}
 		return nil
 	}
 
@@ -287,57 +331,10 @@ func noiseFile(name string) bool {
 // file can be recognised as already present.
 type libraryIndex map[string][]string
 
-func indexLibrary(dest string, showProgress bool) (libraryIndex, map[string]bool, []string, error) {
-	idx := libraryIndex{}
-	var staleTmp []string
-	names := map[string]bool{} // lowercased library paths, for collision checks
-	if _, err := os.Stat(dest); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return idx, names, nil, nil
-		}
-		return nil, nil, nil, err
-	}
-
-	prog := newProgressReporter("Indexing library", unitFiles, 0, 0, showProgress)
-	var count int64
-	err := filepath.WalkDir(dest, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if path != dest && d.Name() == organizeLogDir {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		names[strings.ToLower(path)] = true
-		if strings.HasPrefix(d.Name(), organizeTmpPrefix) {
-			staleTmp = append(staleTmp, path)
-			return nil
-		}
-		if shouldSkipFile(path) || !isMediaFile(filepath.Ext(path)) || isSidecarExt(filepath.Ext(path)) {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil || info.Size() == 0 {
-			return nil
-		}
-		hash, _ := processFile(path)
-		if hash != "" {
-			k := contentKey(info.Size(), hash)
-			idx[k] = append(idx[k], path)
-		}
-		count++
-		prog.Add(1, 1)
-		return nil
-	})
-	prog.Done(fmt.Sprintf("Indexed %s existing library files", formatCount(int(count))))
-	return idx, names, staleTmp, err
-}
-
 type sourceFile struct {
-	path string
-	size int64
+	path  string
+	size  int64
+	mtime int64 // UnixNano
 }
 
 // sourceScan is what walking the source folders found.
@@ -395,7 +392,7 @@ func scanSources(sources []string, showProgress bool) sourceScan {
 				stem = strings.TrimSuffix(stem, inner)
 			}
 			key := filepath.Join(filepath.Dir(path), strings.ToLower(stem))
-			res.groups[key] = append(res.groups[key], sourceFile{path: path, size: info.Size()})
+			res.groups[key] = append(res.groups[key], sourceFile{path: path, size: info.Size(), mtime: info.ModTime().UnixNano()})
 			n++
 			prog.Add(1, 1)
 			return nil
@@ -430,13 +427,15 @@ type planner struct {
 	plan *organizePlan
 
 	idx          libraryIndex
-	taken        map[string]bool   // lowercased library + planned paths
+	taken        map[string]bool // lowercased library + planned paths
+	hs           *hashStore
 	plannedSrc   map[string]string // planned library path -> source it comes from
 	plannedBySrc map[string]string // source path -> library path it will have
 }
 
 func buildOrganizePlan(sources []string, dest string, opts organizeOptions, showProgress bool) (*organizePlan, error) {
-	idx, taken, staleTmp, err := indexLibrary(dest, showProgress)
+	hs := newHashStore(opts.verify, opts.jobs)
+	idx, taken, staleTmp, err := indexLibrary(dest, hs, showProgress)
 	if err != nil {
 		return nil, fmt.Errorf("read library %s: %w", dest, err)
 	}
@@ -453,22 +452,38 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 	plan := &organizePlan{
 		byFolder:     map[string]int{},
 		staleTmp:     staleTmp,
+		hs:           hs,
 		dateSources:  map[dateSource]int{},
 		jan1:         map[string]int{},
 		skippedTypes: found.skippedTypes,
 		junkDirs:     found.junkDirs,
 	}
 	pl := &planner{
-		dest: dest, opts: opts, plan: plan, idx: idx, taken: taken,
+		dest: dest, opts: opts, plan: plan, idx: idx, taken: taken, hs: hs,
 		plannedSrc: map[string]string{}, plannedBySrc: map[string]string{},
 	}
 
 	prog := newProgressReporter("Examining", unitFiles, totalFiles, totalFiles, showProgress)
-	for _, key := range keys {
-		files := found.groups[key]
-		sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
-		pl.planGroup(files)
-		prog.Add(0, int64(len(files)))
+	// Work in batches: analyse a batch's files in parallel (hashes, dates), warm
+	// the digests the duplicate checks will need, then plan sequentially so the
+	// result is identical to a single-threaded run.
+	const planBatch = 256
+	for start := 0; start < len(keys); start += planBatch {
+		end := start + planBatch
+		if end > len(keys) {
+			end = len(keys)
+		}
+		infos := make([]*groupInfo, end-start)
+		parallelDo(opts.jobs, len(infos), func(i int) {
+			files := found.groups[keys[start+i]]
+			sort.Slice(files, func(a, b int) bool { return files[a].path < files[b].path })
+			infos[i] = analyzeGroup(files)
+		})
+		pl.warmDigests(infos)
+		for i, g := range infos {
+			pl.planGroup(g)
+			prog.Add(0, int64(len(found.groups[keys[start+i]])))
+		}
 	}
 	prog.Done(fmt.Sprintf("Examined %s files", formatCount(int(totalFiles))))
 
@@ -492,40 +507,99 @@ func freeSpaceFor(dest string) (uint64, bool) {
 	}
 }
 
-// planGroup decides the fate of one photo/video together with its sidecars.
-func (pl *planner) planGroup(files []sourceFile) {
-	plan := pl.plan
+// groupInfo is the read-only analysis of one photo/video group. Computing it
+// touches only the source files, so many groups can be analysed at once.
+type groupInfo struct {
+	media, sidecars []sourceFile
+	empty           int
+	lead            int
+	hashes          []string
+	date            time.Time
+	source          dateSource
+}
 
-	var media, sidecars []sourceFile
+func analyzeGroup(files []sourceFile) *groupInfo {
+	g := &groupInfo{}
 	for _, f := range files {
 		if isSidecarExt(filepath.Ext(f.path)) {
-			sidecars = append(sidecars, f)
+			g.sidecars = append(g.sidecars, f)
 		} else if f.size == 0 {
-			plan.emptySkipped++ // an empty file is not a photo, and all of them look identical
+			g.empty++ // an empty file is not a photo, and all of them look identical
 		} else {
-			media = append(media, f)
+			g.media = append(g.media, f)
 		}
 	}
-	if len(media) == 0 {
-		plan.orphanSidecars += len(sidecars)
-		return
+	if len(g.media) == 0 {
+		return g
 	}
 
 	// The first photo (else video) sets the date for the whole group, so
 	// RAW+JPG pairs and sidecars land together.
-	lead := 0
-	for i, f := range media {
+	for i, f := range g.media {
 		if photoExts[strings.ToLower(filepath.Ext(f.path))] {
-			lead = i
+			g.lead = i
 			break
 		}
 	}
-
-	hashes := make([]string, len(media))
-	for i, f := range media {
-		hashes[i], _ = processFile(f.path)
+	g.hashes = make([]string, len(g.media))
+	for i, f := range g.media {
+		g.hashes[i], _ = processFile(f.path)
 	}
-	date, source := captureDateFor(media[lead].path)
+	g.date, g.source = captureDateFor(g.media[g.lead].path)
+	return g
+}
+
+// warmDigests precomputes, in parallel, the digests that duplicate checks in
+// this batch will ask for: files whose content key already exists in the
+// library or earlier in the batch.
+func (pl *planner) warmDigests(infos []*groupInfo) {
+	seen := map[string]string{} // content key -> first path in this batch
+	queued := map[string]bool{}
+	var need []sourceFile
+	add := func(path string, size int64) {
+		if !queued[path] {
+			queued[path] = true
+			need = append(need, sourceFile{path: path, size: size})
+		}
+	}
+	for _, g := range infos {
+		for i, f := range g.media {
+			if g.hashes[i] == "" {
+				continue
+			}
+			k := contentKey(f.size, g.hashes[i])
+			hit := false
+			for _, c := range pl.idx[k] {
+				if c != f.path {
+					add(c, f.size)
+					hit = true
+				}
+			}
+			if first, ok := seen[k]; ok && first != f.path {
+				add(first, f.size)
+				hit = true
+			} else if !ok {
+				seen[k] = f.path
+			}
+			if hit {
+				add(f.path, f.size)
+			}
+		}
+	}
+	pl.hs.warm(need)
+}
+
+// planGroup decides the fate of one photo/video together with its sidecars.
+func (pl *planner) planGroup(g *groupInfo) {
+	plan := pl.plan
+	plan.emptySkipped += g.empty
+	media, sidecars, hashes := g.media, g.sidecars, g.hashes
+	if len(media) == 0 {
+		plan.orphanSidecars += len(sidecars)
+		return
+	}
+	lead := g.lead
+	date, source := g.date, g.source
 	hasDate := plausibleDate(date)
 	folder := captureFolder(date, hasDate, pl.opts.byMonth)
 
@@ -542,7 +616,10 @@ func (pl *planner) planGroup(files []sourceFile) {
 		}
 		k := contentKey(f.size, hashes[i])
 
-		if dupOf := firstIdentical(pl.idx[k], f.path); dupOf != "" {
+		if dupOf := pl.firstIdentical(pl.idx[k], f.path, f.size); dupOf != "" {
+			if !pl.hs.wantsFull(f.size) {
+				plan.sampledDups++
+			}
 			plan.duplicates++
 			plan.duplicateBytes += f.size
 			if pathWithin(dupOf, pl.dest) {
@@ -558,7 +635,7 @@ func (pl *planner) planGroup(files []sourceFile) {
 		pl.idx[k] = append(pl.idx[k], f.path) // later copies of this content in the run are duplicates
 		placed[f.path] = dst
 
-		plan.addCopy(plannedCopy{src: f.path, dst: dst, size: f.size, hash: hashes[i], date: date, hasDate: hasDate},
+		plan.addCopy(plannedCopy{src: f.path, dst: dst, size: f.size, hash: hashes[i], mtime: f.mtime, date: date, hasDate: hasDate},
 			strings.SplitN(folder, string(filepath.Separator), 2)[0])
 		if !hasDate {
 			plan.undated++
@@ -633,22 +710,20 @@ func (p *organizePlan) addCopy(c plannedCopy, yearFolder string) {
 	}
 }
 
-// firstIdentical returns the first candidate whose bytes equal those of path.
-// The manifest hash only samples the start and end of a file, so a matching
-// hash is confirmed byte-for-byte before a file is called a duplicate — a
-// near-identical but different photo is never silently dropped.
-func firstIdentical(candidates []string, path string) string {
+// firstIdentical returns the first candidate with the same content as path.
+// The scan hash only samples the first and last 32KB, so a match there is
+// confirmed against a stronger digest (see dupcheck.go) before a file is
+// called a duplicate — a near-identical but different photo is never dropped.
+func (pl *planner) firstIdentical(candidates []string, path string, size int64) string {
 	for _, c := range candidates {
-		if c == path {
-			return c
-		}
-		if sameContent(c, path) {
+		if pl.hs.same(c, path, size) {
 			return c
 		}
 	}
 	return ""
 }
 
+// sameContent compares two small files byte for byte (used for sidecars).
 func sameContent(a, b string) bool {
 	fa, err := os.Open(a)
 	if err != nil {
@@ -774,6 +849,10 @@ func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 	fmt.Fprintf(os.Stderr, "\n%s %s files (%s) into %s\n", verb, formatCount(len(p.copies)), formatSize(p.copyBytes), dest)
 	fmt.Fprintf(os.Stderr, "Skipping %s files (%s) already in the library or duplicated within the sources\n",
 		formatCount(p.duplicates), formatSize(p.duplicateBytes))
+	if p.sampledDups > 0 {
+		fmt.Fprintf(os.Stderr, "   %s of those are large files confirmed by sampling 16 points across the file;\n"+
+			"   use --verify full to compare every byte\n", formatCount(p.sampledDups))
+	}
 	if p.emptySkipped > 0 {
 		fmt.Fprintf(os.Stderr, "Skipping %s empty (0-byte) files\n", formatCount(p.emptySkipped))
 	}
@@ -903,6 +982,7 @@ func applyOrganizePlan(p *organizePlan, dest string, showProgress bool) (failed 
 
 	prog := newProgressReporter("Copying", unitBytes, p.copyBytes, int64(len(p.copies)), showProgress)
 	copied := 0
+	var added []newCopy
 	for _, c := range p.copies {
 		if ctx.Err() != nil {
 			break
@@ -919,8 +999,17 @@ func applyOrganizePlan(p *organizePlan, dest string, showProgress bool) (failed 
 			continue
 		}
 		lw.Write([]string{c.src, c.dst, fmt.Sprint(c.size), "copied"})
+		if c.hash != "" { // photos and videos, not sidecars
+			added = append(added, newCopy{dst: c.dst, size: c.size, mtime: c.mtime, partial: c.hash, from: c.src})
+		}
 		copied++
 		prog.Add(0, 1)
+	}
+	// Remember what is now in the library so the next run does not re-read it.
+	if p.hs != nil {
+		if err := p.hs.saveCache(dest, added); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not save the library hash cache (next run will be slower): %v\n", err)
+		}
 	}
 	if ctx.Err() != nil {
 		prog.Clear()

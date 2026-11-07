@@ -75,8 +75,20 @@ Implausible dates (before 1990, in the future) go to `undated/`.
 
 - **Dry run by default.** Nothing is written until `--apply`.
 - **Converges.** Content already in the library is skipped, so re-running after
-  adding photos or after an interruption copies only what is missing. Matches
-  are confirmed byte-for-byte, not just by the sampled hash.
+  adding photos or after an interruption copies only what is missing.
+- **Duplicates are confirmed, not guessed.** Size plus the scan's 64KB hash only
+  nominates a candidate. Files up to 64 MB are then compared by a SHA-256 of every
+  byte; larger files (videos) by SHA-256 of 16 pieces spread across the whole file,
+  which is what keeps a multi-GB duplicate from costing a multi-GB read. The
+  summary says how many duplicates were confirmed by sampling. A copy that differs
+  only *between* the sampled pieces (a flipped bit, an in-place edit of the same
+  length) would be missed; `--verify full` reads every byte of every file, and
+  `--verify quick` samples anything over 1 MB.
+- **Fast on re-runs.** Digests of library files are remembered in
+  `<library>/_organize/index.csv`, keyed by size and modified time, so a file that
+  has not changed is not read again. Only `--apply` writes it; a damaged or missing
+  file is simply ignored. `--jobs N` (default 4) hashes N files at once; use
+  `--jobs 1` when everything sits on one spinning disk.
 - **Pairs stay together.** `IMG_1.CR3`, `IMG_1.JPG` and `IMG_1.xmp` (or
   `IMG_1.jpg.xmp`) share one date and folder. A sidecar always follows its own
   photo — even when two photos have identical sidecars, or the photo was already in
