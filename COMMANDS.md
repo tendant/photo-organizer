@@ -46,6 +46,38 @@ Use this before manual cleanup; it is usually easier to review whole-folder over
 
 The summary shows a **Devices** count (distinct non-removable machines a folder lives on) and an **Archive?** verdict: a folder is only safe to archive when it exists on **2+ durable devices**, so archiving one copy still leaves redundancy. Removable media (SD cards, USB) is never counted as a device. Use `--min-devices N` to list only folders you can safely archive while staying on at least N devices, and `--min-copies N` to filter by raw copy count.
 
+### organize
+Copy scattered photos into a new date-sorted library. **Source folders are never
+modified** — they are only read.
+
+```bash
+photo-organizer organize /data/Photos-All ~/Pictures --dest /tankm1/media/Library          # dry run
+photo-organizer organize /data/Photos-All ~/Pictures --dest /tankm1/media/Library --apply
+photo-organizer organize /mnt/usb/DCIM --dest ~/Library --layout month --apply
+```
+
+Files land in `<library>/YYYY/YYYY-MM-DD/` (or `YYYY/YYYY-MM/` with
+`--layout month`), dated by EXIF capture time, then the date in the filename,
+then modified time. Implausible dates (before 1990, in the future) go to
+`undated/`.
+
+- **Dry run by default.** Nothing is written until `--apply`.
+- **Converges.** Content already in the library is skipped, so re-running after
+  adding photos or after an interruption copies only what is missing. Matches
+  are confirmed byte-for-byte, not just by the sampled hash.
+- **Pairs stay together.** `IMG_1.CR3`, `IMG_1.JPG` and `IMG_1.xmp` share one
+  date and folder. Sidecars with no photo beside them are ignored, as are macOS
+  `._*` files.
+- **Never overwrites.** Same name with different content gets `_1`, `_2`...
+  Files are written to a temporary name and linked into place.
+- **Separate trees.** The library may not be inside a source, nor a source inside
+  the library.
+- A log of every copy goes to `<library>/_organize/`, and the library manifest is
+  refreshed so the copies count for `dups` and `check-backup`.
+
+Once the library holds everything, `dup-folders` and `check-backup` tell you
+which of the old folders are safe to retire with `archive`.
+
 ### storage-status
 Show storage breakdown by machine, device, and backup state.
 

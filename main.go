@@ -45,7 +45,7 @@ func suggestCommand(typo string) string {
 	commands := []string{
 		"archive", "backup", "backup-missing", "check-backup", "collect",
 		"dups", "dup-folders", "fix", "help", "list", "lookup",
-		"machines", "manifests", "restore", "scan", "search", "sign",
+		"machines", "manifests", "organize", "restore", "scan", "search", "sign",
 		"storage-plan", "storage-status", "verify-archive",
 	}
 
@@ -144,6 +144,8 @@ func main() {
 		err = runCollect(os.Args[2:])
 	case "backup-missing":
 		err = runBackupMissing(os.Args[2:])
+	case "organize":
+		err = runOrganize(os.Args[2:])
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -179,11 +181,13 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders [--top N] [-s]\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer backup <folder> --dest <target> [--all] [--no-progress]\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer archive <folder> --dest <target> [--keep] [--no-progress]\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer organize <folder>... --dest <library> [--apply]\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer check-backup <folder>\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer verify-archive <manifest.csv>\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer search [filters]\n\n")
 	fmt.Fprintf(os.Stderr, "backup keeps a second copy that converges on every run.\n")
 	fmt.Fprintf(os.Stderr, "archive retires a folder into a dated snapshot you keep untouched.\n")
+	fmt.Fprintf(os.Stderr, "organize copies photos into a YYYY/YYYY-MM-DD library; sources are never changed.\n")
 	fmt.Fprintf(os.Stderr, "Both take a local path or a remote machine-id:/path or user@host:/path.\n\n")
 	fmt.Fprintf(os.Stderr, "Other commands:\n")
 	fmt.Fprintf(os.Stderr, "  collect, fix, list, lookup, machines, manifests,\n")

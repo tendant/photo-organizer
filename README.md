@@ -36,6 +36,14 @@ backed up anywhere else, then refreshes that machine's manifest so the copies
 count. Run it again and it copies only what changed. A local path such as
 `/Volumes/External/photos` works the same way without SSH.
 
+### Sort scattered photos into one library (sources untouched)
+```bash
+photo-organizer organize ~/Pictures /mnt/usb/DCIM --dest ~/Library          # preview
+photo-organizer organize ~/Pictures /mnt/usb/DCIM --dest ~/Library --apply
+```
+Copies into `~/Library/YYYY/YYYY-MM-DD/`, skipping content already there. Your
+original folders are only read, never changed.
+
 ### Retire a folder into a dated archive
 ```bash
 photo-organizer archive ~/Photos/OldImport --dest /mnt/archive
@@ -68,6 +76,7 @@ photo-organizer search -hash abc123def456
 | `dup-folders` | Find duplicate folders for cleanup |
 | `storage-status` | Show storage breakdown by machine and device |
 | `storage-plan` | Recommend what to back up next |
+| `organize` | Copy photos into a date-sorted library; sources untouched |
 | `backup` | Mirror a folder to a second location, local or remote |
 | `archive` | Retire a folder into a dated snapshot, local or remote |
 | `restore` | Restore files from an archive snapshot |
