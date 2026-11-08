@@ -44,6 +44,8 @@ type organizeOptions struct {
 	progress progressMode
 	jobs     int
 	verify   verifyMode
+	savePlan string // --save-plan: write the previewed plan to this file
+	planFile string // --plan: apply a plan saved earlier instead of scanning
 }
 
 // plannedCopy is one file that will be copied into the library.
@@ -131,6 +133,16 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 				return opts, fmt.Errorf("unknown verify mode %q (use auto, full or quick)", args[i+1])
 			}
 			i++
+		case "--save-plan", "--plan":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("%s needs a file name", args[i])
+			}
+			if args[i] == "--plan" {
+				opts.planFile = args[i+1]
+			} else {
+				opts.savePlan = args[i+1]
+			}
+			i++
 		case "--progress":
 			opts.progress = progressOn
 		case "--no-progress":
@@ -165,6 +177,9 @@ func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "  - --verify auto|full|quick: how duplicates are confirmed. auto compares every byte\n")
 	fmt.Fprintf(os.Stderr, "    up to 64 MB and samples 16 spread points in larger files; full always reads\n")
 	fmt.Fprintf(os.Stderr, "    every byte; quick samples anything over 1 MB.\n")
+	fmt.Fprintf(os.Stderr, "  - --save-plan FILE (dry run) saves exactly what was previewed; later run\n")
+	fmt.Fprintf(os.Stderr, "    'organize --plan FILE --apply' to copy precisely that. It refuses if any\n")
+	fmt.Fprintf(os.Stderr, "    source file changed or any target name is now taken.\n")
 }
 
 func runOrganize(args []string) error {
@@ -174,8 +189,15 @@ func runOrganize(args []string) error {
 		printOrganizeUsage()
 		return errFailed
 	}
+	if opts.planFile != "" {
+		return runSavedPlan(opts)
+	}
 	if len(opts.sources) == 0 || opts.dest == "" {
 		printOrganizeUsage()
+		return errFailed
+	}
+	if opts.savePlan != "" && opts.apply {
+		fmt.Fprintf(os.Stderr, "Error: --save-plan is for previews; save the plan first, then run 'organize --plan FILE --apply'\n")
 		return errFailed
 	}
 
@@ -217,6 +239,16 @@ func runOrganize(args []string) error {
 	}
 	printOrganizePlan(plan, dest, opts.apply)
 
+	if opts.savePlan != "" {
+		if err := savePlanFile(opts.savePlan, sources, dest, plan); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return errFailed
+		}
+		fmt.Fprintf(os.Stderr, "\nPlan saved to %s (%s files). Copy exactly that with:\n  photo-organizer organize --plan %s --apply\n",
+			opts.savePlan, formatCount(len(plan.copies)), opts.savePlan)
+		return nil
+	}
+
 	if opts.apply && plan.lacksSpace() {
 		fmt.Fprintf(os.Stderr, "\nError: not enough free space for the library; nothing was copied.\n")
 		return errFailed
@@ -241,6 +273,11 @@ func runOrganize(args []string) error {
 		return nil
 	}
 
+	return finishApply(plan, dest, showProgress)
+}
+
+// finishApply copies the plan, then refreshes the library manifest.
+func finishApply(plan *organizePlan, dest string, showProgress bool) error {
 	failed, err := applyOrganizePlan(plan, dest, showProgress)
 	if errors.Is(err, errInterrupted) {
 		fmt.Fprintf(os.Stderr, "Run 'photo-organizer scan %s' to record what was copied.\n", dest)
@@ -681,7 +718,7 @@ func (pl *planner) planGroup(g *groupInfo) {
 			continue
 		}
 		pl.reserve(target, sc.path)
-		plan.addCopy(plannedCopy{src: sc.path, dst: target, size: sc.size, date: date, hasDate: hasDate}, "")
+		plan.addCopy(plannedCopy{src: sc.path, dst: target, size: sc.size, mtime: sc.mtime, date: date, hasDate: hasDate}, "")
 	}
 }
 

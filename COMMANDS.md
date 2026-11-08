@@ -54,6 +54,11 @@ modified** — they are only read.
 photo-organizer organize /data/Photos-All ~/Pictures --dest /tankm1/media/Library          # dry run
 photo-organizer organize /data/Photos-All ~/Pictures --dest /tankm1/media/Library --apply
 photo-organizer organize /mnt/usb/DCIM --dest ~/Library --layout month --apply
+
+# Preview once, then copy exactly what you previewed
+photo-organizer organize /data/Photos-All --dest ~/Library --save-plan ~/plan.json
+photo-organizer organize --plan ~/plan.json            # re-check the plan, write nothing
+photo-organizer organize --plan ~/plan.json --apply
 ```
 
 Files land in `<library>/YYYY/YYYY-MM-DD/` (or `YYYY/YYYY-MM/` with
@@ -112,6 +117,13 @@ Implausible dates (before 1990, in the future) go to `undated/`.
   Files are written to a temporary name and linked into place.
 - **Separate trees.** The library may not be inside a source, nor a source inside
   the library (symlinks are resolved before comparing).
+- **Saved plans.** `--save-plan FILE` (preview only) records every copy. `--plan FILE
+  --apply` then copies exactly those files, even if new photos appeared since. Before
+  copying it re-checks: if a source file is gone or changed, or a target name is now
+  taken by other content, nothing is copied and you are asked to preview again.
+  Targets already holding the planned content (an interrupted earlier run) are
+  skipped, so re-running the same command resumes. The plan file cannot be saved inside
+  a source folder or the library; `--layout`, `--verify` and `--jobs` are fixed by the plan.
 - A log of every copy goes to `<library>/_organize/`, and the library manifest is
   refreshed so the copies count for `dups` and `check-backup`.
 

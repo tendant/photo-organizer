@@ -40,6 +40,7 @@ count. Run it again and it copies only what changed. A local path such as
 ```bash
 photo-organizer organize ~/Pictures /mnt/usb/DCIM --dest ~/Library          # preview
 photo-organizer organize ~/Pictures /mnt/usb/DCIM --dest ~/Library --apply
+# or lock in the preview: add --save-plan plan.json, then: organize --plan plan.json --apply
 ```
 Copies into `~/Library/YYYY/YYYY-MM-DD/`, skipping content already there. Your
 original folders are only read, never changed.
