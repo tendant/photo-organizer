@@ -83,6 +83,8 @@ type organizePlan struct {
 	dateSources      map[dateSource]int // how each copied photo/video was dated
 	mtimeExamples    []string           // a few files dated only by modified time
 	jan1             map[string]int     // EXIF dates that fall on January 1st
+	videoZone        *time.Location     // --video-tz in effect (nil: as written)
+	videoShifted     int                // copied videos filed under a different day because of it
 }
 
 func parseOrganizeArgs(args []string) (organizeOptions, error) {
@@ -515,6 +517,7 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 		hs:           hs,
 		dateSources:  map[dateSource]int{},
 		jan1:         map[string]int{},
+		videoZone:    opts.videoTZ,
 		skippedTypes: found.skippedTypes,
 		junkDirs:     found.junkDirs,
 	}
@@ -576,6 +579,7 @@ type groupInfo struct {
 	hashes          []string
 	date            time.Time
 	source          dateSource
+	dayShifted      bool // --video-tz moved the lead video to another day
 }
 
 func analyzeGroup(files []sourceFile, videoTZ *time.Location) *groupInfo {
@@ -605,7 +609,7 @@ func analyzeGroup(files []sourceFile, videoTZ *time.Location) *groupInfo {
 	for i, f := range g.media {
 		g.hashes[i], _ = processFile(f.path)
 	}
-	g.date, g.source = captureDateFor(g.media[g.lead].path, videoTZ)
+	g.date, g.source, g.dayShifted = captureDateShifted(g.media[g.lead].path, videoTZ)
 	return g
 }
 
@@ -701,6 +705,9 @@ func (pl *planner) planGroup(g *groupInfo) {
 			plan.undated++
 		}
 		plan.noteDate(date, source, hasDate, media[lead].path)
+		if g.dayShifted {
+			plan.videoShifted++
+		}
 	}
 
 	// Sidecars are never judged by content alone: two photos can legitimately
@@ -883,6 +890,10 @@ func (p *organizePlan) printDateSummary() {
 	}
 	if len(parts) > 0 {
 		fmt.Fprintf(os.Stderr, "Dates taken from: %s\n", strings.Join(parts, " · "))
+	}
+	if p.videoZone != nil {
+		fmt.Fprintf(os.Stderr, "Video times shown in %s: %s filed under a different day than their UTC date\n",
+			zoneLabel(p.videoZone), formatCount(p.videoShifted))
 	}
 	if n := p.dateSources[dateFromModTime]; n > 0 {
 		fmt.Fprintf(os.Stderr, "⚠  %s files have no date inside them and are placed by file modified time, which a copy or restore\n"+
@@ -1140,4 +1151,14 @@ func safeCopyIntoLibrary(ctx context.Context, c plannedCopy, prog *progressRepor
 		return os.Rename(tmpName, c.dst)
 	}
 	return os.Remove(tmpName)
+}
+
+// zoneLabel names a --video-tz zone for the summary. "Local" alone says nothing
+// on a server, so it also shows the zone this computer is actually using.
+func zoneLabel(loc *time.Location) string {
+	if loc == time.Local {
+		abbr, off := time.Now().Zone()
+		return fmt.Sprintf("this computer's zone (%s, UTC%+d)", abbr, off/3600)
+	}
+	return loc.String()
 }

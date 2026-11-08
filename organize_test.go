@@ -831,11 +831,18 @@ func TestOrganizeVideoTimeZoneMovesEveningClipsOnly(t *testing.T) {
 	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", asWritten, "--apply", "--no-progress"); code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
+	if out, _ := runCLIWithHome(t, home, "organize", src, "--dest", filepath.Join(home, "preview"), "--no-progress"); strings.Contains(out, "Video times shown in") {
+		t.Errorf("no zone given: the summary should not mention one:\n%s", out)
+	}
 	if got := strings.Join(listFiles(t, asWritten), ","); !strings.Contains(got, "2023/2023-08-20/clip.mov") {
 		t.Errorf("default should keep UTC date, got %s", got)
 	}
 
 	shifted := filepath.Join(home, "ny")
+	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", filepath.Join(home, "ny-preview"), "--video-tz", "America/New_York", "--no-progress"); code != 0 ||
+		!strings.Contains(out, "Video times shown in America/New_York: 1 filed under a different day") {
+		t.Errorf("summary should report the zone and one shifted video (exit %d):\n%s", code, out)
+	}
 	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", shifted, "--video-tz", "America/New_York", "--apply", "--no-progress"); code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}

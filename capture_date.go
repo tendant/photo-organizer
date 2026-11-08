@@ -53,11 +53,18 @@ const containerSearchBytes = 1 << 20
 // it came from. It only reads the file. videoLoc, when set, is the time zone a
 // video's creation time is shown in (phones record UTC); nil uses it as written.
 func captureDateFor(path string, videoLoc *time.Location) (time.Time, dateSource) {
+	t, src, _ := captureDateShifted(path, videoLoc)
+	return t, src
+}
+
+// captureDateShifted is captureDateFor that also reports whether videoLoc moved
+// the video to a different calendar day than its time as written.
+func captureDateShifted(path string, videoLoc *time.Location) (time.Time, dateSource, bool) {
 	ext := strings.ToLower(filepath.Ext(path))
 
 	if photoExts[ext] {
 		if t, ok := exifDate(path); ok {
-			return t, dateFromEXIF
+			return t, dateFromEXIF, false
 		}
 	}
 	if videoExts[ext] {
@@ -66,19 +73,20 @@ func captureDateFor(path string, videoLoc *time.Location) (time.Time, dateSource
 				// Keep the as-written time if the shift would push it out of the
 				// plausible range (e.g. 1990-01-01 00:30 UTC -> 1989-12-31).
 				if shifted := t.In(videoLoc); plausibleDate(shifted) {
-					t = shifted
+					moved := shifted.Format("2006-01-02") != t.Format("2006-01-02")
+					return shifted, dateFromVideo, moved
 				}
 			}
-			return t, dateFromVideo
+			return t, dateFromVideo, false
 		}
 	}
 	if t, ok := filenameDate(filepath.Base(path)); ok {
-		return t, dateFromFilename
+		return t, dateFromFilename, false
 	}
 	if info, err := os.Stat(path); err == nil {
-		return info.ModTime(), dateFromModTime
+		return info.ModTime(), dateFromModTime, false
 	}
-	return time.Time{}, dateFromModTime
+	return time.Time{}, dateFromModTime, false
 }
 
 // exifTime prefers the moment the shutter fired over the file-modified field.
