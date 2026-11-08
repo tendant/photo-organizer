@@ -815,3 +815,33 @@ func TestOrganizeNoOpApplyStillSavesLearnedDigests(t *testing.T) {
 		t.Errorf("library file's full digest should now be cached; before:\n%s\nafter:\n%s", before, after)
 	}
 }
+
+func TestOrganizeVideoTimeZoneMovesEveningClipsOnly(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	vid := filepath.Join(src, "clip.mov")
+	os.MkdirAll(src, 0o755)
+	os.WriteFile(vid, mp4WithCreation(time.Date(2023, 8, 20, 2, 30, 0, 0, time.UTC)), 0o644)
+	writeFile(t, filepath.Join(src, "IMG_20230820_023000.jpg"), "photo") // dated by filename: never shifted
+
+	asWritten := filepath.Join(home, "utc")
+	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", asWritten, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if got := strings.Join(listFiles(t, asWritten), ","); !strings.Contains(got, "2023/2023-08-20/clip.mov") {
+		t.Errorf("default should keep UTC date, got %s", got)
+	}
+
+	shifted := filepath.Join(home, "ny")
+	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", shifted, "--video-tz", "America/New_York", "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	got := strings.Join(listFiles(t, shifted), ",")
+	if !strings.Contains(got, "2023/2023-08-19/clip.mov") || !strings.Contains(got, "2023/2023-08-20/IMG_20230820_023000.jpg") {
+		t.Errorf("video should move to the 19th and the photo stay on the 20th, got %s", got)
+	}
+
+	if _, code := runCLIWithHome(t, home, "organize", src, "--dest", filepath.Join(home, "x"), "--video-tz", "Mars/Olympus", "--no-progress"); code == 0 {
+		t.Errorf("unknown zone should be rejected")
+	}
+}

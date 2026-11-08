@@ -56,7 +56,7 @@ func TestCaptureDateFromContainerEXIF(t *testing.T) {
 	old := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
 	os.Chtimes(p, old, old)
 
-	got, src := captureDateFor(p)
+	got, src := captureDateFor(p, nil)
 	if src != dateFromEXIF || got.Format("2006-01-02 15:04:05") != "2021-07-04 09:08:07" {
 		t.Errorf("HEIC date = %v from %v, want 2021-07-04 09:08:07 from EXIF", got, src)
 	}
@@ -70,7 +70,7 @@ func TestCaptureDateFromVideoMetadata(t *testing.T) {
 	old := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
 	os.Chtimes(p, old, old)
 
-	got, src := captureDateFor(p)
+	got, src := captureDateFor(p, nil)
 	if src != dateFromVideo || !got.Equal(want) {
 		t.Errorf("video date = %v from %v, want %v from video metadata", got, src, want)
 	}
@@ -80,7 +80,7 @@ func TestCaptureDateVideoWithUnsetCreationFallsBack(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "20240102_clip.mp4")
 	os.WriteFile(p, mp4WithCreation(time.Unix(-secondsFrom1904To1970, 0)), 0o644) // creation = 0
-	got, src := captureDateFor(p)
+	got, src := captureDateFor(p, nil)
 	if src != dateFromFilename || got.Format("2006-01-02") != "2024-01-02" {
 		t.Errorf("got %v from %v, want filename date", got, src)
 	}
@@ -90,7 +90,7 @@ func TestCaptureDateFallbackOrder(t *testing.T) {
 	dir := t.TempDir()
 	named := filepath.Join(dir, "IMG_20240315_101010.jpg")
 	os.WriteFile(named, []byte("not really a jpeg"), 0o644)
-	if got, src := captureDateFor(named); src != dateFromFilename || got.Format("2006-01-02") != "2024-03-15" {
+	if got, src := captureDateFor(named, nil); src != dateFromFilename || got.Format("2006-01-02") != "2024-03-15" {
 		t.Errorf("named: %v from %v", got, src)
 	}
 
@@ -98,7 +98,7 @@ func TestCaptureDateFallbackOrder(t *testing.T) {
 	os.WriteFile(plain, []byte("x"), 0o644)
 	mt := time.Date(2019, 5, 6, 7, 8, 9, 0, time.Local)
 	os.Chtimes(plain, mt, mt)
-	if got, src := captureDateFor(plain); src != dateFromModTime || got.Format("2006-01-02") != "2019-05-06" {
+	if got, src := captureDateFor(plain, nil); src != dateFromModTime || got.Format("2006-01-02") != "2019-05-06" {
 		t.Errorf("plain: %v from %v", got, src)
 	}
 }
@@ -153,5 +153,24 @@ func TestOrganizeSummaryShowsDateSourcesAndWarnings(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestCaptureDateVideoTimeZone(t *testing.T) {
+	dir := t.TempDir()
+	// 02:30 UTC on the 20th is the evening of the 19th in New York.
+	p := filepath.Join(dir, "clip.mov")
+	os.WriteFile(p, mp4WithCreation(time.Date(2023, 8, 20, 2, 30, 0, 0, time.UTC)), 0o644)
+
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("no tz database")
+	}
+	got, src := captureDateFor(p, ny)
+	if src != dateFromVideo || got.Format("2006-01-02 15:04") != "2023-08-19 22:30" {
+		t.Errorf("shifted = %v (%v), want 2023-08-19 22:30", got, src)
+	}
+	if got, _ := captureDateFor(p, nil); got.Format("2006-01-02") != "2023-08-20" {
+		t.Errorf("nil zone must keep the date as written, got %v", got)
 	}
 }

@@ -50,8 +50,9 @@ func (d dateSource) String() string {
 const containerSearchBytes = 1 << 20
 
 // captureDateFor returns the best available capture date for path and where
-// it came from. It only reads the file.
-func captureDateFor(path string) (time.Time, dateSource) {
+// it came from. It only reads the file. videoLoc, when set, is the time zone a
+// video's creation time is shown in (phones record UTC); nil uses it as written.
+func captureDateFor(path string, videoLoc *time.Location) (time.Time, dateSource) {
 	ext := strings.ToLower(filepath.Ext(path))
 
 	if photoExts[ext] {
@@ -61,6 +62,9 @@ func captureDateFor(path string) (time.Time, dateSource) {
 	}
 	if videoExts[ext] {
 		if t, ok := videoCreationTime(path); ok {
+			if videoLoc != nil {
+				t = t.In(videoLoc)
+			}
 			return t, dateFromVideo
 		}
 	}

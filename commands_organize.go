@@ -44,8 +44,9 @@ type organizeOptions struct {
 	progress progressMode
 	jobs     int
 	verify   verifyMode
-	savePlan string // --save-plan: write the previewed plan to this file
-	planFile string // --plan: apply a plan saved earlier instead of scanning
+	videoTZ  *time.Location // nil: video times are used as written (UTC)
+	savePlan string         // --save-plan: write the previewed plan to this file
+	planFile string         // --plan: apply a plan saved earlier instead of scanning
 }
 
 // plannedCopy is one file that will be copied into the library.
@@ -133,6 +134,23 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 				return opts, fmt.Errorf("unknown verify mode %q (use auto, full or quick)", args[i+1])
 			}
 			i++
+		case "--video-tz":
+			if i+1 >= len(args) {
+				return opts, errors.New("--video-tz needs 'utc', 'local' or a zone name like Europe/Paris")
+			}
+			switch strings.ToLower(args[i+1]) {
+			case "utc":
+				opts.videoTZ = nil
+			case "local":
+				opts.videoTZ = time.Local
+			default:
+				loc, err := time.LoadLocation(args[i+1])
+				if err != nil {
+					return opts, fmt.Errorf("unknown time zone %q (use utc, local or a name like America/New_York)", args[i+1])
+				}
+				opts.videoTZ = loc
+			}
+			i++
 		case "--save-plan", "--plan":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("%s needs a file name", args[i])
@@ -177,6 +195,9 @@ func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "  - --verify auto|full|quick: how duplicates are confirmed. auto compares every byte\n")
 	fmt.Fprintf(os.Stderr, "    up to 64 MB and samples 16 spread points in larger files; full always reads\n")
 	fmt.Fprintf(os.Stderr, "    every byte; quick samples anything over 1 MB.\n")
+	fmt.Fprintf(os.Stderr, "  - --video-tz utc|local|<zone>: phones record video times in UTC, so an evening clip can\n")
+	fmt.Fprintf(os.Stderr, "    land on the next day. 'local' uses this computer's zone; or name one (Europe/Paris).\n")
+	fmt.Fprintf(os.Stderr, "    Default utc = as written. Photos (EXIF) are never shifted.\n")
 	fmt.Fprintf(os.Stderr, "  - --save-plan FILE (dry run) saves exactly what was previewed; later run\n")
 	fmt.Fprintf(os.Stderr, "    'organize --plan FILE --apply' to copy precisely that. It refuses if any\n")
 	fmt.Fprintf(os.Stderr, "    source file changed or any target name is now taken.\n")
@@ -514,7 +535,7 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 		parallelDo(opts.jobs, len(infos), func(i int) {
 			files := found.groups[keys[start+i]]
 			sort.Slice(files, func(a, b int) bool { return files[a].path < files[b].path })
-			infos[i] = analyzeGroup(files)
+			infos[i] = analyzeGroup(files, opts.videoTZ)
 		})
 		pl.warmDigests(infos)
 		for i, g := range infos {
@@ -555,7 +576,7 @@ type groupInfo struct {
 	source          dateSource
 }
 
-func analyzeGroup(files []sourceFile) *groupInfo {
+func analyzeGroup(files []sourceFile, videoTZ *time.Location) *groupInfo {
 	g := &groupInfo{}
 	for _, f := range files {
 		if isSidecarExt(filepath.Ext(f.path)) {
@@ -582,7 +603,7 @@ func analyzeGroup(files []sourceFile) *groupInfo {
 	for i, f := range g.media {
 		g.hashes[i], _ = processFile(f.path)
 	}
-	g.date, g.source = captureDateFor(g.media[g.lead].path)
+	g.date, g.source = captureDateFor(g.media[g.lead].path, videoTZ)
 	return g
 }
 

@@ -117,6 +117,13 @@ Implausible dates (before 1990, in the future) go to `undated/`.
   Files are written to a temporary name and linked into place.
 - **Separate trees.** The library may not be inside a source, nor a source inside
   the library (symlinks are resolved before comparing).
+- **Video time zone.** Phones record a video's creation time in UTC, so an evening
+  clip can be filed under the next day. `--video-tz local` (this computer's zone) or
+  `--video-tz America/New_York` converts video times before choosing the folder;
+  the default `utc` uses them as written. Only video metadata is shifted — EXIF
+  photo times are already local clock time. Cameras that store local time instead of
+  UTC would be shifted wrongly, so pick the zone that matches most of your videos.
+  Check the "Dates taken from" line and a few evening clips on a small folder first.
 - **Saved plans.** `--save-plan FILE` (preview only) records every copy. `--plan FILE
   --apply` then copies exactly those files, even if new photos appeared since. Before
   copying it re-checks: if a source file is gone or changed, or a target name is now
