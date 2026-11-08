@@ -174,3 +174,18 @@ func TestCaptureDateVideoTimeZone(t *testing.T) {
 		t.Errorf("nil zone must keep the date as written, got %v", got)
 	}
 }
+
+func TestCaptureDateVideoTimeZoneKeepsPlausibleDate(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("no tz database")
+	}
+	// Plausible as written, but 1989-12-31 in New York: keep the written time
+	// rather than filing the clip under an implausible year.
+	p := filepath.Join(t.TempDir(), "clip.mov")
+	os.WriteFile(p, mp4WithCreation(time.Date(1990, 1, 1, 0, 30, 0, 0, time.UTC)), 0o644)
+	got, src := captureDateFor(p, ny)
+	if src != dateFromVideo || got.Format("2006-01-02") != "1990-01-01" {
+		t.Errorf("got %v (%v), want the as-written 1990-01-01", got, src)
+	}
+}

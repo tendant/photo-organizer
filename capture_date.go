@@ -63,7 +63,11 @@ func captureDateFor(path string, videoLoc *time.Location) (time.Time, dateSource
 	if videoExts[ext] {
 		if t, ok := videoCreationTime(path); ok {
 			if videoLoc != nil {
-				t = t.In(videoLoc)
+				// Keep the as-written time if the shift would push it out of the
+				// plausible range (e.g. 1990-01-01 00:30 UTC -> 1989-12-31).
+				if shifted := t.In(videoLoc); plausibleDate(shifted) {
+					t = shifted
+				}
 			}
 			return t, dateFromVideo
 		}

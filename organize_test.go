@@ -817,6 +817,9 @@ func TestOrganizeNoOpApplyStillSavesLearnedDigests(t *testing.T) {
 }
 
 func TestOrganizeVideoTimeZoneMovesEveningClipsOnly(t *testing.T) {
+	if _, err := time.LoadLocation("America/New_York"); err != nil {
+		t.Skip("no tz database")
+	}
 	home := t.TempDir()
 	src := filepath.Join(home, "src")
 	vid := filepath.Join(src, "clip.mov")
@@ -843,5 +846,60 @@ func TestOrganizeVideoTimeZoneMovesEveningClipsOnly(t *testing.T) {
 
 	if _, code := runCLIWithHome(t, home, "organize", src, "--dest", filepath.Join(home, "x"), "--video-tz", "Mars/Olympus", "--no-progress"); code == 0 {
 		t.Errorf("unknown zone should be rejected")
+	}
+}
+
+func TestParseOrganizeArgsVideoTZ(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("tz database unavailable")
+	}
+	cases := []struct {
+		name string
+		args []string
+		want *time.Location
+	}{
+		{"default is as written", nil, nil},
+		{"utc", []string{"--video-tz", "utc"}, nil},
+		{"UTC is case-insensitive", []string{"--video-tz", "UTC"}, nil},
+		{"local", []string{"--video-tz", "local"}, time.Local},
+		{"Local is case-insensitive", []string{"--video-tz", "Local"}, time.Local},
+		{"named zone", []string{"--video-tz", "America/New_York"}, ny},
+		{"later flag wins", []string{"--video-tz", "local", "--video-tz", "utc"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts, err := parseOrganizeArgs(append([]string{"src", "--dest", "lib"}, c.args...))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c.want == nil {
+				if opts.videoTZ != nil {
+					t.Errorf("videoTZ = %v, want nil", opts.videoTZ)
+				}
+			} else if opts.videoTZ == nil || opts.videoTZ.String() != c.want.String() {
+				t.Errorf("videoTZ = %v, want %v", opts.videoTZ, c.want)
+			}
+			if len(opts.sources) != 1 || opts.sources[0] != "src" {
+				t.Errorf("the zone value must not be taken as a source folder: %v", opts.sources)
+			}
+		})
+	}
+
+	for _, bad := range [][]string{
+		{"--video-tz"},
+		{"--video-tz", "Mars/Olympus"},
+	} {
+		if _, err := parseOrganizeArgs(append([]string{"src"}, bad...)); err == nil {
+			t.Errorf("args %q should be rejected", bad)
+		}
+	}
+}
+
+func TestOrganizeVideoTimeZoneRejectedWithPlan(t *testing.T) {
+	home := t.TempDir()
+	out, code := runCLIWithHome(t, home, "organize", "--plan", filepath.Join(home, "p.json"), "--video-tz", "local", "--apply", "--no-progress")
+	if code == 0 || !strings.Contains(out, "--video-tz has no effect with --plan") {
+		t.Errorf("want a clear rejection, got exit %d:\n%s", code, out)
 	}
 }

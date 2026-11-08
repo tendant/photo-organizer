@@ -124,6 +124,7 @@ Implausible dates (before 1990, in the future) go to `undated/`.
   photo times are already local clock time. Cameras that store local time instead of
   UTC would be shifted wrongly, so pick the zone that matches most of your videos.
   Check the "Dates taken from" line and a few evening clips on a small folder first.
+  Not valid with `--plan`: set it when you create the plan with `--save-plan`.
 - **Saved plans.** `--save-plan FILE` (preview only) records every copy. `--plan FILE
   --apply` then copies exactly those files, even if new photos appeared since. Before
   copying it re-checks: if a source file is gone or changed, or a target name is now

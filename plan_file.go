@@ -89,6 +89,10 @@ func runSavedPlan(opts organizeOptions) error {
 		fmt.Fprintf(os.Stderr, "Error: --plan replays a saved plan; do not combine it with folders or --save-plan\n")
 		return errFailed
 	}
+	if opts.videoTZSet {
+		fmt.Fprintf(os.Stderr, "Error: --video-tz has no effect with --plan; the saved plan already fixes every target folder. Pass it when you create the plan with --save-plan\n")
+		return errFailed
+	}
 	data, err := os.ReadFile(opts.planFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot read plan: %v\n", err)

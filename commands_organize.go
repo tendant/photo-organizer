@@ -37,16 +37,17 @@ const (
 )
 
 type organizeOptions struct {
-	sources  []string
-	dest     string
-	apply    bool
-	byMonth  bool
-	progress progressMode
-	jobs     int
-	verify   verifyMode
-	videoTZ  *time.Location // nil: video times are used as written (UTC)
-	savePlan string         // --save-plan: write the previewed plan to this file
-	planFile string         // --plan: apply a plan saved earlier instead of scanning
+	sources    []string
+	dest       string
+	apply      bool
+	byMonth    bool
+	progress   progressMode
+	jobs       int
+	verify     verifyMode
+	videoTZ    *time.Location // nil: video times are used as written (UTC)
+	videoTZSet bool           // --video-tz was given (rejected with --plan)
+	savePlan   string         // --save-plan: write the previewed plan to this file
+	planFile   string         // --plan: apply a plan saved earlier instead of scanning
 }
 
 // plannedCopy is one file that will be copied into the library.
@@ -135,6 +136,7 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 			}
 			i++
 		case "--video-tz":
+			opts.videoTZSet = true
 			if i+1 >= len(args) {
 				return opts, errors.New("--video-tz needs 'utc', 'local' or a zone name like Europe/Paris")
 			}
