@@ -143,6 +143,8 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 				return opts, errors.New("--video-tz needs 'utc', 'local' or a zone name like Europe/Paris")
 			}
 			switch strings.ToLower(args[i+1]) {
+			case "":
+				return opts, errors.New("--video-tz needs 'utc', 'local' or a zone name like Europe/Paris (got an empty value)")
 			case "utc":
 				opts.videoTZ = nil
 			case "local":

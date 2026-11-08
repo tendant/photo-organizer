@@ -896,6 +896,7 @@ func TestParseOrganizeArgsVideoTZ(t *testing.T) {
 	for _, bad := range [][]string{
 		{"--video-tz"},
 		{"--video-tz", "Mars/Olympus"},
+		{"--video-tz", ""},
 	} {
 		if _, err := parseOrganizeArgs(append([]string{"src"}, bad...)); err == nil {
 			t.Errorf("args %q should be rejected", bad)
