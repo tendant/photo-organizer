@@ -68,7 +68,9 @@ overlap, and merging them into the library collapses the duplicates.
 6. **Verify**: preview again; it should report nothing left to copy. Then `check-backup`.
 7. **Back up** the library: `backup <library> --dest <target>`. `backup` mirrors into a folder of
    the same name inside the target, so name the parent folder, not the final one.
-8. **Retire** a source (manual delete or `archive`) only after steps 6 and 7 pass.
+8. **Retire** a source only after steps 6 and 7 pass. `prune-sources <source> --library <lib> --backup <bak>`
+   lists files with a byte-identical copy in both; `--holding <dir> --apply` moves them aside (never deletes).
+   Delete the holding folder by hand after a waiting period.
 
 When space is tight, work in **slices** (one source subfolder at a time: copy, verify, back up,
 then free that slice), so the peak extra space is one slice, not the whole library.
@@ -103,6 +105,7 @@ the hub registered with `collect --add`, and `photo-organizer` installed on the 
 ## Tool changes made for this strategy
 
 - `organize --type photo|video|all`.
+- `prune-sources`: previews and moves aside source files verified in both library and backup.
 - `scan` prunes by default; `--no-prune` opts out; scans that hit unreadable paths skip the prune.
 - `make install` installs to `/usr/local/bin`; `make install-user` is the no-sudo `~/bin` option
   (a copy in `~/bin` shadows the system one on `PATH`).

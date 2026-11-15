@@ -246,6 +246,21 @@ Two things worth knowing about the numbers on a **remote** backup:
   where `rsync` supports `--info=progress2`, and otherwise names the file it is
   sending so a slow-moving line is explained.
 
+### prune-sources
+
+Finds source files that already have a byte-identical copy in the library **and** in an independent backup, and optionally moves them out of the source. Nothing is deleted.
+
+```bash
+photo-organizer prune-sources /data/Photos-All --library /lib/photos --backup /mnt/backup/photos --type photo --report prune.csv
+photo-organizer prune-sources /data/Photos-All --library /lib/photos --backup /mnt/backup/photos --type photo --holding /data/_pruned --apply
+```
+
+- Preview by default. `--apply` needs `--holding <folder>`; safe files are moved there with the same relative paths.
+- The library and backup are read from disk at run time (no manifests), and every match is a full byte comparison.
+- The backup must be on a different device from the library, and neither may overlap a source or the holding folder. `--backup` can be repeated.
+- Sidecars, files of the other `--type`, and files missing from the library or backup are always kept.
+- A move never overwrites a file already in the holding folder.
+
 ### archive
 Retire a folder into a dated snapshot and repoint the manifests at it.
 

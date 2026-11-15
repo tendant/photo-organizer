@@ -45,7 +45,7 @@ func suggestCommand(typo string) string {
 	commands := []string{
 		"archive", "backup", "backup-missing", "check-backup", "collect",
 		"dups", "dup-folders", "fix", "help", "list", "lookup",
-		"machines", "manifests", "organize", "restore", "scan", "search", "sign",
+		"machines", "manifests", "organize", "prune-sources", "restore", "scan", "search", "sign",
 		"storage-plan", "storage-status", "verify-archive",
 	}
 
@@ -146,6 +146,8 @@ func main() {
 		err = runBackupMissing(os.Args[2:])
 	case "organize":
 		err = runOrganize(os.Args[2:])
+	case "prune-sources":
+		err = runPruneSources(os.Args[2:])
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -182,6 +184,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  photo-organizer backup <folder> --dest <target> [--all] [--no-progress]\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer archive <folder> --dest <target> [--keep] [--no-progress]\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer organize <folder>... --dest <library> [--apply]\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer prune-sources <folder>... --library DIR --backup DIR [--holding DIR --apply]\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer check-backup <folder>\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer verify-archive <manifest.csv>\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer search [filters]\n\n")
