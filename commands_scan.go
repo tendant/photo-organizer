@@ -40,17 +40,20 @@ func runScan(args []string) error {
 	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values (use after hash algorithm change)")
 	pruneFlag := fs.Bool("prune", true, "remove manifest entries for files no longer on disk (default; kept for old scripts)")
 	noPruneFlag := fs.Bool("no-prune", false, "keep manifest entries for files that are no longer on disk")
+	forcePruneFlag := fs.Bool("force-prune", false, "prune even when that removes more than half of the manifest (after moving or deleting most of a folder on purpose)")
 	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those matching score threshold")
 	scoreThresholdFlag := fs.Int("score-threshold", 30, "minimum folder score (0-100) for --auto-identify-folders (default: 30)")
 	detectOnlyFlag := fs.Bool("detect-only", false, "with --auto-identify-folders: show detection results and exit without scanning")
 	noReportFlag := fs.Bool("no-report", false, "skip file type coverage report (usually shown before scanning)")
 	fs.Usage = printUsage
+	defer func() { forcePrune = false }()
 	if err := fs.Parse(flagArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil // help requested and printed; not a failure
 		}
 		return errFailed // flag package already printed the error and usage
 	}
+	forcePrune = *forcePruneFlag
 
 	// Resolve machine name (priority: flag > ./machine-id > ~/manifests/machine-id)
 	machineName := resolveMachineID(*machineFlag)

@@ -31,8 +31,10 @@ type pruneOptions struct {
 	backups  []string
 	holding  string
 	report   string
+	fromRep  string
 	apply    bool
 	kind     mediaKind
+	typeSet  bool
 	jobs     int
 	progress progressMode
 }
@@ -71,7 +73,14 @@ func parsePruneArgs(args []string) (pruneOptions, error) {
 			}
 			opts.report = args[i+1]
 			i++
+		case "--from-report":
+			if err := need(i, "a report file"); err != nil {
+				return opts, err
+			}
+			opts.fromRep = args[i+1]
+			i++
 		case "--type":
+			opts.typeSet = true
 			if err := need(i, "'photo', 'video' or 'all'"); err != nil {
 				return opts, err
 			}
@@ -116,6 +125,9 @@ func parsePruneArgs(args []string) (pruneOptions, error) {
 	if len(opts.backups) == 0 {
 		return opts, errors.New("--backup is required: a source is only safe to remove when a copy also exists outside the library")
 	}
+	if opts.fromRep != "" && opts.typeSet {
+		return opts, errors.New("--type has no effect with --from-report: the report already decides which files qualify")
+	}
 	if opts.apply && opts.holding == "" {
 		return opts, errors.New("--apply needs --holding <folder>: files are moved there, never deleted")
 	}
@@ -125,13 +137,16 @@ func parsePruneArgs(args []string) (pruneOptions, error) {
 func printPruneUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: photo-organizer prune-sources <source>... --library DIR --backup DIR [--backup DIR]\n")
 	fmt.Fprintf(os.Stderr, "                                     [--type photo|video|all] [--report FILE] [--jobs N]\n")
-	fmt.Fprintf(os.Stderr, "                                     [--holding DIR --apply]\n\n")
+	fmt.Fprintf(os.Stderr, "                                     [--holding DIR --apply] [--from-report FILE]\n\n")
 	fmt.Fprintf(os.Stderr, "Finds source files that have a byte-identical copy in the library AND in a backup.\n")
 	fmt.Fprintf(os.Stderr, "Preview by default. With --apply the files are MOVED into --holding (same relative\n")
 	fmt.Fprintf(os.Stderr, "paths); nothing is deleted. Delete the holding folder yourself once you are sure.\n")
 	fmt.Fprintf(os.Stderr, "  - Library and backup are read from disk now, not from manifests.\n")
 	fmt.Fprintf(os.Stderr, "  - Library and backup must be on different devices.\n")
 	fmt.Fprintf(os.Stderr, "  - Sidecars, files of the other --type and unverified files are always kept.\n")
+	fmt.Fprintf(os.Stderr, "  - --from-report FILE reuses the byte comparison of an earlier preview (its --report file):\n")
+	fmt.Fprintf(os.Stderr, "    it only re-checks that the source, library and backup files still exist with the same\n")
+	fmt.Fprintf(os.Stderr, "    size and were not modified after the report was written. Fast; nothing is re-read.\n")
 	fmt.Fprintf(os.Stderr, "  - Keep --holding on the same filesystem as the source so the move is instant.\n")
 }
 
@@ -144,10 +159,11 @@ const (
 	pruneSidecar
 	pruneOtherKind
 	pruneUnreadable
+	pruneChanged
 )
 
 func (v pruneVerdict) String() string {
-	return [...]string{"safe", "not in library", "not in backup", "sidecar kept", "other type", "unreadable"}[v]
+	return [...]string{"safe", "not in library", "not in backup", "sidecar kept", "other type", "unreadable", "changed since report"}[v]
 }
 
 type pruneItem struct {
@@ -272,6 +288,15 @@ func runPruneSources(args []string) error {
 	}
 	showProgress := progressEnabled(opts.progress)
 
+	var items []*pruneItem
+	if opts.fromRep != "" {
+		var err error
+		if items, err = loadPruneReport(opts); err != nil {
+			return err
+		}
+		return finishPrune(items, opts)
+	}
+
 	fmt.Fprintf(os.Stderr, "Reading library and backup folders...\n")
 	libIdx, libN := buildSizeIndex(opts.library)
 	bakIdx := make([]sizeIndex, len(opts.backups))
@@ -286,11 +311,16 @@ func runPruneSources(args []string) error {
 		return errors.New("library or backup holds no photos/videos; refusing to continue")
 	}
 
-	items := collectPruneItems(opts, showProgress)
+	items = collectPruneItems(opts, showProgress)
 	verifyPruneItems(items, libIdx, bakIdx, opts, showProgress)
+	return finishPrune(items, opts)
+}
+
+// finishPrune prints the summary, writes the report and (with --apply) moves files.
+func finishPrune(items []*pruneItem, opts pruneOptions) error {
 	printPruneSummary(items, opts)
 
-	if opts.report != "" {
+	if opts.report != "" && opts.fromRep == "" {
 		if err := writePruneReport(opts.report, items); err != nil {
 			return err
 		}
@@ -390,7 +420,7 @@ func printPruneSummary(items []*pruneItem, opts pruneOptions) {
 	fmt.Fprintf(os.Stderr, "\nSource files looked at: %s\n", formatCount(len(items)))
 	fmt.Fprintf(os.Stderr, "  Safe to remove (identical copy in library and backup): %s files, %s\n",
 		formatCount(count[pruneSafe]), formatSize(size[pruneSafe]))
-	for _, v := range []pruneVerdict{pruneNoLibrary, pruneNoBackup, pruneSidecar, pruneOtherKind, pruneUnreadable} {
+	for _, v := range []pruneVerdict{pruneNoLibrary, pruneNoBackup, pruneSidecar, pruneOtherKind, pruneUnreadable, pruneChanged} {
 		if count[v] > 0 {
 			fmt.Fprintf(os.Stderr, "  Kept — %-15s %s files, %s\n", v.String()+":", formatCount(count[v]), formatSize(size[v]))
 		}
@@ -462,4 +492,93 @@ func movePruneItems(items []*pruneItem, holding string) (moved, failed int) {
 		moved++
 	}
 	return
+}
+
+// loadPruneReport turns an earlier preview's report into items, re-checking cheaply
+// that nothing changed since: each file must still exist with the recorded size and
+// must not have been modified after the report was written.
+func loadPruneReport(opts pruneOptions) ([]*pruneItem, error) {
+	rst, err := os.Stat(opts.fromRep)
+	if err != nil {
+		return nil, err
+	}
+	written := rst.ModTime()
+	f, err := os.Open(opts.fromRep)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", opts.fromRep, err)
+	}
+	if len(rows) < 1 || len(rows[0]) < 5 || rows[0][0] != "source_path" || rows[0][4] != "backup_copy" {
+		return nil, fmt.Errorf("%s is not a prune-sources report", opts.fromRep)
+	}
+	var roots []string
+	for _, s := range opts.sources {
+		roots = append(roots, filepath.Clean(s))
+	}
+	rootOf := func(path string) string {
+		for _, r := range roots {
+			if pathWithin(path, r) {
+				return r
+			}
+		}
+		return ""
+	}
+	unchanged := func(path string, size int64) bool {
+		st, err := os.Stat(path)
+		return err == nil && st.Mode().IsRegular() && st.Size() == size && !st.ModTime().After(written)
+	}
+	within := func(path string, dirs ...string) bool {
+		for _, d := range dirs {
+			if pathWithin(path, filepath.Clean(d)) {
+				return true
+			}
+		}
+		return false
+	}
+	var items []*pruneItem
+	for _, r := range rows[1:] {
+		if len(r) < 5 {
+			continue
+		}
+		size, err := strconv.ParseInt(r[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		root := rootOf(r[0])
+		if root == "" {
+			continue // not under a source you named this time
+		}
+		it := &pruneItem{path: r[0], root: root, size: size, libCopy: r[3], bakCopy: r[4]}
+		switch r[2] {
+		case pruneSafe.String():
+			ok := within(it.libCopy, opts.library) && within(it.bakCopy, opts.backups...) &&
+				unchanged(it.path, size) && unchanged(it.libCopy, size) && unchanged(it.bakCopy, size)
+			if ok {
+				it.verdict = pruneSafe
+			} else {
+				it.verdict = pruneChanged
+			}
+		case pruneNoLibrary.String():
+			it.verdict = pruneNoLibrary
+		case pruneNoBackup.String():
+			it.verdict = pruneNoBackup
+		case pruneSidecar.String():
+			it.verdict = pruneSidecar
+		case pruneOtherKind.String():
+			it.verdict = pruneOtherKind
+		default:
+			it.verdict = pruneUnreadable
+		}
+		items = append(items, it)
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("no files in %s belong to the source folders you gave", opts.fromRep)
+	}
+	fmt.Fprintf(os.Stderr, "Using %s (written %s): re-checked %s files without re-reading them.\n",
+		opts.fromRep, written.Format("2006-01-02 15:04"), formatCount(len(items)))
+	return items, nil
 }

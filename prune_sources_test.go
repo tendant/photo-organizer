@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // srcPruneFixture builds source/, library/, backup/ and fakes distinct devices.
@@ -223,4 +224,135 @@ func TestPruneWritesReportAndKeepsExistingHoldingFiles(t *testing.T) {
 	if len(rows) != 2 || rows[1][2] != "safe" {
 		t.Errorf("unexpected report: %v", rows)
 	}
+}
+
+// previewReport runs a preview that writes a report and returns its path.
+func previewReport(t *testing.T, f srcPruneFixture) string {
+	t.Helper()
+	rep := filepath.Join(filepath.Dir(f.src), "report.csv")
+	if err := runPruneSources(f.args("--report", rep)); err != nil {
+		t.Fatal(err)
+	}
+	return rep
+}
+
+func seedSame(t *testing.T, f srcPruneFixture, names ...string) {
+	t.Helper()
+	for _, n := range names {
+		writeFile(t, filepath.Join(f.src, n), "content-"+n)
+		writeFile(t, filepath.Join(f.lib, n), "content-"+n)
+		writeFile(t, filepath.Join(f.bak, n), "content-"+n)
+	}
+}
+
+func TestPruneFromReportMovesWhatThePreviewVerified(t *testing.T) {
+	f := newSrcPruneFixture(t)
+	seedSame(t, f, "a.jpg", "b.jpg")
+	writeFile(t, filepath.Join(f.src, "keep.jpg"), "only here")
+	rep := previewReport(t, f)
+	if err := runPruneSources(f.args("--from-report", rep, "--holding", f.hold, "--apply")); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"a.jpg", "b.jpg"} {
+		if exists(filepath.Join(f.src, n)) {
+			t.Errorf("%s should have moved", n)
+		}
+		if !exists(holdingPath(f.hold, f.src, filepath.Join(f.src, n))) {
+			t.Errorf("%s missing from holding", n)
+		}
+	}
+	if !exists(filepath.Join(f.src, "keep.jpg")) {
+		t.Error("unverified file must stay")
+	}
+}
+
+func TestPruneFromReportDoesNotReadFileContents(t *testing.T) {
+	f := newSrcPruneFixture(t)
+	seedSame(t, f, "a.jpg")
+	rep := previewReport(t, f)
+	// Same size, same (old) mtime, different bytes: only a re-read could notice.
+	// A cheap re-check must therefore trust the report - this documents the trade-off.
+	old := mustModTime(t, filepath.Join(f.lib, "a.jpg"))
+	writeFile(t, filepath.Join(f.lib, "a.jpg"), "content-X.jpg") // same length as "content-a.jpg"
+	os.Chtimes(filepath.Join(f.lib, "a.jpg"), old, old)
+	if err := runPruneSources(f.args("--from-report", rep, "--holding", f.hold, "--apply")); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(f.src, "a.jpg")) {
+		t.Error("from-report trusts size+mtime and should have moved the file")
+	}
+}
+
+func TestPruneFromReportRejectsFilesChangedSinceThePreview(t *testing.T) {
+	f := newSrcPruneFixture(t)
+	seedSame(t, f, "src-edited.jpg", "lib-edited.jpg", "bak-gone.jpg", "lib-gone.jpg", "fine.jpg")
+	rep := previewReport(t, f)
+	past := mustModTime(t, rep).Add(-10 * 60 * 1e9)
+	os.Chtimes(rep, past, past) // pretend the report is older than the edits below
+	future := past.Add(5 * 60 * 1e9)
+	os.WriteFile(filepath.Join(f.src, "src-edited.jpg"), []byte("content-src-edited.jpg"), 0o644)
+	os.Chtimes(filepath.Join(f.src, "src-edited.jpg"), future, future)
+	os.Chtimes(filepath.Join(f.lib, "lib-edited.jpg"), future, future)
+	os.Chtimes(filepath.Join(f.src, "fine.jpg"), past.Add(-1e9), past.Add(-1e9))
+	os.Chtimes(filepath.Join(f.lib, "fine.jpg"), past.Add(-1e9), past.Add(-1e9))
+	os.Chtimes(filepath.Join(f.bak, "fine.jpg"), past.Add(-1e9), past.Add(-1e9))
+	os.Remove(filepath.Join(f.bak, "bak-gone.jpg"))
+	os.Remove(filepath.Join(f.lib, "lib-gone.jpg"))
+	writeFile(t, filepath.Join(f.bak, "padding.jpg"), "keeps the backup non-empty")
+
+	err := runPruneSources(f.args("--from-report", rep, "--holding", f.hold, "--apply"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"src-edited.jpg", "lib-edited.jpg", "bak-gone.jpg", "lib-gone.jpg"} {
+		if !exists(filepath.Join(f.src, n)) {
+			t.Errorf("%s changed since the report and must stay", n)
+		}
+	}
+	if exists(filepath.Join(f.src, "fine.jpg")) {
+		t.Error("untouched file should have moved")
+	}
+}
+
+func TestPruneFromReportIgnoresCopiesOutsideLibraryAndBackup(t *testing.T) {
+	f := newSrcPruneFixture(t)
+	writeFile(t, filepath.Join(f.src, "a.jpg"), "same")
+	writeFile(t, filepath.Join(f.bak, "pad.jpg"), "pad")
+	writeFile(t, filepath.Join(f.lib, "pad.jpg"), "pad2")
+	elsewhere := filepath.Join(filepath.Dir(f.src), "elsewhere.jpg")
+	writeFile(t, elsewhere, "same")
+	rep := filepath.Join(filepath.Dir(f.src), "forged.csv")
+	writeFile(t, rep, "source_path,size_bytes,verdict,library_copy,backup_copy\n"+
+		filepath.Join(f.src, "a.jpg")+",4,safe,"+elsewhere+","+elsewhere+"\n")
+	if err := runPruneSources(f.args("--from-report", rep, "--holding", f.hold, "--apply")); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(filepath.Join(f.src, "a.jpg")) {
+		t.Error("copies outside the named library/backup must not count")
+	}
+}
+
+func TestPruneFromReportArgsAndBadFiles(t *testing.T) {
+	if _, err := parsePruneArgs([]string{"s", "--library", "l", "--backup", "b", "--from-report", "r", "--type", "photo"}); err == nil {
+		t.Error("--type with --from-report should be rejected")
+	}
+	f := newSrcPruneFixture(t)
+	seedSame(t, f, "a.jpg")
+	notReport := filepath.Join(filepath.Dir(f.src), "x.csv")
+	writeFile(t, notReport, "a,b,c\n1,2,3\n")
+	if err := runPruneSources(f.args("--from-report", notReport)); err == nil {
+		t.Error("a file that is not a report must be refused")
+	}
+	if err := runPruneSources(f.args("--from-report", filepath.Join(f.src, "nope.csv"))); err == nil {
+		t.Error("a missing report must be refused")
+	}
+}
+
+func mustModTime(t *testing.T, p string) time.Time {
+	t.Helper()
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st.ModTime()
 }

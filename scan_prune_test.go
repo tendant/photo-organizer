@@ -107,3 +107,35 @@ func TestScanDoesNotPruneWhatItCouldNotRead(t *testing.T) {
 		t.Errorf("the deleted file should go on the next clean scan")
 	}
 }
+
+func TestScanForcePruneOverridesTheHalfBrake(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"a", "b", "c", "d"} {
+		writeFile(t, filepath.Join(dir, n+".jpg"), "photo-"+n)
+	}
+	t.Setenv("HOME", t.TempDir())
+	if err := runScan([]string{dir, "--no-report"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"a", "b", "c"} {
+		os.Remove(filepath.Join(dir, n+".jpg"))
+	}
+	count := func() int {
+		m, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), "manifests", "_Manifest", "*.csv"))
+		total := 0
+		for _, f := range m {
+			total += len(readCSV(t, f)) - 1
+		}
+		return total
+	}
+	runScan([]string{dir, "--no-report"})
+	if got := count(); got != 4 {
+		t.Fatalf("brake should have kept all 4 rows, got %d", got)
+	}
+	if err := runScan([]string{dir, "--no-report", "--force-prune"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("--force-prune should leave 1 row, got %d", got)
+	}
+}

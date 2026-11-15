@@ -98,6 +98,10 @@ func backupManifest(manifestFile string) error {
 	return nil
 }
 
+// forcePrune lets a scan drop more than half of a manifest's rows (set by scan --force-prune
+// after you moved or deleted most of a folder on purpose).
+var forcePrune bool
+
 func updateManifest(scanDir string, files []FileInfo, manifestFile string, machineName string, prune bool) (ManifestStats, error) {
 	var mstats ManifestStats
 	fmt.Fprintf(os.Stderr, "Updating manifest: %s\n", filepath.Base(manifestFile))
@@ -270,10 +274,10 @@ doneLoading:
 		}
 		// Safety: if pruning would remove more than 50% of existing entries,
 		// something is wrong (folder moved, volume unmounted, etc) — skip and warn.
-		if len(existing) > 0 && wouldPrune*100/len(existing) > 50 {
+		if len(existing) > 0 && wouldPrune*100/len(existing) > 50 && !forcePrune {
 			fmt.Fprintf(os.Stderr, "⚠  Skipping prune: would remove %s of %s entries (>50%%).\n",
 				formatCount(wouldPrune), formatCount(len(existing)))
-			fmt.Fprintf(os.Stderr, "   Is the folder still at %s? Re-run with --prune after verifying.\n", scanDir)
+			fmt.Fprintf(os.Stderr, "   Is the folder still at %s? If you really removed that many files, re-run with --force-prune.\n", scanDir)
 		} else {
 			for relPath := range existing {
 				if !scanned[relPath] {
