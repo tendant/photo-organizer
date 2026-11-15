@@ -48,6 +48,50 @@ type organizeOptions struct {
 	videoTZSet bool           // --video-tz was given (rejected with --plan)
 	savePlan   string         // --save-plan: write the previewed plan to this file
 	planFile   string         // --plan: apply a plan saved earlier instead of scanning
+	kind       mediaKind      // --type: which kind of media this run handles
+	kindSet    bool           // --type was given (rejected with --plan)
+}
+
+// mediaKind says which files a run handles. Every file group is exactly one of
+// photo, video or other, so a photo run and a video run never overlap and never
+// miss anything between them.
+type mediaKind int
+
+const (
+	kindAll   mediaKind = iota // everything organize understands (default)
+	kindPhoto                  // groups that contain a photo (RAW+JPG, Live Photo pairs stay whole)
+	kindVideo                  // groups with video and no photo
+)
+
+func (k mediaKind) String() string {
+	switch k {
+	case kindPhoto:
+		return "photo"
+	case kindVideo:
+		return "video"
+	}
+	return "all"
+}
+
+// groupKind classifies one same-name group. A group holding any photo is a photo
+// group, so a Live Photo's .mov travels with its .heic; a group of only videos
+// (and their .lrf/.thm sidecars) is a video group; anything else (audio) is
+// "other" and only handled by --type all.
+func groupKind(files []sourceFile) mediaKind {
+	video := false
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f.path))
+		if photoExts[ext] {
+			return kindPhoto
+		}
+		if videoExts[ext] {
+			video = true
+		}
+	}
+	if video {
+		return kindVideo
+	}
+	return kindAll
 }
 
 // plannedCopy is one file that will be copied into the library.
@@ -85,6 +129,8 @@ type organizePlan struct {
 	jan1             map[string]int     // EXIF dates that fall on January 1st
 	videoZone        *time.Location     // --video-tz in effect (nil: as written)
 	videoShifted     int                // copied videos filed under a different day because of it
+	kind             mediaKind          // --type in effect
+	otherKindFiles   int                // files left for the other --type run
 }
 
 func parseOrganizeArgs(args []string) (organizeOptions, error) {
@@ -157,6 +203,22 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 				opts.videoTZ = loc
 			}
 			i++
+		case "--type":
+			opts.kindSet = true
+			if i+1 >= len(args) {
+				return opts, errors.New("--type needs 'photo', 'video' or 'all'")
+			}
+			switch strings.ToLower(args[i+1]) {
+			case "photo", "photos":
+				opts.kind = kindPhoto
+			case "video", "videos":
+				opts.kind = kindVideo
+			case "all":
+				opts.kind = kindAll
+			default:
+				return opts, fmt.Errorf("unknown type %q (use photo, video or all)", args[i+1])
+			}
+			i++
 		case "--save-plan", "--plan":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("%s needs a file name", args[i])
@@ -183,7 +245,7 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 
 func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "\n🗂  ORGANIZE PHOTOS BY DATE\n\n")
-	fmt.Fprintf(os.Stderr, "Usage: photo-organizer organize <folder> [<folder>...] --dest <library> [--apply] [--layout day|month]\n\n")
+	fmt.Fprintf(os.Stderr, "Usage: photo-organizer organize <folder> [<folder>...] --dest <library> [--apply] [--layout day|month] [--type photo|video|all]\n\n")
 	fmt.Fprintf(os.Stderr, "Examples:\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer organize /data/Photos-All --dest /tankm1/media/Library\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer organize ~/Pictures /mnt/usb/DCIM --dest ~/Library --apply\n\n")
@@ -201,6 +263,9 @@ func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "  - --verify auto|full|quick: how duplicates are confirmed. auto compares every byte\n")
 	fmt.Fprintf(os.Stderr, "    up to 64 MB and samples 16 spread points in larger files; full always reads\n")
 	fmt.Fprintf(os.Stderr, "    every byte; quick samples anything over 1 MB.\n")
+	fmt.Fprintf(os.Stderr, "  - --type photo|video|all: handle only photos or only videos (default all). Use it to keep\n")
+	fmt.Fprintf(os.Stderr, "    them in separate libraries. A RAW+JPG pair or a Live Photo's .mov counts as a photo;\n")
+	fmt.Fprintf(os.Stderr, "    photo and video runs never overlap. Audio is only handled by 'all'.\n")
 	fmt.Fprintf(os.Stderr, "  - --video-tz utc|local|<zone>: phones record video times in UTC, so an evening clip can\n")
 	fmt.Fprintf(os.Stderr, "    land on the next day. 'local' uses this computer's zone; or name one (Europe/Paris).\n")
 	fmt.Fprintf(os.Stderr, "    Default utc = as written. Photos (EXIF) are never shifted.\n")
@@ -505,6 +570,15 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 	}
 
 	found := scanSources(sources, showProgress)
+	otherKindFiles := 0
+	if opts.kind != kindAll {
+		for k, files := range found.groups {
+			if groupKind(files) != opts.kind {
+				otherKindFiles += len(files)
+				delete(found.groups, k)
+			}
+		}
+	}
 	keys := make([]string, 0, len(found.groups))
 	var totalFiles int64
 	for k, files := range found.groups {
@@ -514,14 +588,16 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 	sort.Strings(keys) // deterministic: the same inputs always produce the same plan
 
 	plan := &organizePlan{
-		byFolder:     map[string]int{},
-		staleTmp:     staleTmp,
-		hs:           hs,
-		dateSources:  map[dateSource]int{},
-		jan1:         map[string]int{},
-		videoZone:    opts.videoTZ,
-		skippedTypes: found.skippedTypes,
-		junkDirs:     found.junkDirs,
+		byFolder:       map[string]int{},
+		staleTmp:       staleTmp,
+		hs:             hs,
+		dateSources:    map[dateSource]int{},
+		jan1:           map[string]int{},
+		videoZone:      opts.videoTZ,
+		skippedTypes:   found.skippedTypes,
+		junkDirs:       found.junkDirs,
+		kind:           opts.kind,
+		otherKindFiles: otherKindFiles,
 	}
 	pl := &planner{
 		dest: dest, opts: opts, plan: plan, idx: idx, taken: taken, hs: hs,
@@ -928,6 +1004,15 @@ func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 	}
 	if p.emptySkipped > 0 {
 		fmt.Fprintf(os.Stderr, "Skipping %s empty (0-byte) files\n", formatCount(p.emptySkipped))
+	}
+	if p.kind != kindAll {
+		other := "video"
+		if p.kind == kindVideo {
+			other = "photo"
+		}
+		fmt.Fprintf(os.Stderr, "Only %s files in this run (--type %s). %s files belong to the %s side and were not looked at;\n"+
+			"   run again with --type %s into its own library to handle them. Keep them in the source until then.\n",
+			p.kind, p.kind, formatCount(p.otherKindFiles), other, other)
 	}
 	if p.orphanSidecars > 0 {
 		fmt.Fprintf(os.Stderr, "Ignoring %s sidecar files with no photo or video to attach to\n", formatCount(p.orphanSidecars))

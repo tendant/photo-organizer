@@ -93,6 +93,10 @@ func runSavedPlan(opts organizeOptions) error {
 		fmt.Fprintf(os.Stderr, "Error: --video-tz has no effect with --plan; the saved plan already fixes every target folder. Pass it when you create the plan with --save-plan\n")
 		return errFailed
 	}
+	if opts.kindSet {
+		fmt.Fprintf(os.Stderr, "Error: --type has no effect with --plan; the saved plan already lists exactly which files to copy. Pass it when you create the plan with --save-plan\n")
+		return errFailed
+	}
 	data, err := os.ReadFile(opts.planFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot read plan: %v\n", err)

@@ -127,13 +127,23 @@ Implausible dates (before 1990, in the future) go to `undated/`.
   Not valid with `--plan`: set it when you create the plan with `--save-plan`.
   The summary then adds a "Video times shown in <zone>" line with how many videos
   moved to a different day. Videos dated from the filename or modified time are not shifted.
+- **Photos and videos separately.** `--type photo` or `--type video` handles only
+  that kind (default `all`), so each can have its own library, verify mode and
+  backup. Videos are laid out by date exactly like photos. A same-name group is
+  classified whole: any photo makes it a photo group, so a RAW+JPG pair or a Live
+  Photo's `.mov` stays with its photo; a group of only videos (plus `.lrf`/`.thm`
+  sidecars) is a video group. The two runs never overlap and together equal one
+  `all` run; audio is only handled by `all`. The summary says how many files were left
+  for the other run. Not valid with `--plan`: set it with `--save-plan`.
+  Example: `organize /data/Photos-All --type photo --dest /lib/photos --verify full`,
+  then `--type video --dest /lib/videos --verify auto`.
 - **Saved plans.** `--save-plan FILE` (preview only) records every copy. `--plan FILE
   --apply` then copies exactly those files, even if new photos appeared since. Before
   copying it re-checks: if a source file is gone or changed, or a target name is now
   taken by other content, nothing is copied and you are asked to preview again.
   Targets already holding the planned content (an interrupted earlier run) are
   skipped, so re-running the same command resumes. The plan file cannot be saved inside
-  a source folder or the library; `--layout`, `--verify` and `--jobs` are fixed by the plan.
+  a source folder or the library; `--layout`, `--type`, `--verify` and `--jobs` are fixed by the plan.
 - A log of every copy goes to `<library>/_organize/`, and the library manifest is
   refreshed so the copies count for `dups` and `check-backup`.
 

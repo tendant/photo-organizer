@@ -911,3 +911,117 @@ func TestOrganizeVideoTimeZoneRejectedWithPlan(t *testing.T) {
 		t.Errorf("want a clear rejection, got exit %d:\n%s", code, out)
 	}
 }
+
+func TestOrganizeTypeSplitsPhotosAndVideosWithoutOverlap(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "photo")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.xmp"), "<x/>")
+	writeFile(t, filepath.Join(src, "raw/DSC_20240316_090000.raf"), "raw")
+	writeFile(t, filepath.Join(src, "raw/DSC_20240316_090000.jpg"), "rawjpg") // RAW+JPG pair stays whole
+	writeFile(t, filepath.Join(src, "live/IMG_20240317_120000.heic"), "heic")
+	writeFile(t, filepath.Join(src, "live/IMG_20240317_120000.mov"), "livemov") // Live Photo: goes with the photo
+	writeFile(t, filepath.Join(src, "VID_20240318_080000.mp4"), "video")
+	writeFile(t, filepath.Join(src, "VID_20240318_080000.lrf"), "proxy")
+	writeFile(t, filepath.Join(src, "clip.mov"), "clip")
+
+	photos := filepath.Join(home, "photos")
+	videos := filepath.Join(home, "videos")
+	all := filepath.Join(home, "all")
+	for _, c := range [][]string{
+		{"--type", "photo", "--dest", photos},
+		{"--type", "video", "--dest", videos},
+		{"--dest", all},
+	} {
+		args := append([]string{"organize", src, "--apply", "--no-progress"}, c...)
+		if out, code := runCLIWithHome(t, home, args...); code != 0 {
+			t.Fatalf("%v: exit %d\n%s", c, code, out)
+		}
+	}
+	gotP := strings.Join(listFiles(t, photos), ",")
+	for _, w := range []string{"IMG_20240315_101010.jpg", "IMG_20240315_101010.xmp", "DSC_20240316_090000.raf",
+		"DSC_20240316_090000.jpg", "IMG_20240317_120000.heic", "IMG_20240317_120000.mov"} {
+		if !strings.Contains(gotP, w) {
+			t.Errorf("photo library missing %s: %s", w, gotP)
+		}
+	}
+	if strings.Contains(gotP, "VID_") || strings.Contains(gotP, "clip.mov") {
+		t.Errorf("photo library took videos: %s", gotP)
+	}
+	gotV := strings.Join(listFiles(t, videos), ",")
+	if !strings.Contains(gotV, "2024/2024-03-18/VID_20240318_080000.mp4") || !strings.Contains(gotV, "VID_20240318_080000.lrf") || !strings.Contains(gotV, "clip.mov") {
+		t.Errorf("video library missing a video or its sidecar: %s", gotV)
+	}
+	if strings.Contains(gotV, "IMG_") || strings.Contains(gotV, "DSC_") {
+		t.Errorf("video library took photos (incl. the Live Photo .mov): %s", gotV)
+	}
+	// The two runs together are exactly a type-less run: nothing lost, nothing twice.
+	both := append(listFiles(t, photos), listFiles(t, videos)...)
+	sort.Strings(both)
+	if strings.Join(both, ",") != strings.Join(listFiles(t, all), ",") {
+		t.Errorf("photo+video runs differ from an unfiltered run:\n%v\nvs\n%v", both, listFiles(t, all))
+	}
+}
+
+func TestOrganizeTypeReportsWhatItLeftForTheOtherRun(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "p")
+	writeFile(t, filepath.Join(src, "VID_20240318_080000.mp4"), "v1")
+	writeFile(t, filepath.Join(src, "VID_20240319_080000.mp4"), "v2")
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", filepath.Join(home, "lib"), "--type", "photo", "--no-progress")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	for _, want := range []string{"Only photo files in this run", "2 files belong to the video side", "--type video"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if out, _ := runCLIWithHome(t, home, "organize", src, "--dest", filepath.Join(home, "lib2"), "--no-progress"); strings.Contains(out, "Only ") {
+		t.Errorf("an unfiltered run must not mention --type:\n%s", out)
+	}
+}
+
+func TestParseOrganizeArgsType(t *testing.T) {
+	for in, want := range map[string]mediaKind{"photo": kindPhoto, "Photos": kindPhoto, "video": kindVideo, "VIDEOS": kindVideo, "all": kindAll} {
+		o, err := parseOrganizeArgs([]string{"src", "--dest", "d", "--type", in})
+		if err != nil || o.kind != want || !o.kindSet {
+			t.Errorf("--type %s: kind=%v set=%v err=%v", in, o.kind, o.kindSet, err)
+		}
+	}
+	if o, _ := parseOrganizeArgs([]string{"src", "--dest", "d"}); o.kind != kindAll || o.kindSet {
+		t.Errorf("default must be all and unset, got %v/%v", o.kind, o.kindSet)
+	}
+	for _, bad := range [][]string{{"--type"}, {"--type", "audio"}, {"--type", ""}} {
+		if _, err := parseOrganizeArgs(append([]string{"src", "--dest", "d"}, bad...)); err == nil {
+			t.Errorf("%v should be rejected", bad)
+		}
+	}
+}
+
+func TestOrganizeTypeRejectedWithPlan(t *testing.T) {
+	home := t.TempDir()
+	out, code := runCLIWithHome(t, home, "organize", "--plan", filepath.Join(home, "p.json"), "--type", "video", "--apply", "--no-progress")
+	if code == 0 || !strings.Contains(out, "--type has no effect with --plan") {
+		t.Errorf("want a clear rejection, got exit %d:\n%s", code, out)
+	}
+}
+
+func TestOrganizeTypeSavedPlanCopiesOnlyThatType(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "videos")
+	plan := filepath.Join(home, "plan.json")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "p")
+	writeFile(t, filepath.Join(src, "VID_20240318_080000.mp4"), "v")
+	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--type", "video", "--save-plan", plan, "--no-progress"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if got := strings.Join(listFiles(t, lib), ","); got != "2024/2024-03-18/VID_20240318_080000.mp4" {
+		t.Errorf("saved video plan copied %s", got)
+	}
+}
