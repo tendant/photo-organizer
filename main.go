@@ -176,7 +176,7 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "photo-organizer — scan, deduplicate, and verify photo backups\n\n")
 	fmt.Fprintf(os.Stderr, "Usage:\n")
-	fmt.Fprintf(os.Stderr, "  photo-organizer scan <folder> [--media-id ID] [--prune]\n")
+	fmt.Fprintf(os.Stderr, "  photo-organizer scan <folder> [--media-id ID] [--no-prune]\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer dups [manifest.csv ...]\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer dup-folders [--top N] [-s]\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer backup <folder> --dest <target> [--all] [--no-progress]\n")

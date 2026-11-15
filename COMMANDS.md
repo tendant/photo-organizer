@@ -11,7 +11,7 @@ Create or update a manifest for a folder.
 photo-organizer scan <folder>
 photo-organizer scan <folder> --machine <machine-id>
 photo-organizer scan <folder> --root ~/manifests
-photo-organizer scan <folder> --no-cache --prune
+photo-organizer scan <folder> --no-cache --no-prune
 ```
 
 Common flags:
@@ -19,7 +19,10 @@ Common flags:
 - `--root <dir>`: write manifests under `<dir>/_Manifest/`.
 - `--media-id <id>`: stable ID for removable media.
 - `--no-cache`: recompute hashes instead of reusing manifest cache.
-- `--prune`: remove manifest entries for files no longer on disk.
+- Pruning is the default: manifest entries for files no longer on disk are removed, so
+  `dups` and `check-backup` never count a deleted file as a copy. It is skipped (with a
+  warning) if the scan could not read some folders, or if it would remove over half the
+  entries. `--no-prune` keeps them; `--prune` is still accepted and does nothing extra.
 
 ### dups
 Find duplicate files across collected manifests.

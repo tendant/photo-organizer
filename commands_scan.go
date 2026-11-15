@@ -38,7 +38,8 @@ func runScan(args []string) error {
 	mediaIDFlag := fs.String("media-id", "", "stable identifier for removable media (same across different machines)")
 	noWriteMediaIDFlag := fs.Bool("no-write-media-id", false, "skip writing machine-id file to card")
 	noCacheFlag := fs.Bool("no-cache", false, "recompute all hashes, ignoring cached values (use after hash algorithm change)")
-	pruneFlag := fs.Bool("prune", false, "remove manifest entries for files no longer on disk")
+	pruneFlag := fs.Bool("prune", true, "remove manifest entries for files no longer on disk (default; kept for old scripts)")
+	noPruneFlag := fs.Bool("no-prune", false, "keep manifest entries for files that are no longer on disk")
 	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those matching score threshold")
 	scoreThresholdFlag := fs.Int("score-threshold", 30, "minimum folder score (0-100) for --auto-identify-folders (default: 30)")
 	detectOnlyFlag := fs.Bool("detect-only", false, "with --auto-identify-folders: show detection results and exit without scanning")
@@ -228,7 +229,7 @@ func runScan(args []string) error {
 
 			fmt.Fprintf(os.Stderr, "✓ Scan complete: %d files found\n", len(files))
 			fmt.Fprintf(os.Stderr, "Writing manifest file...\n")
-			manifestStats, err := updateManifest(qualifyingAbsDir, files, manifestFile, machineName, *pruneFlag)
+			manifestStats, err := updateManifest(qualifyingAbsDir, files, manifestFile, machineName, pruneAllowed(*pruneFlag && !*noPruneFlag, scanStats))
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error writing manifest: %v\n", err)
 				continue
@@ -273,7 +274,7 @@ func runScan(args []string) error {
 
 		fmt.Fprintf(os.Stderr, "\n✓ Scan complete: %d files found\n", len(files))
 		fmt.Fprintf(os.Stderr, "Writing manifest file...\n")
-		manifestStats, err := updateManifest(absScanDir, files, manifestFile, machineName, *pruneFlag)
+		manifestStats, err := updateManifest(absScanDir, files, manifestFile, machineName, pruneAllowed(*pruneFlag && !*noPruneFlag, scanStats))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
 			return errFailed
@@ -304,4 +305,17 @@ func printScanSummary(s ScanStats, m ManifestStats) {
 	}
 	fmt.Printf("  Total size:        %s\n", formatSize(s.TotalBytes))
 	fmt.Println("─────────────────────────────────────────────────────")
+}
+
+// pruneAllowed decides whether this scan may remove manifest rows for files it
+// did not find. A scan that could not read some folders did not see everything,
+// so it must not treat the unseen files as deleted.
+func pruneAllowed(want bool, st ScanStats) bool {
+	if want && st.Unreadable > 0 {
+		fmt.Fprintf(os.Stderr, "⚠  Not pruning: %s path(s) could not be read (first: %s), so files under them look missing.\n"+
+			"   Fix the permissions or the disk and scan again; nothing was removed from the manifest.\n",
+			formatCount(st.Unreadable), st.FirstBad)
+		return false
+	}
+	return want
 }

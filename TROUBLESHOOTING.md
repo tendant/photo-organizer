@@ -58,7 +58,7 @@ manifest is 520 days old
 Scan the source folder again:
 
 ```bash
-photo-organizer scan ~/Photos --prune
+photo-organizer scan ~/Photos
 ```
 
 ### Invalid Rows Were Skipped
@@ -70,7 +70,7 @@ skipped 3 invalid row(s)
 The valid rows are still usable. If many rows are invalid, regenerate the manifest from the original source:
 
 ```bash
-photo-organizer scan /path/to/photos --no-cache --prune
+photo-organizer scan /path/to/photos --no-cache
 ```
 
 ### Missing Required Column
@@ -104,7 +104,7 @@ photo-organizer search -name '*'
 Refresh manifests and check for overlapping scans:
 
 ```bash
-photo-organizer scan ~/Photos --prune
+photo-organizer scan ~/Photos
 photo-organizer dups
 photo-organizer dup-folders --top 20
 ```

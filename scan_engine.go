@@ -314,6 +314,8 @@ type ScanStats struct {
 	Symlinks   int
 	FullHashed int
 	TotalBytes int64
+	Unreadable int    // paths the walk could not read; their files are missing from this scan
+	FirstBad   string // first such path, for the warning
 }
 
 func scanDirectory(dir string, cache map[string]CacheEntry, photoIgnore *PhotoIgnore) ([]FileInfo, ScanStats, error) {
@@ -326,6 +328,12 @@ func scanDirectory(dir string, cache map[string]CacheEntry, photoIgnore *PhotoIg
 	var raw []rawFile
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			// Not seen is not the same as deleted: remember it so a prune does not
+			// drop everything under a folder we merely could not read.
+			if stats.Unreadable == 0 {
+				stats.FirstBad = path
+			}
+			stats.Unreadable++
 			return nil
 		}
 		// Skip symlinks — they may point outside the scan tree or cause loops.
