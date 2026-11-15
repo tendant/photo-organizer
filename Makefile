@@ -35,8 +35,8 @@ help:
 	@echo "  make build-all    - Build for all platforms (Linux, macOS, Windows)"
 	@echo "  make clean        - Remove built binaries"
 	@echo "  make test         - Run tests"
-	@echo "  make install        - Install to ~/bin"
-	@echo "  make install-system - Install to /usr/local/bin (requires sudo)"
+	@echo "  make install        - Install to /usr/local/bin (requires sudo)"
+	@echo "  make install-user   - Install to ~/bin (no sudo; mind PATH order)"
 	@echo "  make deps         - Download dependencies"
 	@echo ""
 	@echo "Platform-specific builds:"
@@ -113,8 +113,12 @@ clean:
 	@rm -rf $(DIST_DIR)
 	@echo "✓ Cleaned"
 
-# Install to ~/bin (user-specific, no sudo required)
-install: build
+# Install to /usr/local/bin (system-wide, requires sudo). This is the default.
+install: install-system
+
+# Install to ~/bin (user-specific, no sudo required). Only for machines without
+# sudo: ~/bin usually comes first on PATH, so a copy here hides the system one.
+install-user: build
 	@echo "Installing to ~/bin..."
 	@mkdir -p ~/bin
 	@cp $(BINARY_NAME) ~/bin/
@@ -123,8 +127,6 @@ install: build
 	@echo ""
 	@echo "Make sure ~/bin is in your PATH:"
 	@echo '  export PATH="$$HOME/bin:$$PATH"'
-
-install-user: install
 
 # Install to /usr/local/bin (system-wide, requires sudo)
 install-system: build
