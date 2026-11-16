@@ -505,3 +505,73 @@ func TestPruneVerifyArg(t *testing.T) {
 		t.Error("unknown verify mode should be rejected")
 	}
 }
+
+// ---- holding manifests ---------------------------------------------------------------
+
+func manifestFiles(t *testing.T, home string) (main, held []string) {
+	t.Helper()
+	main, _ = filepath.Glob(filepath.Join(home, "manifests", "_Manifest", "*.csv"))
+	held, _ = filepath.Glob(filepath.Join(home, "manifests", "_Manifest", heldDirName, "*.csv"))
+	return
+}
+
+func TestHoldingManifestStaysApartButIsUsedWhenNamed(t *testing.T) {
+	home := t.TempDir()
+	hold := filepath.Join(home, "hold")
+	writeFile(t, filepath.Join(hold, "sub/a.jpg"), "photo-a")
+	writeFile(t, filepath.Join(hold, "sub/b.jpg"), "photo-b")
+	if out, code := runCLIWithHome(t, home, "scan", hold, "--holding", "--no-report"); code != 0 {
+		t.Fatalf("scan: exit %d\n%s", code, out)
+	}
+	main, held := manifestFiles(t, home)
+	if len(held) != 1 || len(main) != 0 {
+		t.Fatalf("the holding manifest belongs in %s/: main=%v held=%v", heldDirName, main, held)
+	}
+	// a later plain scan updates it in place and never creates a second one
+	writeFile(t, filepath.Join(hold, "sub/c.jpg"), "photo-c")
+	if out, code := runCLIWithHome(t, home, "scan", hold, "--no-report"); code != 0 {
+		t.Fatalf("rescan: exit %d\n%s", code, out)
+	}
+	main, held = manifestFiles(t, home)
+	if len(held) != 1 || len(main) != 0 || len(readCSV(t, held[0])) != 4 {
+		t.Fatalf("rescan should update the holding manifest only: main=%v held=%v", main, held)
+	}
+	// check-backup finds the folder (and a subfolder) through it
+	for _, dir := range []string{hold, filepath.Join(hold, "sub")} {
+		out, code := runCLIWithHome(t, home, "check-backup", dir)
+		if code != 0 || strings.Contains(out, "NOT SCANNED") {
+			t.Errorf("check-backup %s should use the holding manifest (exit %d):\n%s", dir, code, out)
+		}
+	}
+}
+
+func TestScanHoldingMovesAnExistingManifest(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "d")
+	writeFile(t, filepath.Join(dir, "a.jpg"), "photo")
+	runCLIWithHome(t, home, "scan", dir, "--no-report")
+	if main, held := manifestFiles(t, home); len(main) != 1 || len(held) != 0 {
+		t.Fatalf("setup: %v %v", main, held)
+	}
+	runCLIWithHome(t, home, "scan", dir, "--holding", "--no-report")
+	if main, held := manifestFiles(t, home); len(main) != 0 || len(held) != 1 {
+		t.Errorf("--holding should move the manifest: main=%v held=%v", main, held)
+	}
+}
+
+func TestPruneSourcesFindsAHoldingFoldersManifest(t *testing.T) {
+	f := manifestFixture(t)
+	seedSame(t, f, "a.jpg")
+	scanQuiet(t, f.lib)
+	scanQuiet(t, f.bak)
+	if out, code := runCLIWithHome(t, os.Getenv("HOME"), "scan", f.src, "--holding", "--no-report"); code != 0 {
+		t.Fatalf("scan: exit %d\n%s", code, out)
+	}
+	rep := filepath.Join(filepath.Dir(f.src), "rep.csv")
+	if err := runPruneSources(f.mArgs("--report", rep)); err != nil {
+		t.Fatal(err)
+	}
+	if rows := readCSV(t, rep); len(rows) != 2 || rows[1][2] != "safe" {
+		t.Errorf("the holding folder's manifest should be found: %v", rows)
+	}
+}

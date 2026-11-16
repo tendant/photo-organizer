@@ -25,6 +25,8 @@ func loadManifestForRoot(root string) (ManifestSource, error) {
 	dir := filepath.Join(defaultManifestRoot(), "_Manifest")
 	suffix := strings.TrimPrefix(manifestFilename("x", abs), "photo_manifest_x_")
 	candidates, _ := filepath.Glob(filepath.Join(dir, "photo_manifest_*_"+suffix))
+	held, _ := filepath.Glob(filepath.Join(dir, heldDirName, "photo_manifest_*_"+suffix))
+	candidates = append(candidates, held...)
 	var best ManifestSource
 	found := false
 	for _, c := range candidates {

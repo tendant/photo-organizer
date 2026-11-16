@@ -275,6 +275,7 @@ photo-organizer prune-sources /data/Photos-All --library /lib/photos --backup /m
 - **`--verify bytes`** compares every byte of the source, library and backup file instead. Slow (three reads per file), but a real proof.
 - **`--from-report FILE`** applies an earlier preview's `--report` without redoing the comparison. It re-checks that each source, library and backup file still exists with the same size and was not modified after the report was written.
 - The backup must be on a different device from the library, and neither may overlap a source or the holding folder. `--backup` can be repeated.
+- **Holding folders.** Scan a folder you are about to delete with `scan <folder> --holding`: its manifest goes to `_Manifest/_holding/`, so `dups`, `dup-folders` and `check-backup` never count it as a copy, while `check-backup <folder>` and `prune-sources` still find it. A later plain `scan` of that folder updates the same manifest.
 - Sidecars, files of the other `--type`, and files missing from the library or backup are always kept. Files the scan skips (thumbnail folders) are not in a manifest, so they are kept too.
 
 ### archive

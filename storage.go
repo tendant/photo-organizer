@@ -466,6 +466,27 @@ func runCheckBackupStatus(args []string) error {
 		}
 	}
 
+	// A holding folder's manifest is kept apart so it never counts as a copy; use it for the folder itself.
+	if len(localRows) == 0 {
+		held, _ := filepath.Glob(filepath.Join(manifestDir, heldDirName, "*.csv"))
+		for _, path := range held {
+			src, err := readManifest(path)
+			if err != nil {
+				continue
+			}
+			if src.ScanPath == absPath {
+				localRows = append(localRows, src.Rows...)
+			} else if strings.HasPrefix(absPath, src.ScanPath+string(filepath.Separator)) {
+				for _, row := range src.Rows {
+					filePath := filepath.Join(src.ScanPath, row.RelativePath)
+					if strings.HasPrefix(filePath, absPath+string(filepath.Separator)) || filePath == absPath {
+						localRows = append(localRows, row)
+					}
+				}
+			}
+		}
+	}
+
 	// Print header
 	fmt.Printf("═══════════════════════════════════════════════════════════════════\n")
 	fmt.Printf("BACKUP COVERAGE: %s\n", absPath)

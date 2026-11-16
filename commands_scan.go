@@ -41,6 +41,7 @@ func runScan(args []string) error {
 	pruneFlag := fs.Bool("prune", true, "remove manifest entries for files no longer on disk (default; kept for old scripts)")
 	noPruneFlag := fs.Bool("no-prune", false, "keep manifest entries for files that are no longer on disk")
 	forcePruneFlag := fs.Bool("force-prune", false, "prune even when that removes more than half of the manifest (after moving or deleting most of a folder on purpose)")
+	holdingFlag := fs.Bool("holding", false, "keep this folder's manifest in _Manifest/_holding/ so dups and check-backup do not count it as a copy (for folders you are about to delete)")
 	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those matching score threshold")
 	scoreThresholdFlag := fs.Int("score-threshold", 30, "minimum folder score (0-100) for --auto-identify-folders (default: 30)")
 	detectOnlyFlag := fs.Bool("detect-only", false, "with --auto-identify-folders: show detection results and exit without scanning")
@@ -243,6 +244,15 @@ func runScan(args []string) error {
 	} else {
 		// Original single-folder scan.
 		manifestFile := filepath.Join(manifestRoot, "_Manifest", manifestFilename(machineName, absScanDir))
+		if held := filepath.Join(manifestRoot, "_Manifest", heldDirName, manifestFilename(machineName, absScanDir)); *holdingFlag || fileExists(held) {
+			// A holding folder keeps its manifest apart; --holding also moves an existing one there.
+			if _, err := os.Stat(held); err != nil && fileExists(manifestFile) {
+				if err := os.MkdirAll(filepath.Dir(held), 0755); err == nil {
+					os.Rename(manifestFile, held)
+				}
+			}
+			manifestFile = held
+		}
 
 		// Check write access to manifest directory before spending time scanning.
 		manifestDir := filepath.Dir(manifestFile)

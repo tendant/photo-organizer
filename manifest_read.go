@@ -199,3 +199,13 @@ func readManifest(csvPath string) (ManifestSource, error) {
 		Rows:        rows,
 	}, nil
 }
+
+// heldDirName is the folder under _Manifest for manifests of "holding" folders (things you are about
+// to delete). Analyses read only *.csv directly in _Manifest, so these never count as copies; they are
+// used only when you name the folder (check-backup, prune-sources).
+const heldDirName = "_holding"
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
