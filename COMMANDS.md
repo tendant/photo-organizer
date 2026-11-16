@@ -58,6 +58,7 @@ photo-organizer organize /data/Photos-All ~/Pictures --dest /tankm1/media/Librar
 photo-organizer organize /data/Photos-All ~/Pictures --dest /tankm1/media/Library --apply
 photo-organizer organize /mnt/usb/DCIM --dest ~/Library --layout month --apply
 photo-organizer organize ~/Cards --type video --dest ~/Library/videos --layout folder --apply   # one dated folder per source folder
+photo-organizer organize /tankm1/media/Cards --type video --dest /tankm1/media/Library/videos --layout folder --move --apply   # rename into the library: no extra space, sources are gone
 
 # Preview once, then copy exactly what you previewed
 photo-organizer organize /data/Photos-All --dest ~/Library --save-plan ~/plan.json

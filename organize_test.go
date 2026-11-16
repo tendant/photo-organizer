@@ -1096,3 +1096,108 @@ func TestParseLayoutFolder(t *testing.T) {
 		t.Error("unknown layout should be rejected")
 	}
 }
+
+func TestOrganizeMoveRenamesIntoTheLibrary(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "VID_20240305_080000.mp4"), "clip-one")
+	writeFile(t, filepath.Join(src, "VID_20240305_080000.lrf"), "proxy")
+	writeFile(t, filepath.Join(src, "VID_20240306_080000.mp4"), "clip-two")
+	dest := filepath.Join(home, "lib")
+	// preview: nothing moves
+	if out, code := runCLIWithHome(t, home, "organize", src, "--type", "video", "--dest", dest, "--move", "--no-progress"); code != 0 || !strings.Contains(out, "Would move 3 files") {
+		t.Fatalf("preview: exit %d\n%s", code, out)
+	}
+	if len(listFiles(t, src)) != 3 || exists(dest) {
+		t.Fatal("a preview must not touch anything")
+	}
+	if out, code := runCLIWithHome(t, home, "organize", src, "--type", "video", "--dest", dest, "--move", "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	if got := listFiles(t, src); len(got) != 0 {
+		t.Errorf("sources should be gone after a move: %v", got)
+	}
+	got := strings.Join(listFiles(t, dest), ",")
+	for _, w := range []string{"2024/2024-03-05/VID_20240305_080000.mp4", "2024/2024-03-05/VID_20240305_080000.lrf", "2024/2024-03-06/VID_20240306_080000.mp4"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("library missing %s: %s", w, got)
+		}
+	}
+	// the moved file is byte-identical
+	if b, _ := os.ReadFile(filepath.Join(dest, "2024/2024-03-06/VID_20240306_080000.mp4")); string(b) != "clip-two" {
+		t.Error("moved file content changed")
+	}
+}
+
+func TestOrganizeWithoutMoveStillKeepsSources(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "VID_20240305_080000.mp4"), "clip")
+	dest := filepath.Join(home, "lib")
+	if _, code := runCLIWithHome(t, home, "organize", src, "--type", "video", "--dest", dest, "--apply", "--no-progress"); code != 0 {
+		t.Fatal("apply failed")
+	}
+	if len(listFiles(t, src)) != 1 {
+		t.Error("without --move the source must stay")
+	}
+}
+
+func TestOrganizeMoveSkipsDuplicatesAndLeavesThemInPlace(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "a/VID_20240305_080000.mp4"), "same")
+	writeFile(t, filepath.Join(src, "b/VID_20240305_080000.mp4"), "same")
+	dest := filepath.Join(home, "lib")
+	if _, code := runCLIWithHome(t, home, "organize", src, "--type", "video", "--dest", dest, "--move", "--apply", "--no-progress"); code != 0 {
+		t.Fatal("apply failed")
+	}
+	if len(listFiles(t, dest)) != 1 {
+		t.Errorf("want one library file, got %v", listFiles(t, dest))
+	}
+	left := listFiles(t, src)
+	if len(left) != 1 || !strings.HasPrefix(left[0], "b/") {
+		t.Errorf("the duplicate (second copy) stays where it was: %v", left)
+	}
+}
+
+func TestOrganizeMoveWithSavedPlanResumesAfterInterruption(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "VID_20240305_080000.mp4"), "one")
+	writeFile(t, filepath.Join(src, "VID_20240306_080000.mp4"), "two")
+	dest := filepath.Join(home, "lib")
+	plan := filepath.Join(home, "plan.json")
+	if _, code := runCLIWithHome(t, home, "organize", src, "--type", "video", "--dest", dest, "--save-plan", plan, "--move", "--no-progress"); code != 0 {
+		t.Fatal("preview failed")
+	}
+	// pretend an earlier run already moved the first clip
+	first := filepath.Join(dest, "2024/2024-03-05/VID_20240305_080000.mp4")
+	os.MkdirAll(filepath.Dir(first), 0o755)
+	os.Rename(filepath.Join(src, "VID_20240305_080000.mp4"), first)
+	if out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--move", "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("resume failed: exit %d\n%s", code, out)
+	}
+	if len(listFiles(t, src)) != 0 || len(listFiles(t, dest)) != 2 {
+		t.Errorf("src %v lib %v", listFiles(t, src), listFiles(t, dest))
+	}
+}
+
+func TestMoveIntoLibraryRefusesAChangedSourceAndNeverOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "s.mp4")
+	writeFile(t, srcPath, "data")
+	st, _ := os.Stat(srcPath)
+	c := plannedCopy{src: srcPath, dst: filepath.Join(dir, "lib/s.mp4"), size: st.Size(), mtime: st.ModTime().UnixNano()}
+	changed := c
+	changed.size++
+	if err := moveIntoLibrary(changed); err == nil {
+		t.Error("a source that changed since the plan must not be moved")
+	}
+	writeFile(t, c.dst, "someone else's file")
+	if err := moveIntoLibrary(c); err == nil {
+		t.Error("an existing target must never be overwritten")
+	}
+	if b, _ := os.ReadFile(c.dst); string(b) != "someone else's file" || !exists(srcPath) {
+		t.Error("nothing should have changed")
+	}
+}

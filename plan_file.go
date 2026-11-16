@@ -144,6 +144,7 @@ func runSavedPlan(opts organizeOptions) error {
 	for _, c := range todo {
 		plan.copyBytes += c.size
 	}
+	plan.markMoves(dest, opts.move)
 	plan.freeBytes, plan.freeKnown = freeSpaceFor(dest)
 
 	fmt.Fprintf(os.Stderr, "\nPlan from %s (saved %s)\n", opts.planFile, pf.Created)
@@ -214,6 +215,11 @@ func validatePlan(pf planFile, plan *organizePlan) (todo []plannedCopy, done int
 		info, err := os.Stat(c.Src)
 		switch {
 		case err != nil:
+			// A --move run that was interrupted leaves moved files with no source: they are done.
+			if _, derr := os.Lstat(dst); derr == nil && alreadyCopied(c, dst) {
+				done++
+				continue
+			}
 			problems = append(problems, fmt.Sprintf("source is gone: %s", c.Src))
 			continue
 		case info.Size() != c.Size || info.ModTime().UnixNano() != c.MTime:

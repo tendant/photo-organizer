@@ -42,6 +42,7 @@ type organizeOptions struct {
 	apply      bool
 	byMonth    bool
 	byFolder   bool // --layout folder: one dated folder per source folder
+	move       bool // --move: rename files into the library when on the same filesystem
 	progress   progressMode
 	jobs       int
 	verify     verifyMode
@@ -108,6 +109,8 @@ type plannedCopy struct {
 
 // organizePlan is everything a dry run reports and an apply run executes.
 type organizePlan struct {
+	move             bool  // --move: same-filesystem files are renamed, not copied
+	moveBytes        int64 // part of copyBytes that --move would rename (needs no space)
 	copies           []plannedCopy
 	copyBytes        int64
 	duplicates       int // content already in the library or earlier in this run
@@ -146,6 +149,8 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 			i++
 		case "--apply":
 			opts.apply = true
+		case "--move":
+			opts.move = true
 		case "--layout":
 			if i+1 >= len(args) {
 				return opts, errors.New("--layout needs 'day', 'month' or 'folder'")
@@ -248,7 +253,7 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 
 func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "\n🗂  ORGANIZE PHOTOS BY DATE\n\n")
-	fmt.Fprintf(os.Stderr, "Usage: photo-organizer organize <folder> [<folder>...] --dest <library> [--apply] [--layout day|month|folder] [--type photo|video|all]\n\n")
+	fmt.Fprintf(os.Stderr, "Usage: photo-organizer organize <folder> [<folder>...] --dest <library> [--apply] [--layout day|month|folder] [--type photo|video|all] [--move]\n\n")
 	fmt.Fprintf(os.Stderr, "Examples:\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer organize /data/Photos-All --dest /tankm1/media/Library\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer organize ~/Pictures /mnt/usb/DCIM --dest ~/Library --apply\n\n")
@@ -262,6 +267,8 @@ func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "  - Same name, different content: the newcomer gets a _1, _2... suffix.\n")
 	fmt.Fprintf(os.Stderr, "  - A log of every copy is written to <library>/%s/.\n", organizeLogDir)
 	fmt.Fprintf(os.Stderr, "  - --layout month uses YYYY/YYYY-MM/ instead of one folder per day.\n")
+	fmt.Fprintf(os.Stderr, "  - --move renames files into the library when source and library share a filesystem (instant,\n")
+	fmt.Fprintf(os.Stderr, "    no extra space; the source file is gone). Files on other disks are copied and kept.\n")
 	fmt.Fprintf(os.Stderr, "  - --layout folder keeps each source folder together as YYYY/YYYY-MM-DD_<folder>/, dated by its\n")
 	fmt.Fprintf(os.Stderr, "    earliest clip (good for camera cards and shoots). Duplicates are still kept once.\n")
 	fmt.Fprintf(os.Stderr, "  - --jobs N hashes N files at once (default 4; 1 for a single spinning disk).\n")
@@ -334,6 +341,7 @@ func runOrganize(args []string) error {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return errFailed
 	}
+	plan.markMoves(dest, opts.move)
 	printOrganizePlan(plan, dest, opts.apply)
 
 	if opts.savePlan != "" {
@@ -979,7 +987,7 @@ func topCounts(m map[string]int, limit int) string {
 }
 
 func (p *organizePlan) lacksSpace() bool {
-	return p.freeKnown && uint64(p.copyBytes) > p.freeBytes
+	return p.freeKnown && uint64(p.copyBytes-p.moveBytes) > p.freeBytes
 }
 
 // printDateSummary shows where the dates came from and flags the doubtful ones.
@@ -1019,7 +1027,14 @@ func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 	if apply {
 		verb = "Will copy"
 	}
+	if p.move {
+		verb = strings.Replace(verb, "copy", "move", 1)
+	}
 	fmt.Fprintf(os.Stderr, "\n%s %s files (%s) into %s\n", verb, formatCount(len(p.copies)), formatSize(p.copyBytes), dest)
+	if p.move {
+		fmt.Fprintf(os.Stderr, "   --move: %s of that is on the library's filesystem and is renamed (the source file is gone afterwards, no space used);\n"+
+			"   the rest is copied and its source is kept.\n", formatSize(p.moveBytes))
+	}
 	fmt.Fprintf(os.Stderr, "Skipping %s files (%s) already in the library or duplicated within the sources\n",
 		formatCount(p.duplicates), formatSize(p.duplicateBytes))
 	if p.sampledDups > 0 {
@@ -1071,7 +1086,7 @@ func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 	if p.freeKnown {
 		if p.lacksSpace() {
 			fmt.Fprintf(os.Stderr, "⚠  Not enough free space: need %s, only %s available\n",
-				formatSize(p.copyBytes), formatSize(int64(p.freeBytes)))
+				formatSize(p.copyBytes-p.moveBytes), formatSize(int64(p.freeBytes)))
 		} else {
 			fmt.Fprintf(os.Stderr, "Free space at the library: %s\n", formatSize(int64(p.freeBytes)))
 		}
@@ -1170,7 +1185,15 @@ func applyOrganizePlan(p *organizePlan, dest string, showProgress bool) (failed 
 			break
 		}
 		prog.Note(filepath.Base(c.src))
-		if err := safeCopyIntoLibrary(ctx, c, prog); err != nil {
+		var err error
+		verbDone := "copied"
+		if p.move && sameFilesystem(c.src, filepath.Dir(c.dst)) {
+			err = moveIntoLibrary(c)
+			verbDone = "moved"
+		} else {
+			err = safeCopyIntoLibrary(ctx, c, prog)
+		}
+		if err != nil {
 			prog.Clear()
 			if ctx.Err() != nil {
 				break
@@ -1180,7 +1203,7 @@ func applyOrganizePlan(p *organizePlan, dest string, showProgress bool) (failed 
 			failed++
 			continue
 		}
-		lw.Write([]string{c.src, c.dst, fmt.Sprint(c.size), "copied"})
+		lw.Write([]string{c.src, c.dst, fmt.Sprint(c.size), verbDone})
 		if c.hash != "" { // photos and videos, not sidecars
 			added = append(added, newCopy{dst: c.dst, size: c.size, mtime: c.mtime, partial: c.hash, from: c.src})
 		}
@@ -1326,4 +1349,62 @@ func folderLabel(dir string) string {
 		return "folder"
 	}
 	return label
+}
+
+// sameFilesystem reports whether file a and the nearest existing folder at or above b live
+// on the same device, so a rename between them is possible and uses no space.
+func sameFilesystem(a, b string) bool {
+	da, ok := deviceOf(a)
+	if !ok {
+		return false
+	}
+	for p := b; ; p = filepath.Dir(p) {
+		if _, err := os.Stat(p); err == nil {
+			db, ok := deviceOf(p)
+			return ok && da == db
+		}
+		if filepath.Dir(p) == p {
+			return false
+		}
+	}
+}
+
+// markMoves records which planned copies --move will rename instead of copy.
+func (p *organizePlan) markMoves(dest string, move bool) {
+	p.move = move
+	p.moveBytes = 0
+	if !move {
+		return
+	}
+	for _, c := range p.copies {
+		if sameFilesystem(c.src, filepath.Dir(c.dst)) {
+			p.moveBytes += c.size
+		}
+	}
+}
+
+// moveIntoLibrary renames c.src to c.dst without ever replacing an existing file. It checks
+// that the source still has the size and modified time the plan saw, links it into place (which
+// fails if the name is taken) and only then removes the old name.
+func moveIntoLibrary(c plannedCopy) error {
+	st, err := os.Lstat(c.src)
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() || st.Size() != c.size || st.ModTime().UnixNano() != c.mtime {
+		return fmt.Errorf("%s changed since the plan; not moving it", c.src)
+	}
+	if err := os.MkdirAll(filepath.Dir(c.dst), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(c.dst); err == nil {
+		return fmt.Errorf("%s appeared during the run; not overwriting", c.dst)
+	}
+	if err := os.Link(c.src, c.dst); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("%s appeared during the run; not overwriting", c.dst)
+		}
+		return os.Rename(c.src, c.dst) // no hard links here; the name was checked free above
+	}
+	return os.Remove(c.src)
 }
