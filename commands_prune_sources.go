@@ -598,6 +598,10 @@ func loadPruneReport(opts pruneOptions) ([]*pruneItem, error) {
 			it.verdict = pruneSidecar
 		case pruneOtherKind.String():
 			it.verdict = pruneOtherKind
+		case pruneNotFresh.String():
+			it.verdict = pruneNotFresh
+		case pruneChanged.String():
+			it.verdict = pruneChanged
 		default:
 			it.verdict = pruneUnreadable
 		}
