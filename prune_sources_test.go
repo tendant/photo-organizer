@@ -575,3 +575,24 @@ func TestPruneSourcesFindsAHoldingFoldersManifest(t *testing.T) {
 		t.Errorf("the holding folder's manifest should be found: %v", rows)
 	}
 }
+
+func TestPruneSummarySeparatesTheOtherTypeFromWhatWasChecked(t *testing.T) {
+	f := manifestFixture(t)
+	seedSame(t, f, "a.jpg", "b.jpg")
+	scanAll(t, f)
+	out := captureStderr(t, func() { runPruneSources(f.mArgs("--type", "video")) })
+	if !strings.Contains(out, "Source files checked: 0 (--type video). Not checked, of the other type: 2 files") {
+		t.Errorf("a photo-only folder checked as video should say nothing was checked:\n%s", out)
+	}
+}
+
+func TestPruneSaysWhenAFileHasNoManifestRow(t *testing.T) {
+	f := manifestFixture(t)
+	seedSame(t, f, "a.jpg")
+	scanAll(t, f)
+	writeFile(t, filepath.Join(f.src, "new.jpg"), "never scanned")
+	out := captureStderr(t, func() { runPruneSources(f.mArgs()) })
+	if !strings.Contains(out, "not in a manifest: 1 files") || strings.Contains(out, "out of date") {
+		t.Errorf("an unscanned file is 'not in a manifest', not 'out of date':\n%s", out)
+	}
+}

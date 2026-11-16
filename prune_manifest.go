@@ -154,7 +154,11 @@ func verifyByManifest(items []*pruneItem, opts pruneOptions) error {
 			continue
 		}
 		row, ok := srcRows[it.path]
-		if !ok || !freshOnDisk(it.path, row) || hashKey(row) == "" {
+		if !ok {
+			it.verdict = pruneNotInManifest // e.g. a folder `scan` skips (camera THMBNL); check it with --verify bytes
+			continue
+		}
+		if !freshOnDisk(it.path, row) || hashKey(row) == "" {
 			it.verdict = pruneNotFresh
 			continue
 		}

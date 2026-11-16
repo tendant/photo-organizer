@@ -180,10 +180,11 @@ const (
 	pruneUnreadable
 	pruneChanged
 	pruneNotFresh
+	pruneNotInManifest
 )
 
 func (v pruneVerdict) String() string {
-	return [...]string{"safe", "not in library", "not in backup", "sidecar kept", "other type", "unreadable", "changed since report", "manifest out of date"}[v]
+	return [...]string{"safe", "not in library", "not in backup", "sidecar kept", "other type", "unreadable", "changed since report", "manifest out of date", "not in a manifest"}[v]
 }
 
 type pruneItem struct {
@@ -445,10 +446,16 @@ func printPruneSummary(items []*pruneItem, opts pruneOptions) {
 		count[it.verdict]++
 		size[it.verdict] += it.size
 	}
-	fmt.Fprintf(os.Stderr, "\nSource files looked at: %s\n", formatCount(len(items)))
+	checked := len(items) - count[pruneOtherKind]
+	if count[pruneOtherKind] > 0 {
+		fmt.Fprintf(os.Stderr, "\nSource files checked: %s (--type %s). Not checked, of the other type: %s files, %s\n",
+			formatCount(checked), opts.kind, formatCount(count[pruneOtherKind]), formatSize(size[pruneOtherKind]))
+	} else {
+		fmt.Fprintf(os.Stderr, "\nSource files checked: %s\n", formatCount(checked))
+	}
 	fmt.Fprintf(os.Stderr, "  Safe to remove (identical copy in library and backup): %s files, %s\n",
 		formatCount(count[pruneSafe]), formatSize(size[pruneSafe]))
-	for _, v := range []pruneVerdict{pruneNoLibrary, pruneNoBackup, pruneSidecar, pruneOtherKind, pruneUnreadable, pruneChanged, pruneNotFresh} {
+	for _, v := range []pruneVerdict{pruneNoLibrary, pruneNoBackup, pruneSidecar, pruneUnreadable, pruneChanged, pruneNotFresh, pruneNotInManifest} {
 		if count[v] > 0 {
 			fmt.Fprintf(os.Stderr, "  Kept — %-15s %s files, %s\n", v.String()+":", formatCount(count[v]), formatSize(size[v]))
 		}
@@ -600,6 +607,8 @@ func loadPruneReport(opts pruneOptions) ([]*pruneItem, error) {
 			it.verdict = pruneOtherKind
 		case pruneNotFresh.String():
 			it.verdict = pruneNotFresh
+		case pruneNotInManifest.String():
+			it.verdict = pruneNotInManifest
 		case pruneChanged.String():
 			it.verdict = pruneChanged
 		default:
