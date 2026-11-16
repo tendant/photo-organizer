@@ -35,7 +35,7 @@ func TestSavePlanWritesOnlyThePlanThenApplyCopiesExactlyThat(t *testing.T) {
 	writeFile(t, filepath.Join(src, "c/IMG_20220101_120000.jpg"), "late")
 	before = snapshotTree(t, src)
 
-	out, code = runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress")
+	out, code = runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress", "--check-files")
 	if code != 0 {
 		t.Fatalf("apply plan: exit %d\n%s", code, out)
 	}
@@ -51,7 +51,7 @@ func TestSavePlanWritesOnlyThePlanThenApplyCopiesExactlyThat(t *testing.T) {
 	}
 
 	// Replaying the same plan finds everything in place and copies nothing.
-	out, code = runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress")
+	out, code = runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress", "--check-files")
 	if code != 0 || !strings.Contains(out, "already in place") || !strings.Contains(out, "Will copy 0 files") {
 		t.Errorf("replay: exit %d\n%s", code, out)
 	}
@@ -74,7 +74,7 @@ func TestPlanRefusesWhenASourceChanged(t *testing.T) {
 	runCLIWithHome(t, home, "organize", src, "--dest", lib, "--save-plan", plan, "--no-progress")
 
 	writeFile(t, filepath.Join(src, "b/IMG_20230102_090000.jpg"), "two but edited")
-	out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress")
+	out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress", "--check-files")
 	if code == 0 || !strings.Contains(out, "source changed since the preview") {
 		t.Fatalf("expected refusal, exit %d\n%s", code, out)
 	}
@@ -83,7 +83,7 @@ func TestPlanRefusesWhenASourceChanged(t *testing.T) {
 	}
 
 	os.Remove(filepath.Join(src, "b/IMG_20230102_090000.jpg"))
-	out, code = runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress")
+	out, code = runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress", "--check-files")
 	if code == 0 || !strings.Contains(out, "source is gone") {
 		t.Errorf("expected 'source is gone', exit %d\n%s", code, out)
 	}
@@ -95,7 +95,7 @@ func TestPlanRefusesWhenTargetNameTakenByOtherContent(t *testing.T) {
 
 	taken := filepath.Join(lib, "2023/2023-01-02/IMG_20230102_090000.jpg")
 	writeFile(t, taken, "someone else's photo")
-	out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress")
+	out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress", "--check-files")
 	if code == 0 || !strings.Contains(out, "now taken by other content") {
 		t.Fatalf("expected refusal, exit %d\n%s", code, out)
 	}
@@ -112,7 +112,7 @@ func TestPlanResumesAfterPartialApply(t *testing.T) {
 	runCLIWithHome(t, home, "organize", src, "--dest", lib, "--save-plan", plan, "--no-progress")
 	// Simulate an interrupted run that finished one file.
 	writeFile(t, filepath.Join(lib, "2023/2023-01-02/IMG_20230102_090000.jpg"), "two")
-	out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress")
+	out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress", "--check-files")
 	if code != 0 || !strings.Contains(out, "1 files from the plan are already in place") {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
@@ -151,5 +151,51 @@ func TestPlanRejectsTamperedTargetsAndBadUsage(t *testing.T) {
 	}
 	if _, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--dest", filepath.Join(home, "Other"), "--no-progress"); code == 0 {
 		t.Errorf("mismatched --dest should be rejected")
+	}
+}
+
+func TestPlanChecksManifestsNotFiles(t *testing.T) {
+	home, src, lib, plan := planFixture(t)
+	runCLIWithHome(t, home, "organize", src, "--dest", lib, "--save-plan", plan, "--no-progress")
+
+	// No manifests yet: the check scans the source once, then reads only manifests.
+	out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--no-progress")
+	if code != 0 || !strings.Contains(out, "scanning it once") || !strings.Contains(out, "Would copy 3 files") {
+		t.Fatalf("first check: exit %d\n%s", code, out)
+	}
+
+	// A source edited after its scan is not noticed by a manifest check ...
+	writeFile(t, filepath.Join(src, "b/IMG_20230102_090000.jpg"), "two but edited")
+	out, code = runCLIWithHome(t, home, "organize", "--plan", plan, "--no-progress")
+	if code != 0 || strings.Contains(out, "scanning it once") {
+		t.Fatalf("second check: exit %d\n%s", code, out)
+	}
+	// ... --check-files looks at the disk and sees it ...
+	out, code = runCLIWithHome(t, home, "organize", "--plan", plan, "--no-progress", "--check-files")
+	if code == 0 || !strings.Contains(out, "source changed since the preview") {
+		t.Fatalf("--check-files: exit %d\n%s", code, out)
+	}
+	// ... and --apply never copies it, whatever the manifest says.
+	out, code = runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress")
+	if code == 0 || !strings.Contains(out, "source changed since the preview") {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(lib); err == nil {
+		t.Errorf("a refused apply wrote to the library")
+	}
+}
+
+func TestPlanManifestCheckSeesCopiesAfterRescan(t *testing.T) {
+	home, src, lib, plan := planFixture(t)
+	runCLIWithHome(t, home, "organize", src, "--dest", lib, "--save-plan", plan, "--no-progress")
+	if out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	if out, code := runCLIWithHome(t, home, "scan", lib, "--no-report"); code != 0 {
+		t.Fatalf("scan: exit %d\n%s", code, out)
+	}
+	out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--no-progress")
+	if code != 0 || !strings.Contains(out, "3 files from the plan are already in place") || !strings.Contains(out, "Would copy 0 files") {
+		t.Fatalf("exit %d\n%s", code, out)
 	}
 }

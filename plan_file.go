@@ -126,7 +126,14 @@ func runSavedPlan(opts organizeOptions) error {
 	}
 
 	plan := &organizePlan{byFolder: map[string]int{}}
-	todo, done, problems := validatePlan(pf, plan)
+	var todo []plannedCopy
+	var done int
+	var problems []string
+	if opts.checkFiles {
+		todo, done, problems = validatePlan(pf, plan)
+	} else {
+		todo, done, problems = validatePlanFromManifests(pf, plan, opts.apply)
+	}
 	if len(problems) > 0 {
 		fmt.Fprintf(os.Stderr, "\nThe plan is out of date; nothing was copied. %d problem(s):\n", len(problems))
 		for i, pr := range problems {

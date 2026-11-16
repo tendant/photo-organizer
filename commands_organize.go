@@ -53,6 +53,7 @@ type organizeOptions struct {
 	planFile   string         // --plan: apply a plan saved earlier instead of scanning
 	kind       mediaKind      // --type: which kind of media this run handles
 	kindSet    bool           // --type was given (rejected with --plan)
+	checkFiles bool           // --check-files: with --plan, look at the real files instead of the manifests
 }
 
 // mediaKind says which files a run handles. Every file group is exactly one of
@@ -247,6 +248,8 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 			opts.progress = progressOn
 		case "--no-progress":
 			opts.progress = progressOff
+		case "--check-files":
+			opts.checkFiles = true
 		default:
 			if strings.HasPrefix(args[i], "--") {
 				return opts, fmt.Errorf("unknown flag %s", args[i])
@@ -259,7 +262,7 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 
 func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "\n🗂  ORGANIZE PHOTOS BY DATE\n\n")
-	fmt.Fprintf(os.Stderr, "Usage: photo-organizer organize <folder> [<folder>...] --dest <library> [--apply] [--layout day|month|folder] [--type photo|video|all] [--move]\n\n")
+	fmt.Fprintf(os.Stderr, "Usage: photo-organizer organize <folder> [<folder>...] --dest <library> [--apply] [--layout day|month|folder] [--type photo|video|all] [--move]\n       photo-organizer organize --plan <file> [--apply] [--check-files]\n\n")
 	fmt.Fprintf(os.Stderr, "Examples:\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer organize /data/Photos-All --dest /tankm1/media/Library\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer organize ~/Pictures /mnt/usb/DCIM --dest ~/Library --apply\n\n")

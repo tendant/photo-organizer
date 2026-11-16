@@ -163,7 +163,10 @@ Implausible dates (before 1990, in the future) go to `undated/`.
   copying it re-checks: if a source file is gone or changed, or a target name is now
   taken by other content, nothing is copied and you are asked to preview again.
   Targets already holding the planned content (an interrupted earlier run) are
-  skipped, so re-running the same command resumes. The plan file cannot be saved inside
+  skipped, so re-running the same command resumes. The re-check reads the manifests of
+  the source folders and the library, not the folders (a folder with no manifest is
+  scanned once; run `scan` on the library to see new copies). `--check-files` looks at
+  the real files instead; `--apply` always confirms the files it is about to copy. The plan file cannot be saved inside
   a source folder or the library; `--layout`, `--type`, `--verify` and `--jobs` are fixed by the plan.
 - A log of every copy goes to `<library>/_organize/`, and the library manifest is
   refreshed so the copies count for `dups` and `check-backup`.
