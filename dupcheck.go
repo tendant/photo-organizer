@@ -36,6 +36,7 @@ const (
 	verifyAuto  verifyMode = iota // full for files up to autoFullLimit, sampled above
 	verifyFull                    // every byte of every candidate
 	verifyQuick                   // sampled for anything over sampleBudget
+	verifyHash                    // size + scan hash (first/last 32 KB) only; reads no file content
 )
 
 const (
@@ -74,6 +75,8 @@ func newHashStore(mode verifyMode, jobs int) *hashStore {
 // wantsFull reports whether files of this size are compared byte-for-byte.
 func (h *hashStore) wantsFull(size int64) bool {
 	switch h.mode {
+	case verifyHash:
+		return false
 	case verifyFull:
 		return true
 	case verifyQuick:
@@ -136,6 +139,9 @@ func (h *hashStore) digest(path string, size int64) string {
 func (h *hashStore) same(a, b string, size int64) bool {
 	if a == b {
 		return true
+	}
+	if h.mode == verifyHash {
+		return true // the caller matched size + scan hash; nothing is read
 	}
 	da := h.digest(a, size)
 	return da != "" && da == h.digest(b, size)
@@ -336,7 +342,7 @@ type pendingHash struct {
 
 // indexLibrary lists the library and records each media file's content key.
 // Files unchanged since the cache was written cost one stat, not a read.
-func indexLibrary(dest string, hs *hashStore, showProgress bool) (libraryIndex, map[string]bool, []string, error) {
+func indexLibrary(dest string, hs *hashStore, showProgress bool, fromManifest func(path string, size, mtime int64) string) (libraryIndex, map[string]bool, []string, error) {
 	idx := libraryIndex{}
 	names := map[string]bool{} // lowercased library paths, for collision checks
 	var staleTmp []string
@@ -381,6 +387,10 @@ func indexLibrary(dest string, hs *hashStore, showProgress bool) (libraryIndex, 
 			hs.lib[path] = &libEntry{size: row.size, mtime: row.mtime, partial: row.partial, full: row.full, sampled: row.sampled}
 			reused++
 			prog.Add(1, 1)
+		} else if h := manifestHashFor(fromManifest, path, info.Size(), mtime); h != "" {
+			hs.lib[path] = &libEntry{size: info.Size(), mtime: mtime, partial: h}
+			reused++
+			prog.Add(1, 1)
 		} else {
 			pending = append(pending, pendingHash{path, info.Size(), mtime})
 		}
@@ -413,4 +423,11 @@ func indexLibrary(dest string, hs *hashStore, showProgress bool) (libraryIndex, 
 	}
 	prog.Done(fmt.Sprintf("Indexed %s library files (%s from cache)", formatCount(len(order)), formatCount(reused)))
 	return idx, names, staleTmp, nil
+}
+
+func manifestHashFor(f func(string, int64, int64) string, path string, size, mtime int64) string {
+	if f == nil {
+		return ""
+	}
+	return f(path, size, mtime)
 }

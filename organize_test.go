@@ -209,7 +209,7 @@ func TestOrganizeKeepsNearIdenticalFilesThatDiffer(t *testing.T) {
 	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), mk("a"))
 	writeFile(t, filepath.Join(src, "IMG_20240315_101011.jpg"), mk("b"))
 
-	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress", "--verify", "auto"); code != 0 {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	if got := listFiles(t, lib); len(got) != 2 {
@@ -707,7 +707,7 @@ func TestOrganizeAutoComparesEveryByteOfNormalSizedFiles(t *testing.T) {
 	lib := filepath.Join(home, "Library")
 	size := int64(8 << 20) // well under the 64 MB limit
 	writeBigPair(t, filepath.Join(s1, "IMG_20240315_101010.jpg"), filepath.Join(s2, "IMG_20240315_101010.jpg"), size, offsetOutsideSamples(size))
-	if out, code := runCLIWithHome(t, home, "organize", s1, s2, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+	if out, code := runCLIWithHome(t, home, "organize", s1, s2, "--dest", lib, "--apply", "--no-progress", "--verify", "auto"); code != 0 {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	if got := listFiles(t, lib); len(got) != 2 {
@@ -739,9 +739,14 @@ func TestOrganizeVerifyModesOnHugeFiles(t *testing.T) {
 		t.Errorf("--verify full must tell the files apart, library has %d", n)
 	}
 	// The documented trade-off: sampling large files can miss a change between sample points.
-	n, out := run("")
+	n, out := run("auto")
 	if n != 1 || !strings.Contains(out, "confirmed by sampling") {
 		t.Errorf("auto mode samples huge files and says so; library has %d files:\n%s", n, out)
+	}
+	// The default reads no content at all: size + scan hash decide, and it says so.
+	n, out = run("")
+	if n != 1 || !strings.Contains(out, "matched by size and scan hash") {
+		t.Errorf("hash mode matches on the scan hash and says so; library has %d files:\n%s", n, out)
 	}
 }
 
@@ -806,7 +811,7 @@ func TestOrganizeNoOpApplyStillSavesLearnedDigests(t *testing.T) {
 	before, _ := os.ReadFile(filepath.Join(lib, organizeLogDir, cacheName))
 
 	// s2 only holds duplicates: nothing is copied, but the library file gets compared.
-	if out, code := runCLIWithHome(t, home, "organize", s2, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+	if out, code := runCLIWithHome(t, home, "organize", s2, "--dest", lib, "--apply", "--no-progress", "--verify", "auto"); code != 0 {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	after, _ := os.ReadFile(filepath.Join(lib, organizeLogDir, cacheName))
@@ -1202,5 +1207,138 @@ func TestMoveIntoLibraryRefusesAChangedSourceAndNeverOverwrites(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(c.dst); string(b) != "someone else's file" || !exists(srcPath) {
 		t.Error("nothing should have changed")
+	}
+}
+
+func TestOrganizeHashModeIsTheDefaultAndReadsNoContent(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	edge := bytes.Repeat([]byte("e"), sampleSize)
+	mk := func(mid string) string { return string(edge) + strings.Repeat(mid, 1000) + string(edge) }
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), mk("a"))
+	writeFile(t, filepath.Join(src, "IMG_20240315_101011.jpg"), mk("b")) // differs only between the sampled edges
+	byDefault := filepath.Join(home, "default")
+	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", byDefault, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if got := listFiles(t, byDefault); len(got) != 1 {
+		t.Errorf("hash mode (the default) trusts size + scan hash, so these look identical; got %v", got)
+	}
+	full := filepath.Join(home, "full")
+	if _, code := runCLIWithHome(t, home, "organize", src, "--dest", full, "--verify", "full", "--apply", "--no-progress"); code != 0 {
+		t.Fatal("full apply failed")
+	}
+	if got := listFiles(t, full); len(got) != 2 {
+		t.Errorf("--verify full must keep both, got %v", got)
+	}
+}
+
+func TestOrganizeTakesSourceHashesFromFreshManifestsOnly(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	for _, n := range []string{"IMG_20240315_101010.jpg", "IMG_20240315_101011.jpg", "IMG_20240315_101012.jpg"} {
+		writeFile(t, filepath.Join(src, n), "photo-"+n)
+	}
+	lib := filepath.Join(home, "lib")
+	if out, code := runCLIWithHome(t, home, "scan", src, "--no-report"); code != 0 {
+		t.Fatalf("scan: exit %d\n%s", code, out)
+	}
+	// one file changes after the scan: its manifest row is no longer trusted
+	later := time.Now().Add(3 * time.Hour)
+	os.Chtimes(filepath.Join(src, "IMG_20240315_101012.jpg"), later, later)
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--no-progress")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "Hashes of 2 source files came from fresh manifests") {
+		t.Errorf("want 2 manifest hashes (the touched file is re-read):\n%s", out)
+	}
+	// with no manifests nothing is claimed
+	home2 := t.TempDir()
+	out, _ = runCLIWithHome(t, home2, "organize", src, "--dest", filepath.Join(home2, "lib"), "--no-progress")
+	if strings.Contains(out, "came from fresh manifests") {
+		t.Errorf("no manifests exist, nothing should be reported:\n%s", out)
+	}
+}
+
+func TestParseVerifyHash(t *testing.T) {
+	o, _ := parseOrganizeArgs([]string{"s", "--dest", "d"})
+	if o.verify != verifyHash {
+		t.Error("the default verify mode should be hash")
+	}
+	for _, m := range []string{"hash", "manifest"} {
+		if o, err := parseOrganizeArgs([]string{"s", "--dest", "d", "--verify", m}); err != nil || o.verify != verifyHash {
+			t.Errorf("--verify %s not parsed: %v", m, err)
+		}
+	}
+	if o, _ := parseOrganizeArgs([]string{"s", "--dest", "d", "--verify", "auto"}); o.verify != verifyAuto {
+		t.Error("--verify auto not parsed")
+	}
+}
+
+func TestOrganizeRemembersDatesBetweenRuns(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	for _, n := range []string{"IMG_20240315_101010.jpg", "IMG_20240315_101011.jpg", "IMG_20240315_101012.jpg"} {
+		writeFile(t, filepath.Join(src, n), "photo-"+n)
+	}
+	lib := filepath.Join(home, "lib")
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--no-progress")
+	if code != 0 || strings.Contains(out, "remembered from an earlier run") {
+		t.Fatalf("first run reads every date (exit %d):\n%s", code, out)
+	}
+	out, _ = runCLIWithHome(t, home, "organize", src, "--dest", lib, "--no-progress")
+	if !strings.Contains(out, "Dates of 3 source files were remembered") {
+		t.Errorf("second run should reuse all 3 dates:\n%s", out)
+	}
+	// a changed file is read again
+	later := time.Now().Add(3 * time.Hour)
+	os.Chtimes(filepath.Join(src, "IMG_20240315_101012.jpg"), later, later)
+	out, _ = runCLIWithHome(t, home, "organize", src, "--dest", lib, "--no-progress")
+	if !strings.Contains(out, "Dates of 2 source files were remembered") {
+		t.Errorf("a touched file must be re-read:\n%s", out)
+	}
+}
+
+func TestOrganizeDateCacheDoesNotChangeThePlan(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "a/IMG_20240315_101010.jpg"), "one")
+	writeFile(t, filepath.Join(src, "b/clip.mov"), "two") // no date in name: falls back to mtime
+	when := time.Date(2023, 7, 4, 12, 0, 0, 0, time.Local)
+	os.Chtimes(filepath.Join(src, "b/clip.mov"), when, when)
+	run := func(lib string) []string {
+		if out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+			t.Fatalf("exit %d\n%s", code, out)
+		}
+		return listFiles(t, lib)
+	}
+	first := strings.Join(run(filepath.Join(home, "lib1")), ",")
+	second := strings.Join(run(filepath.Join(home, "lib2")), ",") // dates now come from the cache
+	if first != second || !strings.Contains(first, "2023/2023-07-04/clip.mov") {
+		t.Errorf("cached dates must give the same layout:\n%s\n%s", first, second)
+	}
+}
+
+// The library's own manifest vouches for its hashes, so a missing index cache does not mean
+// re-reading every library file.
+func TestOrganizeIndexesTheLibraryFromItsManifest(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read unreadable files")
+	}
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "photo-one")
+	lib := filepath.Join(home, "lib")
+	if out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	os.Remove(filepath.Join(lib, organizeLogDir, cacheName)) // no index cache, only the manifest
+	libFile := filepath.Join(lib, "2024/2024-03-15/IMG_20240315_101010.jpg")
+	os.Chmod(libFile, 0)
+	defer os.Chmod(libFile, 0o644)
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--no-progress")
+	if code != 0 || !strings.Contains(out, "Would copy 0 files") {
+		t.Errorf("the library file was not read, its manifest hash must still find the duplicate (exit %d):\n%s", code, out)
 	}
 }

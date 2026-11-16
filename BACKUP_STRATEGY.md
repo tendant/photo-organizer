@@ -36,13 +36,15 @@ overlap, and merging them into the library collapses the duplicates.
 - **A backup is an independent copy.** Do not use hardlinks between library and sources: a
   hardlink is a second name for the same data, so one disk failure or one in-place edit hits
   both, and backup tools handle them badly. Do not rely on filesystem block cloning either.
-- **Verify by content, not by name.** Use `organize --verify full` for the real run. The scan
-  hash only samples the first and last 32 KB, so duplicate groups stay "unconfirmed" until
-  whole files are compared.
+- **Match by hash, prove by content when it matters.** `organize` and `prune-sources` decide
+  duplicates from size plus the scan hash (first and last 32 KB) and fresh manifests, and read no
+  photo data, so they run in seconds. That cannot see a change in the middle of a file that keeps
+  its size and modified time. Use `--verify full` (organize) or `--verify bytes` (prune-sources)
+  before deleting anything you cannot get back.
 - **Keep photos and videos apart.** They differ in size, value per GB and how they should be
   verified and backed up. Videos are laid out by date, like photos.
-  - `organize --type photo --dest <photo-library> --verify full`
-  - `organize --type video --dest <video-library> --layout folder --verify auto`
+  - `organize --type photo --dest <photo-library>`
+  - `organize --type video --dest <video-library> --layout folder`
     (`--layout folder` keeps each source folder, such as a camera card or a shoot, together as
     `YYYY/YYYY-MM-DD_<folder>/` instead of scattering its clips across dates)
   - A same-name group is classified whole: any photo makes it a photo group, so a RAW+JPG pair

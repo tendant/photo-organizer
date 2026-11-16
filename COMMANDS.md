@@ -86,14 +86,26 @@ Implausible dates (before 1990, in the future) go to `undated/`.
 - **Dry run by default.** Nothing is written until `--apply`.
 - **Converges.** Content already in the library is skipped, so re-running after
   adding photos or after an interruption copies only what is missing.
-- **Duplicates are confirmed, not guessed.** Size plus the scan's 64KB hash only
-  nominates a candidate. Files up to 64 MB are then compared by a SHA-256 of every
+- **Duplicates: hash by default, content on request.** By default (`--verify hash`)
+  two files are the same when their size and the scan's hash (first and last 32 KB)
+  match. No file content is read, and a source's hash is taken from its fresh manifest
+  row (same size and modified time) when there is one, so a preview takes seconds to
+  minutes, not hours. The summary says how many duplicates were matched this way. A
+  copy that differs only in the middle of a file that keeps its size would be missed.
+  For a proof, use the content modes below.
+- **Content modes.** `--verify auto|full|quick`: size plus the scan hash nominates a
+  candidate. Files up to 64 MB are then compared by a SHA-256 of every
   byte; larger files (videos) by SHA-256 of 16 pieces spread across the whole file,
   which is what keeps a multi-GB duplicate from costing a multi-GB read. The
   summary says how many duplicates were confirmed by sampling. A copy that differs
   only *between* the sampled pieces (a flipped bit, an in-place edit of the same
   length) would be missed; `--verify full` reads every byte of every file, and
   `--verify quick` samples anything over 1 MB.
+- **Reads little.** The library is indexed from its own manifest (a row counts only while the
+  file still has its recorded size and modified time), source hashes come from the sources'
+  manifests the same way, and the capture date of each source file is remembered in
+  `~/manifests/organize-dates.csv` (by path, size and modified time). A preview of tens of
+  thousands of files takes seconds once the folders have been scanned.
 - **Fast on re-runs.** Digests of library files are remembered in
   `<library>/_organize/index.csv`, keyed by size and modified time, so a file that
   has not changed is not read again. Only `--apply` writes it; a damaged or missing
@@ -141,7 +153,7 @@ Implausible dates (before 1990, in the future) go to `undated/`.
   `all` run; audio is only handled by `all`. The summary says how many files were left
   for the other run. Not valid with `--plan`: set it with `--save-plan`.
   Example: `organize /data/Photos-All --type photo --dest /lib/photos --verify full`,
-  then `--type video --dest /lib/videos --verify auto`.
+  then `--type video --dest /lib/videos`. Add `--verify full` when you want every byte compared.
 - **Saved plans.** `--save-plan FILE` (preview only) records every copy. `--plan FILE
   --apply` then copies exactly those files, even if new photos appeared since. Before
   copying it re-checks: if a source file is gone or changed, or a target name is now

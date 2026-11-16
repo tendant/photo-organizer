@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -127,6 +128,9 @@ type organizePlan struct {
 	freeKnown        bool
 	hs               *hashStore
 	sampledDups      int                // large duplicates confirmed by sampling rather than every byte
+	hashOnlyDups     int                // duplicates matched by size + scan hash, nothing read (--verify hash)
+	dateCacheHits    int                // dates remembered from an earlier run instead of read from the file
+	manifestHashes   int                // source hashes taken from fresh manifests instead of reading the file
 	staleTmp         []string           // temp files left by an interrupted earlier run
 	dateSources      map[dateSource]int // how each copied photo/video was dated
 	mtimeExamples    []string           // a few files dated only by modified time
@@ -138,7 +142,7 @@ type organizePlan struct {
 }
 
 func parseOrganizeArgs(args []string) (organizeOptions, error) {
-	opts := organizeOptions{progress: progressAuto, jobs: 4}
+	opts := organizeOptions{progress: progressAuto, jobs: 4, verify: verifyHash}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dest":
@@ -178,9 +182,11 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 			i++
 		case "--verify":
 			if i+1 >= len(args) {
-				return opts, errors.New("--verify needs 'auto', 'full' or 'quick'")
+				return opts, errors.New("--verify needs 'hash', 'auto', 'full' or 'quick'")
 			}
 			switch args[i+1] {
+			case "hash", "manifest":
+				opts.verify = verifyHash
 			case "auto":
 				opts.verify = verifyAuto
 			case "full":
@@ -188,7 +194,7 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 			case "quick":
 				opts.verify = verifyQuick
 			default:
-				return opts, fmt.Errorf("unknown verify mode %q (use auto, full or quick)", args[i+1])
+				return opts, fmt.Errorf("unknown verify mode %q (use hash, auto, full or quick)", args[i+1])
 			}
 			i++
 		case "--video-tz":
@@ -267,6 +273,8 @@ func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "  - Same name, different content: the newcomer gets a _1, _2... suffix.\n")
 	fmt.Fprintf(os.Stderr, "  - A log of every copy is written to <library>/%s/.\n", organizeLogDir)
 	fmt.Fprintf(os.Stderr, "  - --layout month uses YYYY/YYYY-MM/ instead of one folder per day.\n")
+	fmt.Fprintf(os.Stderr, "  - --verify hash (default) decides duplicates from size + the scan hash and reads no file content; source\n")
+	fmt.Fprintf(os.Stderr, "    hashes come from fresh manifests when there are any. --verify auto|full|quick compare content (slow).\n")
 	fmt.Fprintf(os.Stderr, "  - --move renames files into the library when source and library share a filesystem (instant,\n")
 	fmt.Fprintf(os.Stderr, "    no extra space; the source file is gone). Files on other disks are copied and kept.\n")
 	fmt.Fprintf(os.Stderr, "  - --layout folder keeps each source folder together as YYYY/YYYY-MM-DD_<folder>/, dated by its\n")
@@ -578,7 +586,7 @@ type planner struct {
 
 func buildOrganizePlan(sources []string, dest string, opts organizeOptions, showProgress bool) (*organizePlan, error) {
 	hs := newHashStore(opts.verify, opts.jobs)
-	idx, taken, staleTmp, err := indexLibrary(dest, hs, showProgress)
+	idx, taken, staleTmp, err := indexLibrary(dest, hs, showProgress, manifestHashes([]string{dest}, nil))
 	if err != nil {
 		return nil, fmt.Errorf("read library %s: %w", dest, err)
 	}
@@ -623,13 +631,18 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 	// the digests the duplicate checks will need, then plan sequentially so the
 	// result is identical to a single-threaded run.
 	const planBatch = 256
+	dates := loadDateCache()
+	var hashOf func(sourceFile) string
+	if opts.verify == verifyHash {
+		hashOf = manifestHashLookup(sources, &plan.manifestHashes)
+	}
 	var all []*groupInfo // --layout folder needs every date before the first file is placed
 	if opts.byFolder {
 		all = make([]*groupInfo, len(keys))
 		parallelDo(opts.jobs, len(keys), func(i int) {
 			files := found.groups[keys[i]]
 			sort.Slice(files, func(a, b int) bool { return files[a].path < files[b].path })
-			all[i] = analyzeGroup(files, opts.videoTZ)
+			all[i] = analyzeGroup(files, opts.videoTZ, hashOf, dates)
 		})
 		pl.dirDate = earliestDatePerFolder(all)
 	}
@@ -646,7 +659,7 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 			parallelDo(opts.jobs, len(infos), func(i int) {
 				files := found.groups[keys[start+i]]
 				sort.Slice(files, func(a, b int) bool { return files[a].path < files[b].path })
-				infos[i] = analyzeGroup(files, opts.videoTZ)
+				infos[i] = analyzeGroup(files, opts.videoTZ, hashOf, dates)
 			})
 		}
 		pl.warmDigests(infos)
@@ -656,6 +669,10 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 		}
 	}
 	prog.Done(fmt.Sprintf("Examined %s files", formatCount(int(totalFiles))))
+	plan.dateCacheHits = dates.hits
+	if err := dates.save(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not save the date cache (next run will be slower): %v\n", err)
+	}
 
 	plan.freeBytes, plan.freeKnown = freeSpaceFor(dest)
 	return plan, nil
@@ -689,7 +706,7 @@ type groupInfo struct {
 	dayShifted      bool // --video-tz moved the lead video to another day
 }
 
-func analyzeGroup(files []sourceFile, videoTZ *time.Location) *groupInfo {
+func analyzeGroup(files []sourceFile, videoTZ *time.Location, hashOf func(sourceFile) string, dates *dateCache) *groupInfo {
 	g := &groupInfo{}
 	for _, f := range files {
 		if isSidecarExt(filepath.Ext(f.path)) {
@@ -714,9 +731,25 @@ func analyzeGroup(files []sourceFile, videoTZ *time.Location) *groupInfo {
 	}
 	g.hashes = make([]string, len(g.media))
 	for i, f := range g.media {
+		if hashOf != nil {
+			if h := hashOf(f); h != "" {
+				g.hashes[i] = h
+				continue
+			}
+		}
 		g.hashes[i], _ = processFile(f.path)
 	}
-	g.date, g.source, g.dayShifted = captureDateShifted(g.media[g.lead].path, videoTZ)
+	zone := ""
+	if videoTZ != nil {
+		zone = videoTZ.String()
+	}
+	lead := g.media[g.lead]
+	if e, ok := dates.lookup(lead, zone); ok {
+		g.date, g.source, g.dayShifted = e.when, e.source, e.shifted
+	} else {
+		g.date, g.source, g.dayShifted = captureDateShifted(lead.path, videoTZ)
+		dates.store(lead, zone, g.date, g.source, g.dayShifted)
+	}
 	return g
 }
 
@@ -724,6 +757,9 @@ func analyzeGroup(files []sourceFile, videoTZ *time.Location) *groupInfo {
 // this batch will ask for: files whose content key already exists in the
 // library or earlier in the batch.
 func (pl *planner) warmDigests(infos []*groupInfo) {
+	if pl.hs.mode == verifyHash {
+		return // no digests are read in hash mode
+	}
 	seen := map[string]string{} // content key -> first path in this batch
 	queued := map[string]bool{}
 	var need []sourceFile
@@ -791,7 +827,9 @@ func (pl *planner) planGroup(g *groupInfo) {
 		k := contentKey(f.size, hashes[i])
 
 		if dupOf := pl.firstIdentical(pl.idx[k], f.path, f.size); dupOf != "" {
-			if !pl.hs.wantsFull(f.size) {
+			if pl.hs.mode == verifyHash {
+				plan.hashOnlyDups++
+			} else if !pl.hs.wantsFull(f.size) {
 				plan.sampledDups++
 			}
 			plan.duplicates++
@@ -1037,6 +1075,16 @@ func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 	}
 	fmt.Fprintf(os.Stderr, "Skipping %s files (%s) already in the library or duplicated within the sources\n",
 		formatCount(p.duplicates), formatSize(p.duplicateBytes))
+	if p.hashOnlyDups > 0 {
+		fmt.Fprintf(os.Stderr, "   %s of those were matched by size and scan hash (first and last 32 KB) without reading the files;\n"+
+			"   use --verify auto or --verify full to compare the content\n", formatCount(p.hashOnlyDups))
+	}
+	if p.dateCacheHits > 0 {
+		fmt.Fprintf(os.Stderr, "Dates of %s source files were remembered from an earlier run (not re-read)\n", formatCount(p.dateCacheHits))
+	}
+	if p.manifestHashes > 0 {
+		fmt.Fprintf(os.Stderr, "Hashes of %s source files came from fresh manifests (not re-read)\n", formatCount(p.manifestHashes))
+	}
 	if p.sampledDups > 0 {
 		fmt.Fprintf(os.Stderr, "   %s of those are large files confirmed by sampling 16 points across the file;\n"+
 			"   use --verify full to compare every byte\n", formatCount(p.sampledDups))
@@ -1407,4 +1455,51 @@ func moveIntoLibrary(c plannedCopy) error {
 		return os.Rename(c.src, c.dst) // no hard links here; the name was checked free above
 	}
 	return os.Remove(c.src)
+}
+
+// manifestHashes returns a lookup of scan hashes from the fresh manifest rows of the given roots: a
+// row counts only while the file still has its recorded size and modified time. It returns nil when
+// no manifest exists. hits, when given, counts the lookups that succeeded.
+func manifestHashes(roots []string, hits *int) func(path string, size, mtime int64) string {
+	rows := map[string]ManifestRow{}
+	for _, root := range roots {
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		src, err := loadManifestForRoot(abs)
+		if err != nil {
+			continue
+		}
+		for _, r := range src.Rows {
+			if r.PartialHash != "" {
+				rows[rowPath(src, r)] = r
+			}
+		}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	var mu sync.Mutex
+	return func(path string, size, mtime int64) string {
+		r, ok := rows[path]
+		if !ok || r.SizeBytes != size || r.FileModified != time.Unix(0, mtime).Format(manifestTimeLayout) {
+			return ""
+		}
+		if hits != nil {
+			mu.Lock()
+			*hits++
+			mu.Unlock()
+		}
+		return r.PartialHash
+	}
+}
+
+// manifestHashLookup adapts manifestHashes to source files.
+func manifestHashLookup(sources []string, hits *int) func(sourceFile) string {
+	f := manifestHashes(sources, hits)
+	if f == nil {
+		return nil
+	}
+	return func(sf sourceFile) string { return f(sf.path, sf.size, sf.mtime) }
 }
