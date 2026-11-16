@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,5 +138,90 @@ func TestScanForcePruneOverridesTheHalfBrake(t *testing.T) {
 	}
 	if got := count(); got != 1 {
 		t.Fatalf("--force-prune should leave 1 row, got %d", got)
+	}
+}
+
+// ---- partial rescans -----------------------------------------------------------------
+
+func manifestRows(t *testing.T, home string) (files []string, rels map[string]bool) {
+	t.Helper()
+	files, _ = filepath.Glob(filepath.Join(home, "manifests", "_Manifest", "*.csv"))
+	rels = map[string]bool{}
+	for _, f := range files {
+		rows := readCSV(t, f)
+		for _, r := range rows[1:] {
+			rels[r[1]] = true
+		}
+	}
+	return
+}
+
+func TestScanOfASubfolderUpdatesTheParentManifestOnly(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "root")
+	writeFile(t, filepath.Join(root, "a/one.jpg"), "one")
+	writeFile(t, filepath.Join(root, "a/two.jpg"), "two")
+	writeFile(t, filepath.Join(root, "a/three.jpg"), "three")
+	writeFile(t, filepath.Join(root, "b/keep.jpg"), "keep")
+	if out, code := runCLIWithHome(t, home, "scan", root, "--no-report"); code != 0 {
+		t.Fatalf("full scan: exit %d\n%s", code, out)
+	}
+	// change things inside a/, and (without a rescan of b/) delete in b/
+	os.Remove(filepath.Join(root, "a/one.jpg"))
+	writeFile(t, filepath.Join(root, "a/new.jpg"), "brand new")
+	os.Remove(filepath.Join(root, "b/keep.jpg"))
+
+	out, code := runCLIWithHome(t, home, "scan", filepath.Join(root, "a"), "--no-report")
+	if code != 0 || !strings.Contains(out, "Part of:") {
+		t.Fatalf("partial scan: exit %d\n%s", code, out)
+	}
+	files, rels := manifestRows(t, home)
+	if len(files) != 1 {
+		t.Fatalf("a subfolder scan must not create a second manifest: %v", files)
+	}
+	for _, want := range []string{"a/two.jpg", "a/three.jpg", "a/new.jpg", "b/keep.jpg"} {
+		if !rels[want] {
+			t.Errorf("manifest should still have %s: %v", want, rels)
+		}
+	}
+	if rels["a/one.jpg"] {
+		t.Error("a deleted file inside the scanned part should be pruned")
+	}
+	// b/keep.jpg was deleted but b/ was not rescanned: its row is left alone until it is
+	rows := readCSV(t, files[0])
+	if rows[1][12] != root {
+		t.Errorf("scan_path must stay the parent root, got %q", rows[1][12])
+	}
+}
+
+func TestScanSeparateKeepsTheOldBehaviour(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "root")
+	writeFile(t, filepath.Join(root, "a/one.jpg"), "one")
+	runCLIWithHome(t, home, "scan", root, "--no-report")
+	if out, code := runCLIWithHome(t, home, "scan", filepath.Join(root, "a"), "--separate", "--no-report"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if files, _ := manifestRows(t, home); len(files) != 2 {
+		t.Errorf("--separate should write its own manifest: %v", files)
+	}
+}
+
+func TestPartialScanBrakeLooksAtItsOwnPartOnly(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "root")
+	for i := 0; i < 10; i++ {
+		writeFile(t, filepath.Join(root, "big", fmt.Sprintf("f%d.jpg", i)), fmt.Sprintf("big-%d", i))
+	}
+	for i := 0; i < 3; i++ {
+		writeFile(t, filepath.Join(root, "small", fmt.Sprintf("s%d.jpg", i)), fmt.Sprintf("small-%d", i))
+	}
+	runCLIWithHome(t, home, "scan", root, "--no-report")
+	for i := 0; i < 3; i++ { // empty the small part: 3 of its 3 rows, but only 3 of 13 overall
+		os.Remove(filepath.Join(root, "small", fmt.Sprintf("s%d.jpg", i)))
+	}
+	out, _ := runCLIWithHome(t, home, "scan", filepath.Join(root, "small"), "--no-report")
+	if !strings.Contains(out, "Skipping prune: would remove 3 of 3 entries") {
+		t.Errorf("the brake should judge the part that was scanned:\n%s", out)
 	}
 }

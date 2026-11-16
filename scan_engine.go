@@ -319,6 +319,12 @@ type ScanStats struct {
 }
 
 func scanDirectory(dir string, cache map[string]CacheEntry, photoIgnore *PhotoIgnore) ([]FileInfo, ScanStats, error) {
+	return scanDirectoryRel(dir, dir, cache, photoIgnore)
+}
+
+// scanDirectoryRel scans dir but looks files up in cache by their path relative to relBase, so a
+// part of a bigger scanned folder (dir inside relBase) can reuse that folder's manifest as its cache.
+func scanDirectoryRel(dir, relBase string, cache map[string]CacheEntry, photoIgnore *PhotoIgnore) ([]FileInfo, ScanStats, error) {
 	var stats ScanStats
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, stats, fmt.Errorf("directory not found: %s", dir)
@@ -418,7 +424,7 @@ func scanDirectory(dir string, cache map[string]CacheEntry, photoIgnore *PhotoIg
 		go func() {
 			defer wg.Done()
 			for work := range workQueue {
-				relPath, _ := filepath.Rel(dir, work.rf.path)
+				relPath, _ := filepath.Rel(relBase, work.rf.path)
 				fi := FileInfo{Path: work.rf.path, Size: work.rf.size, ModTime: work.rf.modTime}
 
 				entry, hasCached := cache[relPath]

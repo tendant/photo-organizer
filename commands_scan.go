@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
@@ -41,6 +42,7 @@ func runScan(args []string) error {
 	pruneFlag := fs.Bool("prune", true, "remove manifest entries for files no longer on disk (default; kept for old scripts)")
 	noPruneFlag := fs.Bool("no-prune", false, "keep manifest entries for files that are no longer on disk")
 	forcePruneFlag := fs.Bool("force-prune", false, "prune even when that removes more than half of the manifest (after moving or deleting most of a folder on purpose)")
+	separateFlag := fs.Bool("separate", false, "give a subfolder of an already-scanned folder its own manifest instead of updating the parent's")
 	holdingFlag := fs.Bool("holding", false, "keep this folder's manifest in _Manifest/_holding/ so dups and check-backup do not count it as a copy (for folders you are about to delete)")
 	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those matching score threshold")
 	scoreThresholdFlag := fs.Int("score-threshold", 30, "minimum folder score (0-100) for --auto-identify-folders (default: 30)")
@@ -254,6 +256,14 @@ func runScan(args []string) error {
 			manifestFile = held
 		}
 
+		// A folder inside one that already has a manifest updates that manifest (only its part of it),
+		// so a huge tree never needs a full rescan for a change in one corner.
+		if !fileExists(manifestFile) && !*separateFlag {
+			if root, parent := findParentManifest(manifestRoot, machineName, absScanDir); parent != "" {
+				return partialScan(absScanDir, root, parent, machineName, *noCacheFlag, *pruneFlag && !*noPruneFlag, *forcePruneFlag)
+			}
+		}
+
 		// Check write access to manifest directory before spending time scanning.
 		manifestDir := filepath.Dir(manifestFile)
 		if err := os.MkdirAll(manifestDir, 0755); err != nil {
@@ -331,4 +341,89 @@ func pruneAllowed(want bool, st ScanStats) bool {
 		return false
 	}
 	return want
+}
+
+// manifestHead reads the scan_path and machine of a manifest from its first data row, without
+// loading the whole file (some have a million rows).
+func manifestHead(path string) (scanPath, machine string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", ""
+	}
+	defer f.Close()
+	r := csv.NewReader(f)
+	r.FieldsPerRecord = -1
+	header, err := r.Read()
+	if err != nil {
+		return "", ""
+	}
+	row, err := r.Read()
+	if err != nil {
+		return "", ""
+	}
+	for i, h := range header {
+		switch h {
+		case "scan_path":
+			if i < len(row) {
+				scanPath = row[i]
+			}
+		case "machine_name":
+			if i < len(row) {
+				machine = row[i]
+			}
+		}
+	}
+	return
+}
+
+// findParentManifest returns the nearest already-scanned folder that contains dir on this machine,
+// and the manifest file that covers it.
+func findParentManifest(manifestRoot, machine, dir string) (root, file string) {
+	base := filepath.Join(manifestRoot, "_Manifest")
+	var cands []string
+	for _, pat := range []string{filepath.Join(base, "*.csv"), filepath.Join(base, heldDirName, "*.csv")} {
+		m, _ := filepath.Glob(pat)
+		cands = append(cands, m...)
+	}
+	for _, c := range cands {
+		sp, mach := manifestHead(c)
+		if sp == "" || (mach != "" && mach != machine) || sp == dir {
+			continue
+		}
+		if rel, err := filepath.Rel(sp, dir); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		if len(sp) > len(root) {
+			root, file = sp, c
+		}
+	}
+	return
+}
+
+// partialScan rescans dir (inside root) and merges the result into root's manifest.
+func partialScan(dir, root, manifestFile, machine string, noCache, prune, force bool) error {
+	sub, _ := filepath.Rel(root, dir)
+	fmt.Printf("Scanning:  %s\n", dir)
+	fmt.Printf("Part of:   %s (manifest %s)\n", root, filepath.Base(manifestFile))
+	fmt.Printf("Machine:   %s\n\n", machine)
+	cache := loadCache(manifestFile)
+	if noCache {
+		cache = make(map[string]CacheEntry)
+	}
+	fmt.Fprintf(os.Stderr, "\nScanning directory tree...\n")
+	files, st, err := scanDirectoryRel(dir, root, cache, newPhotoIgnore(root))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		return errFailed
+	}
+	fmt.Fprintf(os.Stderr, "\n✓ Scan complete: %d files found\n", len(files))
+	forcePrune = force
+	defer func() { forcePrune = false }()
+	ms, err := updateManifestScoped(root, sub, files, manifestFile, machine, pruneAllowed(prune, st))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
+		return errFailed
+	}
+	printScanSummary(st, ms)
+	return nil
 }

@@ -103,6 +103,13 @@ func backupManifest(manifestFile string) error {
 var forcePrune bool
 
 func updateManifest(scanDir string, files []FileInfo, manifestFile string, machineName string, prune bool) (ManifestStats, error) {
+	return updateManifestScoped(scanDir, "", files, manifestFile, machineName, prune)
+}
+
+// updateManifestScoped is updateManifest for a scan of only part of scanDir: files are the ones found
+// under the relative folder subtree, and pruning (and the half-the-rows brake) is limited to rows under
+// it. subtree "" means the whole manifest.
+func updateManifestScoped(scanDir, subtree string, files []FileInfo, manifestFile string, machineName string, prune bool) (ManifestStats, error) {
 	var mstats ManifestStats
 	fmt.Fprintf(os.Stderr, "Updating manifest: %s\n", filepath.Base(manifestFile))
 	manifestDir := filepath.Dir(manifestFile)
@@ -266,21 +273,28 @@ doneLoading:
 			relPath, _ := filepath.Rel(scanDir, fi.Path)
 			scanned[relPath] = true
 		}
-		wouldPrune := 0
+		inScope := func(rel string) bool {
+			return subtree == "" || rel == subtree || strings.HasPrefix(rel, subtree+string(filepath.Separator))
+		}
+		wouldPrune, scoped := 0, 0
 		for relPath := range existing {
+			if !inScope(relPath) {
+				continue
+			}
+			scoped++
 			if !scanned[relPath] {
 				wouldPrune++
 			}
 		}
 		// Safety: if pruning would remove more than 50% of existing entries,
 		// something is wrong (folder moved, volume unmounted, etc) — skip and warn.
-		if len(existing) > 0 && wouldPrune*100/len(existing) > 50 && !forcePrune {
+		if scoped > 0 && wouldPrune*100/scoped > 50 && !forcePrune {
 			fmt.Fprintf(os.Stderr, "⚠  Skipping prune: would remove %s of %s entries (>50%%).\n",
-				formatCount(wouldPrune), formatCount(len(existing)))
+				formatCount(wouldPrune), formatCount(scoped))
 			fmt.Fprintf(os.Stderr, "   Is the folder still at %s? If you really removed that many files, re-run with --force-prune.\n", scanDir)
 		} else {
 			for relPath := range existing {
-				if !scanned[relPath] {
+				if inScope(relPath) && !scanned[relPath] {
 					delete(existing, relPath)
 					mstats.Pruned++
 				}

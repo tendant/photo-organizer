@@ -24,6 +24,10 @@ Common flags:
   warning) if the scan could not read some folders, or if it would remove over half the
   entries. `--no-prune` keeps them; `--prune` is still accepted and does nothing extra. A scan never drops more than half of a manifest at once (a sign the folder moved or a disk is unmounted); after emptying a folder on purpose, add `--force-prune`.
 
+Rescan only part of a big folder: `scan <subfolder>` of a folder that already has a manifest updates
+that manifest (only the rows under the subfolder are added, changed or pruned, and the 50% prune brake
+looks at that part alone) instead of writing a second manifest. `--separate` gives the subfolder its own.
+
 ### dups
 Find duplicate files across collected manifests.
 
