@@ -26,7 +26,11 @@ func planManifestRows(dir string) (map[string]ManifestRow, error) {
 		if src, err := loadManifestForRoot(abs); err == nil {
 			return src, true
 		}
-		if _, file := findParentManifest(defaultManifestRoot(), resolveMachineID(""), abs); file != "" {
+		machine := driveIDFor(abs) // a folder on a portable drive is recorded under the drive's ID
+		if machine == "" {
+			machine = resolveMachineID("")
+		}
+		if _, file := findParentManifest(defaultManifestRoot(), machine, abs); file != "" {
 			if src, err := readManifest(file); err == nil {
 				return src, true
 			}

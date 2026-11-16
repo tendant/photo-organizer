@@ -199,3 +199,20 @@ func TestPlanManifestCheckSeesCopiesAfterRescan(t *testing.T) {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 }
+
+func TestPlanManifestCheckUsesDriveManifestForFolderOnDrive(t *testing.T) {
+	home := t.TempDir()
+	drive := filepath.Join(home, "drive")
+	lib := filepath.Join(home, "Library")
+	plan := filepath.Join(home, "plan.json")
+	writeFile(t, filepath.Join(drive, "machine-id"), "my-drive\n")
+	writeFile(t, filepath.Join(drive, "cam/IMG_20240315_101010.jpg"), "one")
+	if out, code := runCLIWithHome(t, home, "scan", drive, "--no-report"); code != 0 {
+		t.Fatalf("scan: exit %d\n%s", code, out)
+	}
+	runCLIWithHome(t, home, "organize", filepath.Join(drive, "cam"), "--dest", lib, "--save-plan", plan, "--no-progress")
+	out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--no-progress")
+	if code != 0 || strings.Contains(out, "scanning it once") || !strings.Contains(out, "Would copy 1 files") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+}

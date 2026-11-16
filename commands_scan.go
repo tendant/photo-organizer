@@ -83,11 +83,9 @@ func runScan(args []string) error {
 
 	// Auto-read media-id from card if not provided via flag
 	if *mediaIDFlag == "" {
-		cardIDPath := filepath.Join(absScanDir, "machine-id")
-		if data, err := os.ReadFile(cardIDPath); err == nil {
-			if id := strings.TrimSpace(string(data)); id != "" {
-				*mediaIDFlag = id
-			}
+		// The ID file sits at the drive's root; a folder inside the drive belongs to the same drive.
+		if id := driveIDFor(absScanDir); id != "" {
+			*mediaIDFlag = id
 		}
 	}
 
@@ -426,4 +424,19 @@ func partialScan(dir, root, manifestFile, machine string, noCache, prune, force 
 	}
 	printScanSummary(st, ms)
 	return nil
+}
+
+// driveIDFor returns the ID written to a portable drive's root (a machine-id file) when dir is
+// that root or inside it, and "" otherwise.
+func driveIDFor(dir string) string {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if data, err := os.ReadFile(filepath.Join(d, "machine-id")); err == nil {
+			if id := strings.TrimSpace(string(data)); id != "" {
+				return id
+			}
+		}
+		if d == filepath.Dir(d) {
+			return ""
+		}
+	}
 }
