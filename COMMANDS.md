@@ -22,7 +22,7 @@ Common flags:
 - Pruning is the default: manifest entries for files no longer on disk are removed, so
   `dups` and `check-backup` never count a deleted file as a copy. It is skipped (with a
   warning) if the scan could not read some folders, or if it would remove over half the
-  entries. `--no-prune` keeps them; `--prune` is still accepted and does nothing extra.
+  entries. `--no-prune` keeps them; `--prune` is still accepted and does nothing extra. A scan never drops more than half of a manifest at once (a sign the folder moved or a disk is unmounted); after emptying a folder on purpose, add `--force-prune`.
 
 ### dups
 Find duplicate files across collected manifests.
@@ -248,18 +248,20 @@ Two things worth knowing about the numbers on a **remote** backup:
 
 ### prune-sources
 
-Finds source files that already have a byte-identical copy in the library **and** in an independent backup, and optionally moves them out of the source. Nothing is deleted.
+Finds source files that already have an identical copy in the library **and** in an independent backup, and optionally moves them out of the source. Nothing is deleted.
 
 ```bash
+# scan the source, library and backup first, then:
 photo-organizer prune-sources /data/Photos-All --library /lib/photos --backup /mnt/backup/photos --type photo --report prune.csv
-photo-organizer prune-sources /data/Photos-All --library /lib/photos --backup /mnt/backup/photos --type photo --holding /data/_pruned --apply
+photo-organizer prune-sources /data/Photos-All --library /lib/photos --backup /mnt/backup/photos --from-report prune.csv --holding /data/_pruned --apply
 ```
 
-- Preview by default. `--apply` needs `--holding <folder>`; safe files are moved there with the same relative paths.
-- The library and backup are read from disk at run time (no manifests), and every match is a full byte comparison.
+- Preview by default. `--apply` needs `--holding <folder>`; safe files are moved there with the same relative paths. A move never overwrites a file already there.
+- **`--verify manifest` (default)** matches by the hashes in fresh manifests and reads no photo data (seconds for tens of thousands of files). A file counts only while its size and modified time still equal its manifest row; anything new, edited or deleted since the scan is kept ("manifest out of date"). The hash is the scan's size + first/last 32 KB, plus the full hash where both rows have one, so a change in the middle of a file that keeps its size and modified time is not seen.
+- **`--verify bytes`** compares every byte of the source, library and backup file instead. Slow (three reads per file), but a real proof.
+- **`--from-report FILE`** applies an earlier preview's `--report` without redoing the comparison. It re-checks that each source, library and backup file still exists with the same size and was not modified after the report was written.
 - The backup must be on a different device from the library, and neither may overlap a source or the holding folder. `--backup` can be repeated.
-- Sidecars, files of the other `--type`, and files missing from the library or backup are always kept.
-- A move never overwrites a file already in the holding folder.
+- Sidecars, files of the other `--type`, and files missing from the library or backup are always kept. Files the scan skips (thumbnail folders) are not in a manifest, so they are kept too.
 
 ### archive
 Retire a folder into a dated snapshot and repoint the manifests at it.

@@ -69,7 +69,7 @@ overlap, and merging them into the library collapses the duplicates.
 7. **Back up** the library: `backup <library> --dest <target>`. `backup` mirrors into a folder of
    the same name inside the target, so name the parent folder, not the final one.
 8. **Retire** a source only after steps 6 and 7 pass. `prune-sources <source> --library <lib> --backup <bak>`
-   lists files with a byte-identical copy in both; `--holding <dir> --apply` moves them aside (never deletes).
+   lists files with an identical copy in both (matched by fresh manifest hashes; `--verify bytes` for a byte check); `--holding <dir> --apply` moves them aside (never deletes).
    Delete the holding folder by hand after a waiting period.
 
 When space is tight, work in **slices** (one source subfolder at a time: copy, verify, back up,

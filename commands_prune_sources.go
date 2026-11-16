@@ -35,6 +35,7 @@ type pruneOptions struct {
 	apply    bool
 	kind     mediaKind
 	typeSet  bool
+	byBytes  bool // --verify bytes: compare file contents instead of trusting manifest hashes
 	jobs     int
 	progress progressMode
 }
@@ -72,6 +73,19 @@ func parsePruneArgs(args []string) (pruneOptions, error) {
 				return opts, err
 			}
 			opts.report = args[i+1]
+			i++
+		case "--verify":
+			if err := need(i, "'manifest' or 'bytes'"); err != nil {
+				return opts, err
+			}
+			switch strings.ToLower(args[i+1]) {
+			case "manifest", "hash":
+				opts.byBytes = false
+			case "bytes", "full":
+				opts.byBytes = true
+			default:
+				return opts, fmt.Errorf("unknown verify mode %q (use manifest or bytes)", args[i+1])
+			}
 			i++
 		case "--from-report":
 			if err := need(i, "a report file"); err != nil {
@@ -137,11 +151,16 @@ func parsePruneArgs(args []string) (pruneOptions, error) {
 func printPruneUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: photo-organizer prune-sources <source>... --library DIR --backup DIR [--backup DIR]\n")
 	fmt.Fprintf(os.Stderr, "                                     [--type photo|video|all] [--report FILE] [--jobs N]\n")
-	fmt.Fprintf(os.Stderr, "                                     [--holding DIR --apply] [--from-report FILE]\n\n")
+	fmt.Fprintf(os.Stderr, "                                     [--holding DIR --apply] [--from-report FILE]\n")
+	fmt.Fprintf(os.Stderr, "                                     [--verify manifest|bytes]\n\n")
 	fmt.Fprintf(os.Stderr, "Finds source files that have a byte-identical copy in the library AND in a backup.\n")
 	fmt.Fprintf(os.Stderr, "Preview by default. With --apply the files are MOVED into --holding (same relative\n")
 	fmt.Fprintf(os.Stderr, "paths); nothing is deleted. Delete the holding folder yourself once you are sure.\n")
-	fmt.Fprintf(os.Stderr, "  - Library and backup are read from disk now, not from manifests.\n")
+	fmt.Fprintf(os.Stderr, "  - --verify manifest (default) matches files by the hashes in fresh manifests (scan the source,\n")
+	fmt.Fprintf(os.Stderr, "    library and backup first). It reads no photo data. A file counts only if its size and\n")
+	fmt.Fprintf(os.Stderr, "    modified time still equal the manifest row. The hash covers the size plus the first and\n")
+	fmt.Fprintf(os.Stderr, "    last 32 KB (and the full hash where both rows have one).\n")
+	fmt.Fprintf(os.Stderr, "  - --verify bytes compares every byte of the source, library and backup file instead (slow).\n")
 	fmt.Fprintf(os.Stderr, "  - Library and backup must be on different devices.\n")
 	fmt.Fprintf(os.Stderr, "  - Sidecars, files of the other --type and unverified files are always kept.\n")
 	fmt.Fprintf(os.Stderr, "  - --from-report FILE reuses the byte comparison of an earlier preview (its --report file):\n")
@@ -160,10 +179,11 @@ const (
 	pruneOtherKind
 	pruneUnreadable
 	pruneChanged
+	pruneNotFresh
 )
 
 func (v pruneVerdict) String() string {
-	return [...]string{"safe", "not in library", "not in backup", "sidecar kept", "other type", "unreadable", "changed since report"}[v]
+	return [...]string{"safe", "not in library", "not in backup", "sidecar kept", "other type", "unreadable", "changed since report", "manifest out of date"}[v]
 }
 
 type pruneItem struct {
@@ -297,6 +317,14 @@ func runPruneSources(args []string) error {
 		return finishPrune(items, opts)
 	}
 
+	if !opts.byBytes {
+		items = collectPruneItems(opts, showProgress)
+		if err := verifyByManifest(items, opts); err != nil {
+			return err
+		}
+		return finishPrune(items, opts)
+	}
+
 	fmt.Fprintf(os.Stderr, "Reading library and backup folders...\n")
 	libIdx, libN := buildSizeIndex(opts.library)
 	bakIdx := make([]sizeIndex, len(opts.backups))
@@ -420,7 +448,7 @@ func printPruneSummary(items []*pruneItem, opts pruneOptions) {
 	fmt.Fprintf(os.Stderr, "\nSource files looked at: %s\n", formatCount(len(items)))
 	fmt.Fprintf(os.Stderr, "  Safe to remove (identical copy in library and backup): %s files, %s\n",
 		formatCount(count[pruneSafe]), formatSize(size[pruneSafe]))
-	for _, v := range []pruneVerdict{pruneNoLibrary, pruneNoBackup, pruneSidecar, pruneOtherKind, pruneUnreadable, pruneChanged} {
+	for _, v := range []pruneVerdict{pruneNoLibrary, pruneNoBackup, pruneSidecar, pruneOtherKind, pruneUnreadable, pruneChanged, pruneNotFresh} {
 		if count[v] > 0 {
 			fmt.Fprintf(os.Stderr, "  Kept — %-15s %s files, %s\n", v.String()+":", formatCount(count[v]), formatSize(size[v]))
 		}

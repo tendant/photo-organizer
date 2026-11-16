@@ -37,7 +37,7 @@ func newSrcPruneFixture(t *testing.T) srcPruneFixture {
 }
 
 func (f srcPruneFixture) args(extra ...string) []string {
-	return append([]string{f.src, "--library", f.lib, "--backup", f.bak, "--no-progress"}, extra...)
+	return append([]string{f.src, "--library", f.lib, "--backup", f.bak, "--no-progress", "--verify", "bytes"}, extra...)
 }
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
@@ -355,4 +355,153 @@ func mustModTime(t *testing.T, p string) time.Time {
 		t.Fatal(err)
 	}
 	return st.ModTime()
+}
+
+// ---- manifest-hash mode -------------------------------------------------------------
+
+func scanQuiet(t *testing.T, dir string) {
+	t.Helper()
+	if err := runScan([]string{dir, "--no-report"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f srcPruneFixture) mArgs(extra ...string) []string {
+	return append([]string{f.src, "--library", f.lib, "--backup", f.bak, "--no-progress"}, extra...)
+}
+
+func manifestFixture(t *testing.T) srcPruneFixture {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	return newSrcPruneFixture(t)
+}
+
+func scanAll(t *testing.T, f srcPruneFixture) {
+	t.Helper()
+	scanQuiet(t, f.src)
+	scanQuiet(t, f.lib)
+	scanQuiet(t, f.bak)
+}
+
+func TestPruneManifestModeMatchesByHashWithoutReadingContent(t *testing.T) {
+	f := manifestFixture(t)
+	big := strings.Repeat("x", 200<<10) // bigger than the two 32 KB hash windows
+	writeFile(t, filepath.Join(f.src, "a.jpg"), big)
+	writeFile(t, filepath.Join(f.lib, "2024/a.jpg"), big)
+	writeFile(t, filepath.Join(f.bak, "a.jpg"), big)
+	writeFile(t, filepath.Join(f.src, "other.jpg"), "only here")
+	scanAll(t, f)
+
+	// Change one byte in the middle of the library copy, keep size and mtime.
+	lp := filepath.Join(f.lib, "2024/a.jpg")
+	old := mustModTime(t, lp)
+	data := []byte(big)
+	data[100<<10] = 'Y'
+	os.WriteFile(lp, data, 0o644)
+	os.Chtimes(lp, old, old)
+
+	// bytes mode sees the difference ...
+	if err := runPruneSources(f.mArgs("--verify", "bytes", "--holding", f.hold, "--apply")); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(filepath.Join(f.src, "a.jpg")) {
+		t.Fatal("--verify bytes must keep a file whose library copy differs")
+	}
+	// ... manifest mode does not (documented trade-off), and reads no photo data.
+	if err := runPruneSources(f.mArgs("--holding", f.hold, "--apply")); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(f.src, "a.jpg")) {
+		t.Error("manifest mode should have matched a.jpg by hash")
+	}
+	if !exists(filepath.Join(f.src, "other.jpg")) {
+		t.Error("a file with no copy must stay")
+	}
+}
+
+func TestPruneManifestModeRequiresManifests(t *testing.T) {
+	f := manifestFixture(t)
+	seedSame(t, f, "a.jpg")
+	scanQuiet(t, f.src)
+	scanQuiet(t, f.lib) // no backup manifest
+	err := runPruneSources(f.mArgs())
+	if err == nil || !strings.Contains(err.Error(), "scan") {
+		t.Fatalf("want a 'run scan first' error, got %v", err)
+	}
+	if !exists(filepath.Join(f.src, "a.jpg")) {
+		t.Error("source must be untouched")
+	}
+}
+
+func TestPruneManifestModeDistrustsFilesChangedSinceTheScan(t *testing.T) {
+	f := manifestFixture(t)
+	seedSame(t, f, "src-edited.jpg", "lib-edited.jpg", "bak-gone.jpg", "lib-gone.jpg", "fine.jpg")
+	scanAll(t, f)
+	later := time.Now().Add(2 * time.Hour)
+	os.Chtimes(filepath.Join(f.src, "src-edited.jpg"), later, later)
+	os.Chtimes(filepath.Join(f.lib, "lib-edited.jpg"), later, later)
+	os.Remove(filepath.Join(f.bak, "bak-gone.jpg"))
+	os.Remove(filepath.Join(f.lib, "lib-gone.jpg"))
+	writeFile(t, filepath.Join(f.src, "new.jpg"), "never scanned") // not in the manifest at all
+
+	if err := runPruneSources(f.mArgs("--holding", f.hold, "--apply")); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"src-edited.jpg", "lib-edited.jpg", "bak-gone.jpg", "lib-gone.jpg", "new.jpg"} {
+		if !exists(filepath.Join(f.src, n)) {
+			t.Errorf("%s is not backed by a fresh manifest row and must stay", n)
+		}
+	}
+	if exists(filepath.Join(f.src, "fine.jpg")) {
+		t.Error("an untouched, matching file should have moved")
+	}
+}
+
+func TestPruneManifestModeFeedsFromReport(t *testing.T) {
+	f := manifestFixture(t)
+	seedSame(t, f, "a.jpg", "b.jpg")
+	scanAll(t, f)
+	rep := filepath.Join(filepath.Dir(f.src), "m-report.csv")
+	if err := runPruneSources(f.mArgs("--report", rep)); err != nil {
+		t.Fatal(err)
+	}
+	if err := runPruneSources(f.mArgs("--from-report", rep, "--holding", f.hold, "--apply")); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(f.src, "a.jpg")) || exists(filepath.Join(f.src, "b.jpg")) {
+		t.Error("report from manifest mode should be appliable with --from-report")
+	}
+}
+
+func TestRowsMatchUsesFullHashWhenBothHaveOne(t *testing.T) {
+	a := ManifestRow{SizeBytes: 10, PartialHash: "p"}
+	b := ManifestRow{SizeBytes: 10, PartialHash: "p"}
+	if !rowsMatch(a, b) {
+		t.Error("same size and partial hash should match")
+	}
+	a.FullHash, b.FullHash = "f1", "f2"
+	if rowsMatch(a, b) {
+		t.Error("different full hashes must not match")
+	}
+	b.FullHash = ""
+	if !rowsMatch(a, b) {
+		t.Error("a missing full hash falls back to the partial hash")
+	}
+	if rowsMatch(a, ManifestRow{SizeBytes: 11, PartialHash: "p"}) || rowsMatch(ManifestRow{SizeBytes: 10}, ManifestRow{SizeBytes: 10}) {
+		t.Error("different size or empty hash must not match")
+	}
+}
+
+func TestPruneVerifyArg(t *testing.T) {
+	o, err := parsePruneArgs([]string{"s", "--library", "l", "--backup", "b"})
+	if err != nil || o.byBytes {
+		t.Fatalf("default should be manifest mode: %v %v", o.byBytes, err)
+	}
+	o, _ = parsePruneArgs([]string{"s", "--library", "l", "--backup", "b", "--verify", "bytes"})
+	if !o.byBytes {
+		t.Error("--verify bytes not parsed")
+	}
+	if _, err := parsePruneArgs([]string{"s", "--library", "l", "--backup", "b", "--verify", "nope"}); err == nil {
+		t.Error("unknown verify mode should be rejected")
+	}
 }
