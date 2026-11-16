@@ -42,7 +42,9 @@ overlap, and merging them into the library collapses the duplicates.
 - **Keep photos and videos apart.** They differ in size, value per GB and how they should be
   verified and backed up. Videos are laid out by date, like photos.
   - `organize --type photo --dest <photo-library> --verify full`
-  - `organize --type video --dest <video-library> --verify auto`
+  - `organize --type video --dest <video-library> --layout folder --verify auto`
+    (`--layout folder` keeps each source folder, such as a camera card or a shoot, together as
+    `YYYY/YYYY-MM-DD_<folder>/` instead of scattering its clips across dates)
   - A same-name group is classified whole: any photo makes it a photo group, so a RAW+JPG pair
     or a Live Photo's `.mov` stays with its photo. The two runs never overlap, and together they
     equal one run without `--type`. Audio is only handled without `--type`.

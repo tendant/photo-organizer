@@ -57,6 +57,7 @@ modified** — they are only read.
 photo-organizer organize /data/Photos-All ~/Pictures --dest /tankm1/media/Library          # dry run
 photo-organizer organize /data/Photos-All ~/Pictures --dest /tankm1/media/Library --apply
 photo-organizer organize /mnt/usb/DCIM --dest ~/Library --layout month --apply
+photo-organizer organize ~/Cards --type video --dest ~/Library/videos --layout folder --apply   # one dated folder per source folder
 
 # Preview once, then copy exactly what you previewed
 photo-organizer organize /data/Photos-All --dest ~/Library --save-plan ~/plan.json

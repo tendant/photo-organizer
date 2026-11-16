@@ -1025,3 +1025,74 @@ func TestOrganizeTypeSavedPlanCopiesOnlyThatType(t *testing.T) {
 		t.Errorf("saved video plan copied %s", got)
 	}
 }
+
+func TestOrganizeFolderLayoutKeepsASourceFolderTogether(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	// one camera card spanning two months, plus a sidecar
+	writeFile(t, filepath.Join(src, "dji-action4/DCIM/DJI_001/VID_20240305_080000.mp4"), "c1")
+	writeFile(t, filepath.Join(src, "dji-action4/DCIM/DJI_001/VID_20240305_080000.lrf"), "p1")
+	writeFile(t, filepath.Join(src, "dji-action4/DCIM/DJI_001/VID_20240420_090000.mp4"), "c2")
+	// a second folder
+	writeFile(t, filepath.Join(src, "trip/VID_20230102_100000.mp4"), "c3")
+	dest := filepath.Join(home, "lib")
+	if out, code := runCLIWithHome(t, home, "organize", src, "--type", "video", "--dest", dest, "--layout", "folder", "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	got := strings.Join(listFiles(t, dest), ",")
+	for _, w := range []string{
+		"2024/2024-03-05_dji-action4_DJI_001/VID_20240305_080000.mp4",
+		"2024/2024-03-05_dji-action4_DJI_001/VID_20240305_080000.lrf",
+		"2024/2024-03-05_dji-action4_DJI_001/VID_20240420_090000.mp4", // April clip stays with the card
+		"2023/2023-01-02_src_trip/VID_20230102_100000.mp4",
+	} {
+		if !strings.Contains(got, w) {
+			t.Errorf("missing %s in %s", w, got)
+		}
+	}
+}
+
+func TestOrganizeFolderLayoutKeepsADuplicateOnce(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	writeFile(t, filepath.Join(src, "a/VID_20240305_080000.mp4"), "same-clip")
+	writeFile(t, filepath.Join(src, "b/VID_20240305_080000.mp4"), "same-clip")
+	writeFile(t, filepath.Join(src, "b/VID_20240306_080000.mp4"), "only-in-b")
+	dest := filepath.Join(home, "lib")
+	if out, code := runCLIWithHome(t, home, "organize", src, "--type", "video", "--dest", dest, "--layout", "folder", "--apply", "--no-progress"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	files := listFiles(t, dest)
+	if len(files) != 2 {
+		t.Fatalf("want 2 files (duplicate kept once), got %v", files)
+	}
+}
+
+func TestFolderLabel(t *testing.T) {
+	for in, want := range map[string]string{
+		"/s/Old-256/DCIM/DJI_001":            "Old-256_DJI_001",
+		"/s/dji-action4/DCIM/DJI_001":        "dji-action4_DJI_001",
+		"/s/Photos/Incoming/PRIVATE/M4/CLIP": "M4_CLIP",
+		"/s/DCIM":                            "s",
+		"/":                                  "folder",
+		"/s/a:b/c*d":                         "a_b_c_d",
+	} {
+		if got := folderLabel(in); got != want {
+			t.Errorf("folderLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseLayoutFolder(t *testing.T) {
+	o, err := parseOrganizeArgs([]string{"s", "--dest", "d", "--layout", "folder"})
+	if err != nil || !o.byFolder || o.byMonth {
+		t.Fatalf("folder layout not parsed: %+v %v", o, err)
+	}
+	o, _ = parseOrganizeArgs([]string{"s", "--dest", "d", "--layout", "folder", "--layout", "month"})
+	if o.byFolder || !o.byMonth {
+		t.Error("a later --layout should replace the earlier one")
+	}
+	if _, err := parseOrganizeArgs([]string{"s", "--dest", "d", "--layout", "weird"}); err == nil {
+		t.Error("unknown layout should be rejected")
+	}
+}

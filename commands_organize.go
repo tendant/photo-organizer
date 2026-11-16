@@ -41,6 +41,7 @@ type organizeOptions struct {
 	dest       string
 	apply      bool
 	byMonth    bool
+	byFolder   bool // --layout folder: one dated folder per source folder
 	progress   progressMode
 	jobs       int
 	verify     verifyMode
@@ -147,15 +148,17 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 			opts.apply = true
 		case "--layout":
 			if i+1 >= len(args) {
-				return opts, errors.New("--layout needs 'day' or 'month'")
+				return opts, errors.New("--layout needs 'day', 'month' or 'folder'")
 			}
 			switch args[i+1] {
 			case "day":
-				opts.byMonth = false
+				opts.byMonth, opts.byFolder = false, false
 			case "month":
-				opts.byMonth = true
+				opts.byMonth, opts.byFolder = true, false
+			case "folder":
+				opts.byMonth, opts.byFolder = false, true
 			default:
-				return opts, fmt.Errorf("unknown layout %q (use 'day' or 'month')", args[i+1])
+				return opts, fmt.Errorf("unknown layout %q (use 'day', 'month' or 'folder')", args[i+1])
 			}
 			i++
 		case "--jobs":
@@ -245,7 +248,7 @@ func parseOrganizeArgs(args []string) (organizeOptions, error) {
 
 func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "\n🗂  ORGANIZE PHOTOS BY DATE\n\n")
-	fmt.Fprintf(os.Stderr, "Usage: photo-organizer organize <folder> [<folder>...] --dest <library> [--apply] [--layout day|month] [--type photo|video|all]\n\n")
+	fmt.Fprintf(os.Stderr, "Usage: photo-organizer organize <folder> [<folder>...] --dest <library> [--apply] [--layout day|month|folder] [--type photo|video|all]\n\n")
 	fmt.Fprintf(os.Stderr, "Examples:\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer organize /data/Photos-All --dest /tankm1/media/Library\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer organize ~/Pictures /mnt/usb/DCIM --dest ~/Library --apply\n\n")
@@ -259,6 +262,8 @@ func printOrganizeUsage() {
 	fmt.Fprintf(os.Stderr, "  - Same name, different content: the newcomer gets a _1, _2... suffix.\n")
 	fmt.Fprintf(os.Stderr, "  - A log of every copy is written to <library>/%s/.\n", organizeLogDir)
 	fmt.Fprintf(os.Stderr, "  - --layout month uses YYYY/YYYY-MM/ instead of one folder per day.\n")
+	fmt.Fprintf(os.Stderr, "  - --layout folder keeps each source folder together as YYYY/YYYY-MM-DD_<folder>/, dated by its\n")
+	fmt.Fprintf(os.Stderr, "    earliest clip (good for camera cards and shoots). Duplicates are still kept once.\n")
 	fmt.Fprintf(os.Stderr, "  - --jobs N hashes N files at once (default 4; 1 for a single spinning disk).\n")
 	fmt.Fprintf(os.Stderr, "  - --verify auto|full|quick: how duplicates are confirmed. auto compares every byte\n")
 	fmt.Fprintf(os.Stderr, "    up to 64 MB and samples 16 spread points in larger files; full always reads\n")
@@ -558,8 +563,9 @@ type planner struct {
 	idx          libraryIndex
 	taken        map[string]bool // lowercased library + planned paths
 	hs           *hashStore
-	plannedSrc   map[string]string // planned library path -> source it comes from
-	plannedBySrc map[string]string // source path -> library path it will have
+	plannedSrc   map[string]string    // planned library path -> source it comes from
+	plannedBySrc map[string]string    // source path -> library path it will have
+	dirDate      map[string]time.Time // --layout folder: earliest dated clip of each source folder
 }
 
 func buildOrganizePlan(sources []string, dest string, opts organizeOptions, showProgress bool) (*organizePlan, error) {
@@ -609,17 +615,32 @@ func buildOrganizePlan(sources []string, dest string, opts organizeOptions, show
 	// the digests the duplicate checks will need, then plan sequentially so the
 	// result is identical to a single-threaded run.
 	const planBatch = 256
+	var all []*groupInfo // --layout folder needs every date before the first file is placed
+	if opts.byFolder {
+		all = make([]*groupInfo, len(keys))
+		parallelDo(opts.jobs, len(keys), func(i int) {
+			files := found.groups[keys[i]]
+			sort.Slice(files, func(a, b int) bool { return files[a].path < files[b].path })
+			all[i] = analyzeGroup(files, opts.videoTZ)
+		})
+		pl.dirDate = earliestDatePerFolder(all)
+	}
 	for start := 0; start < len(keys); start += planBatch {
 		end := start + planBatch
 		if end > len(keys) {
 			end = len(keys)
 		}
-		infos := make([]*groupInfo, end-start)
-		parallelDo(opts.jobs, len(infos), func(i int) {
-			files := found.groups[keys[start+i]]
-			sort.Slice(files, func(a, b int) bool { return files[a].path < files[b].path })
-			infos[i] = analyzeGroup(files, opts.videoTZ)
-		})
+		var infos []*groupInfo
+		if all != nil {
+			infos = all[start:end]
+		} else {
+			infos = make([]*groupInfo, end-start)
+			parallelDo(opts.jobs, len(infos), func(i int) {
+				files := found.groups[keys[start+i]]
+				sort.Slice(files, func(a, b int) bool { return files[a].path < files[b].path })
+				infos[i] = analyzeGroup(files, opts.videoTZ)
+			})
+		}
 		pl.warmDigests(infos)
 		for i, g := range infos {
 			pl.planGroup(g)
@@ -744,6 +765,9 @@ func (pl *planner) planGroup(g *groupInfo) {
 	date, source := g.date, g.source
 	hasDate := plausibleDate(date)
 	folder := captureFolder(date, hasDate, pl.opts.byMonth)
+	if pl.opts.byFolder {
+		folder = pl.unitFolder(filepath.Dir(media[lead].path))
+	}
 
 	// placed records where each source file's content lives (or will live) in
 	// the library, so sidecars can be put beside it.
@@ -1248,4 +1272,58 @@ func zoneLabel(loc *time.Location) string {
 		return fmt.Sprintf("this computer's zone (%s, UTC%+d)", abbr, off/3600)
 	}
 	return loc.String()
+}
+
+// earliestDatePerFolder finds, for each source folder, the earliest plausible capture date
+// among its groups, so every file of a folder lands in one library folder.
+func earliestDatePerFolder(infos []*groupInfo) map[string]time.Time {
+	out := map[string]time.Time{}
+	for _, g := range infos {
+		if g == nil || len(g.media) == 0 || !plausibleDate(g.date) {
+			continue
+		}
+		dir := filepath.Dir(g.media[g.lead].path)
+		if cur, ok := out[dir]; !ok || g.date.Before(cur) {
+			out[dir] = g.date
+		}
+	}
+	return out
+}
+
+// unitFolder names the library folder for a source folder: YYYY/YYYY-MM-DD_<label>, dated by
+// the folder's earliest clip. Folders without a usable date go to undated/<label>.
+func (pl *planner) unitFolder(dir string) string {
+	label := folderLabel(dir)
+	d, ok := pl.dirDate[dir]
+	if !ok {
+		return filepath.Join(undatedFolder, label)
+	}
+	return filepath.Join(d.Format("2006"), d.Format("2006-01-02")+"_"+label)
+}
+
+// folderLabel builds a short readable name from the last two parts of a folder path,
+// ignoring the generic card folder DCIM: ".../dji-action4/DCIM/DJI_001" -> "dji-action4_DJI_001".
+func folderLabel(dir string) string {
+	var parts []string
+	for _, p := range strings.Split(filepath.ToSlash(dir), "/") {
+		if p != "" && !strings.EqualFold(p, "DCIM") {
+			parts = append(parts, p)
+		}
+	}
+	if len(parts) > 2 {
+		parts = parts[len(parts)-2:]
+	}
+	label := strings.Join(parts, "_")
+	label = strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return '_'
+		}
+		return r
+	}, label)
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return "folder"
+	}
+	return label
 }
