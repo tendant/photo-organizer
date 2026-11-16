@@ -1165,6 +1165,7 @@ func TestOrganizeMoveWithSavedPlanResumesAfterInterruption(t *testing.T) {
 	src := filepath.Join(home, "src")
 	writeFile(t, filepath.Join(src, "VID_20240305_080000.mp4"), "one")
 	writeFile(t, filepath.Join(src, "VID_20240306_080000.mp4"), "two")
+	writeFile(t, filepath.Join(src, "VID_20240305_080000.lrf"), "proxy")
 	dest := filepath.Join(home, "lib")
 	plan := filepath.Join(home, "plan.json")
 	if _, code := runCLIWithHome(t, home, "organize", src, "--type", "video", "--dest", dest, "--save-plan", plan, "--move", "--no-progress"); code != 0 {
@@ -1174,10 +1175,12 @@ func TestOrganizeMoveWithSavedPlanResumesAfterInterruption(t *testing.T) {
 	first := filepath.Join(dest, "2024/2024-03-05/VID_20240305_080000.mp4")
 	os.MkdirAll(filepath.Dir(first), 0o755)
 	os.Rename(filepath.Join(src, "VID_20240305_080000.mp4"), first)
+	// and its sidecar too (no hash in the plan, so only size and time can prove it)
+	os.Rename(filepath.Join(src, "VID_20240305_080000.lrf"), filepath.Join(filepath.Dir(first), "VID_20240305_080000.lrf"))
 	if out, code := runCLIWithHome(t, home, "organize", "--plan", plan, "--move", "--apply", "--no-progress"); code != 0 {
 		t.Fatalf("resume failed: exit %d\n%s", code, out)
 	}
-	if len(listFiles(t, src)) != 0 || len(listFiles(t, dest)) != 2 {
+	if len(listFiles(t, src)) != 0 || len(listFiles(t, dest)) != 3 {
 		t.Errorf("src %v lib %v", listFiles(t, src), listFiles(t, dest))
 	}
 }

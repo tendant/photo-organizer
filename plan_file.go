@@ -216,7 +216,7 @@ func validatePlan(pf planFile, plan *organizePlan) (todo []plannedCopy, done int
 		switch {
 		case err != nil:
 			// A --move run that was interrupted leaves moved files with no source: they are done.
-			if _, derr := os.Lstat(dst); derr == nil && alreadyCopied(c, dst) {
+			if alreadyMoved(c, dst) {
 				done++
 				continue
 			}
@@ -255,4 +255,19 @@ func alreadyCopied(c planCopy, dst string) bool {
 		return h == c.Hash
 	}
 	return sameContent(c.Src, dst)
+}
+
+// alreadyMoved reports whether a --move run already put the planned file at dst: same size and
+// modified time (a rename keeps both) and, for photos and videos, the same hash. Sidecars have no
+// hash, and their source is gone, so size and time are all there is to compare.
+func alreadyMoved(c planCopy, dst string) bool {
+	info, err := os.Stat(dst)
+	if err != nil || info.Size() != c.Size || info.ModTime().UnixNano() != c.MTime {
+		return false
+	}
+	if c.Hash != "" {
+		h, _ := processFile(dst)
+		return h == c.Hash
+	}
+	return true
 }
