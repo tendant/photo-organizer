@@ -147,3 +147,42 @@ func TestCheckBackupShowsWhichFolderHoldsTheCopies(t *testing.T) {
 		}
 	}
 }
+
+func TestLookupFindsRenamedCopiesByContent(t *testing.T) {
+	home := t.TempDir()
+	a := filepath.Join(home, "a")
+	b := filepath.Join(home, "b")
+	writeFile(t, filepath.Join(a, "IMG_0001.jpg"), "photo-bytes-xyz")
+	writeFile(t, filepath.Join(b, "renamed/holiday.jpg"), "photo-bytes-xyz") // same content, other name
+	writeFile(t, filepath.Join(b, "IMG_0001.jpg"), "different content")      // same name, other content
+	for _, d := range []string{a, b} {
+		if out, code := runCLIWithHome(t, home, "scan", d, "--no-report"); code != 0 {
+			t.Fatalf("scan: exit %d\n%s", code, out)
+		}
+	}
+
+	// Default: by content. Finds the renamed copy, not the same-named file with other content.
+	out, code := runCLIWithHome(t, home, "lookup", filepath.Join(a, "IMG_0001.jpg"))
+	if code != 0 || !strings.Contains(out, filepath.Join(b, "renamed/holiday.jpg")) || !strings.Contains(out, "[this file]") ||
+		strings.Contains(out, filepath.Join(b, "IMG_0001.jpg")) {
+		t.Errorf("content lookup: exit %d\n%s", code, out)
+	}
+
+	// A file that is not in any manifest is hashed on the spot.
+	loose := filepath.Join(home, "loose.jpg")
+	writeFile(t, loose, "photo-bytes-xyz")
+	out, _ = runCLIWithHome(t, home, "lookup", loose)
+	if !strings.Contains(out, "found in 2 place(s)") {
+		t.Errorf("a loose file should match the two scanned copies:\n%s", out)
+	}
+
+	// A bare name does not search by name unless asked.
+	out, code = runCLIWithHome(t, home, "lookup", "holiday.jpg")
+	if strings.Contains(out, "Same content") || !strings.Contains(out, "--name") {
+		t.Errorf("bare name should point at --name: exit %d\n%s", code, out)
+	}
+	out, _ = runCLIWithHome(t, home, "lookup", "--name", "IMG_0001.jpg")
+	if !strings.Contains(out, "2 match(es) by name") || !strings.Contains(out, "content was not compared") {
+		t.Errorf("--name output:\n%s", out)
+	}
+}

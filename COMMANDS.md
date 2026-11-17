@@ -340,6 +340,16 @@ photo-organizer fix ~/manifests/_Manifest/photos.csv /mnt/archive/2026-06-20-143
 
 ## Search And Inventory
 
+### lookup
+Show every place a file is stored.
+
+```bash
+photo-organizer lookup /data/Photos-All/IMG_0001.jpg   # by content (default)
+photo-organizer lookup --name vacation                 # by name or path instead
+```
+
+By default the file is matched by **content**: size plus the scan hash (first and last 32 KB) against every manifest, so renamed and moved copies are found and a different file with the same name is not. The argument is a file on this machine (hashed on the spot if no manifest has it) or a path as a manifest records it. Copies in holding folders are listed and marked. `--name` lists manifest entries whose name or path matches and does not compare content; it is also how a folder name is searched (use `check-backup <folder>` for where a folder's files are copied).
+
 ### search
 Search manifest contents.
 
