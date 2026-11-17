@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -223,5 +224,33 @@ func TestPartialScanBrakeLooksAtItsOwnPartOnly(t *testing.T) {
 	out, _ := runCLIWithHome(t, home, "scan", filepath.Join(root, "small"), "--no-report")
 	if !strings.Contains(out, "Skipping prune: would remove 3 of 3 entries") {
 		t.Errorf("the brake should judge the part that was scanned:\n%s", out)
+	}
+}
+
+func TestRescanRefreshesScanDateOfUnchangedFiles(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "pics")
+	writeFile(t, filepath.Join(dir, "a.jpg"), "one")
+	if out, code := runCLIWithHome(t, home, "scan", dir, "--no-report"); code != 0 {
+		t.Fatalf("scan: exit %d\n%s", code, out)
+	}
+	mf, _ := filepath.Glob(filepath.Join(home, "manifests", "_Manifest", "*pics.csv"))
+	if len(mf) != 1 {
+		t.Fatalf("manifest not found: %v", mf)
+	}
+	// Age the row as if it were scanned long ago.
+	data, _ := os.ReadFile(mf[0])
+	aged := regexp.MustCompile(`\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,`+regexp.QuoteMeta(dir)).ReplaceAllString(string(data), "2020-01-01 00:00:00,"+dir)
+	if aged == string(data) {
+		t.Fatalf("could not age the scan_date in:\n%s", data)
+	}
+	os.WriteFile(mf[0], []byte(aged), 0600)
+
+	if out, code := runCLIWithHome(t, home, "scan", dir, "--no-report"); code != 0 {
+		t.Fatalf("rescan: exit %d\n%s", code, out)
+	}
+	after, _ := os.ReadFile(mf[0])
+	if strings.Contains(string(after), "2020-01-01") {
+		t.Errorf("an unchanged file kept its old scan_date:\n%s", after)
 	}
 }

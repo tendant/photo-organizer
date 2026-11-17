@@ -206,12 +206,16 @@ func updateManifestScoped(scanDir, subtree string, files []FileInfo, manifestFil
 doneLoading:
 
 	newCount, updatedCount := 0, 0
+	scannedAt := time.Now().Format("2006-01-02 15:04:05")
 	for i, fi := range files {
 		if len(files) > 1000 && (i+1)%10000 == 0 {
 			fmt.Fprintf(os.Stderr, "  Processing: %d / %d files\n", i+1, len(files))
 		}
 		relPath, _ := filepath.Rel(scanDir, fi.Path)
 		if row, exists := existing[relPath]; exists {
+			// Seen in this scan, changed or not: scan_date records when it was last scanned, so a
+			// rescan of an unchanged folder makes its manifest fresh.
+			row[headerIdx["scan_date"]] = scannedAt
 			storedSize, err := strconv.ParseInt(row[headerIdx["file_size_bytes"]], 10, 64)
 			if err != nil {
 				continue
@@ -227,7 +231,6 @@ doneLoading:
 				row[headerIdx["capture_date"]] = fi.CaptureDate.Format("2006:01:02 15:04:05")
 				row[headerIdx["partial_hash"]] = fi.PartialHash
 				row[headerIdx["full_hash"]] = fi.FullHash
-				row[headerIdx["scan_date"]] = time.Now().Format("2006-01-02 15:04:05")
 				existing[relPath] = row
 				updatedCount++
 			} else if hashChanged {
