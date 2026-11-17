@@ -521,6 +521,11 @@ func runCheckBackupStatus(args []string) error {
 	atRiskFiles := 0
 	atRiskBytes := int64(0)
 
+	// Where the copies are: one entry per (machine, scanned folder), with the folders holding them.
+	locs := map[string]*copyLocation{}
+	atRiskElsewhere, atRiskElsewhereBytes := 0, int64(0) // not on a backup machine, but on this machine
+	atRiskAlone, atRiskAloneBytes := 0, int64(0)         // no other copy anywhere
+
 	for _, localRow := range localRows {
 		// Always use PartialHash for key consistency (even if FullHash exists)
 		if localRow.PartialHash == "" {
@@ -541,14 +546,44 @@ func runCheckBackupStatus(args []string) error {
 		machinesHaveFile := make(map[string]bool)
 		removableHaveFile := make(map[string]bool)
 		key := indexKey(localRow.PartialHash, localRow.SizeBytes)
+		seenLoc := map[string]bool{}
+		hasThisMachineCopy, hasAnyCopy := false, false
 		if len(hashIndex[key]) > 0 {
 			for _, remoteRow := range hashIndex[key] {
-				if isRemovableSource(remoteRow.MachineName, remoteRow.ScanPath, machinesCfg) {
+				copyPath := filepath.Join(remoteRow.ScanPath, remoteRow.RelativePath)
+				onThisMachine := remoteRow.MachineName == currentMachine
+				if onThisMachine && (copyPath == absPath || strings.HasPrefix(copyPath, absPath+string(filepath.Separator))) {
+					continue // the file itself, not another copy
+				}
+				removable := isRemovableSource(remoteRow.MachineName, remoteRow.ScanPath, machinesCfg)
+				hasAnyCopy = true
+				if removable {
 					removableHaveFile[remoteRow.MachineName] = true
-				} else if remoteRow.MachineName != currentMachine {
+				} else if !onThisMachine {
 					// Only count OTHER machines as backups (not current machine)
 					machinesHaveFile[remoteRow.MachineName] = true
+				} else {
+					hasThisMachineCopy = true
 				}
+				lk := remoteRow.MachineName + "\x00" + remoteRow.ScanPath
+				if seenLoc[lk] {
+					continue
+				}
+				seenLoc[lk] = true
+				loc := locs[lk]
+				if loc == nil {
+					kind := copyOnBackup
+					if removable {
+						kind = copyOnRemovable
+					} else if onThisMachine {
+						kind = copyOnThisMachine
+					}
+					loc = &copyLocation{machine: remoteRow.MachineName, root: remoteRow.ScanPath, kind: kind, dirs: map[string]int{}}
+					locs[lk] = loc
+				}
+				loc.files++
+				loc.bytes += localRow.SizeBytes
+				loc.dirs[filepath.Dir(remoteRow.RelativePath)]++
 			}
 		}
 
@@ -558,6 +593,14 @@ func runCheckBackupStatus(args []string) error {
 			atRiskFiles++
 			atRiskBytes += localRow.SizeBytes
 			folderStats[folderPath].AtRiskFiles++
+			switch {
+			case hasThisMachineCopy:
+				atRiskElsewhere++
+				atRiskElsewhereBytes += localRow.SizeBytes
+			case !hasAnyCopy:
+				atRiskAlone++
+				atRiskAloneBytes += localRow.SizeBytes
+			}
 		} else {
 			folderStats[folderPath].BackedUpFiles++
 			for machine := range machinesHaveFile {
@@ -630,6 +673,8 @@ func runCheckBackupStatus(args []string) error {
 		fmt.Printf("\n")
 	}
 
+	printCopyLocations(locs, totalFiles)
+
 	// Show at-risk files
 	if atRiskFiles > 0 {
 		atRiskCoverage := float64(atRiskFiles) / float64(totalFiles) * 100
@@ -639,6 +684,14 @@ func runCheckBackupStatus(args []string) error {
 			fmt.Printf("   Not found on configured backup machines (%s)\n", machineList)
 		} else {
 			fmt.Printf("   Not found on any configured backup machines\n")
+		}
+		if atRiskElsewhere > 0 {
+			fmt.Printf("   %s of them (%s) have a copy elsewhere on this machine (see above), which is not a backup\n",
+				formatCount(atRiskElsewhere), formatSize(atRiskElsewhereBytes))
+		}
+		if atRiskAlone > 0 {
+			fmt.Printf("   %s of them (%s) have no other copy anywhere: only this folder holds them\n",
+				formatCount(atRiskAlone), formatSize(atRiskAloneBytes))
 		}
 		fmt.Printf("   May exist on other machines or need explicit backup\n")
 		fmt.Printf("   Run: photo-organizer backup %s --dest <target>\n", folderPath)
@@ -749,4 +802,76 @@ func getDiskUsageLocal() string {
 		return fmt.Sprintf("Disk: %s used / %s total (%s available)", used, total, available)
 	}
 	return ""
+}
+
+type copyKind int
+
+const (
+	copyOnBackup copyKind = iota
+	copyOnRemovable
+	copyOnThisMachine
+)
+
+// copyLocation is one scanned folder (on one machine) holding copies of the checked folder's files.
+type copyLocation struct {
+	machine, root string
+	kind          copyKind
+	files         int
+	bytes         int64
+	dirs          map[string]int // folder (relative to root) -> files
+}
+
+// printCopyLocations lists every scanned folder that holds copies, with the folders inside it, so
+// it is clear which folder (the library, a backup disk, a NAS share) has each file.
+func printCopyLocations(locs map[string]*copyLocation, total int) {
+	if len(locs) == 0 || total == 0 {
+		return
+	}
+	list := make([]*copyLocation, 0, len(locs))
+	for _, l := range locs {
+		list = append(list, l)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].kind != list[j].kind {
+			return list[i].kind < list[j].kind
+		}
+		if list[i].files != list[j].files {
+			return list[i].files > list[j].files
+		}
+		return list[i].root < list[j].root
+	})
+	fmt.Printf("WHERE THE COPIES ARE:\n\n")
+	for _, l := range list {
+		tag := "backup machine"
+		switch l.kind {
+		case copyOnRemovable:
+			tag = "removable media, not a backup"
+		case copyOnThisMachine:
+			tag = "this machine, not a backup"
+		}
+		fmt.Printf("  %s: %s  [%s]\n", l.machine, l.root, tag)
+		fmt.Printf("    %s files (%.1f%%) | %s\n", formatCount(l.files), float64(l.files)/float64(total)*100, formatSize(l.bytes))
+		type dc struct {
+			dir string
+			n   int
+		}
+		var ds []dc
+		for d, n := range l.dirs {
+			ds = append(ds, dc{d, n})
+		}
+		sort.Slice(ds, func(i, j int) bool {
+			if ds[i].n != ds[j].n {
+				return ds[i].n > ds[j].n
+			}
+			return ds[i].dir < ds[j].dir
+		})
+		for i, d := range ds {
+			if i == 5 {
+				fmt.Printf("      ... and %s more folders\n", formatCount(len(ds)-5))
+				break
+			}
+			fmt.Printf("      %s files  %s\n", formatCount(d.n), d.dir)
+		}
+	}
+	fmt.Printf("\n")
 }

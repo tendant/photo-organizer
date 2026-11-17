@@ -123,3 +123,27 @@ func TestRunStoragePlan(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckBackupShowsWhichFolderHoldsTheCopies(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(src, "a/IMG_1.jpg"), "same-bytes-one")
+	writeFile(t, filepath.Join(src, "a/IMG_2.jpg"), "only-here-two")
+	writeFile(t, filepath.Join(lib, "2024/2024-03-15/IMG_1.jpg"), "same-bytes-one")
+	for _, d := range []string{src, lib} {
+		if out, code := runCLIWithHome(t, home, "scan", d, "--no-report"); code != 0 {
+			t.Fatalf("scan %s: exit %d\n%s", d, code, out)
+		}
+	}
+	out, code := runCLIWithHome(t, home, "check-backup", src)
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	for _, want := range []string{"WHERE THE COPIES ARE", lib, "this machine, not a backup", "2024/2024-03-15",
+		"1 of them", "have a copy elsewhere on this machine", "have no other copy anywhere"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
