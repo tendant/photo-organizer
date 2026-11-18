@@ -175,7 +175,7 @@ func runManifests(args []string) error {
 	// Display local manifests
 	if len(localSources) > 0 {
 		fmt.Fprintf(os.Stderr, "LOCAL MANIFESTS\n")
-		fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files  Status              Last Scanned\n")
+		fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files       Size  Status              Last Scanned\n")
 		fmt.Fprintf(os.Stderr, "──────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
 		displayManifestTable(localSources, "💻 lcl")
 	}
@@ -186,7 +186,7 @@ func runManifests(args []string) error {
 			fmt.Fprintf(os.Stderr, "\n")
 		}
 		fmt.Fprintf(os.Stderr, "REMOVABLE MEDIA (USB, SD cards, etc.)\n")
-		fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files  Status              Last Scanned\n")
+		fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files       Size  Status              Last Scanned\n")
 		fmt.Fprintf(os.Stderr, "──────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
 		displayManifestTable(removableSources, "💾 rem")
 	}
@@ -197,7 +197,7 @@ func runManifests(args []string) error {
 			fmt.Fprintf(os.Stderr, "\n")
 		}
 		fmt.Fprintf(os.Stderr, "REMOTE MACHINES\n")
-		fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files  Status              Last Scanned\n")
+		fmt.Fprintf(os.Stderr, "Origin  Machine              Scan Path                      Files       Size  Status              Last Scanned\n")
 		fmt.Fprintf(os.Stderr, "──────────────────────────────────────────────────────────────────────────────────────────────────────────\n")
 		displayManifestTable(remoteSources, "📦 rmt")
 	}
@@ -280,11 +280,16 @@ func displayManifestTable(sources []ManifestSource, originMark string) {
 			freshStatus = fmt.Sprintf("🔴 %d mo", int(daysSince/30))
 		}
 
-		fmt.Fprintf(os.Stderr, "%s  %-20s %-28s %6d  %-17s %s\n",
+		size := "-"
+		if st, err := os.Stat(src.FilePath); err == nil {
+			size = formatBytes(st.Size())
+		}
+		fmt.Fprintf(os.Stderr, "%s  %-20s %-28s %6d  %9s  %-17s %s\n",
 			originMark,
 			src.MachineName,
 			scanPath,
 			len(src.Rows),
+			size,
 			freshStatus,
 			src.LastScanned,
 		)

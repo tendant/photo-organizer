@@ -298,6 +298,9 @@ func printScanSummary(s ScanStats, m ManifestStats) {
 		fmt.Printf("  Pruned (deleted):  %s  (no longer on disk)\n", formatCount(m.Pruned))
 	}
 	fmt.Printf("  Total size:        %s\n", formatSize(s.TotalBytes))
+	if m.Entries > 0 {
+		fmt.Printf("  Manifest:          %s entries, %s on disk\n", formatCount(m.Entries), formatSize(m.Bytes))
+	}
 	fmt.Println("─────────────────────────────────────────────────────")
 }
 

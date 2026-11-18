@@ -164,3 +164,18 @@ func TestScanSkipsTheReportUnlessAsked(t *testing.T) {
 		t.Error("--no-report must still be accepted")
 	}
 }
+
+func TestScanSummaryAndManifestsListShowManifestSize(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "p")
+	writeFile(t, filepath.Join(src, "a.jpg"), "a")
+	writeFile(t, filepath.Join(src, "b.jpg"), "b")
+	out, code := runCLIWithHome(t, home, "scan", src, "--no-ignore-file")
+	if code != 0 || !strings.Contains(out, "Manifest:          2 entries, ") {
+		t.Fatalf("scan summary should give the manifest's entries and size (exit %d):\n%s", code, out)
+	}
+	list, _ := runCLIWithHome(t, home, "manifests")
+	if !strings.Contains(list, "Size") || !strings.Contains(list, " B  ") {
+		t.Errorf("manifests listing should have a Size column:\n%s", list)
+	}
+}

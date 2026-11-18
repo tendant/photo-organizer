@@ -51,6 +51,8 @@ type ManifestStats struct {
 	New     int
 	Updated int
 	Pruned  int
+	Entries int   // rows in the manifest after the scan (0 when not known)
+	Bytes   int64 // size of the manifest file
 }
 
 // backupManifest copies manifestFile to _backups/<name>_YYYYMMDD_HHMMSS.csv

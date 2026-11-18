@@ -557,8 +557,13 @@ func scanIntoManifest(dir, relBase, subtree, manifestFile, machineName string, p
 		mstats.Pruned = unseen
 	}
 
-	if err := mergeIntoManifest(manifestFile, oldPath, journalPath, inScope, dropUnseen); err != nil {
+	total, err := mergeIntoManifest(manifestFile, oldPath, journalPath, inScope, dropUnseen)
+	if err != nil {
 		return stats, mstats, err
+	}
+	mstats.Entries = total
+	if st, err := os.Stat(manifestFile); err == nil {
+		mstats.Bytes = st.Size()
 	}
 	os.Remove(journalPath)
 	for _, lp := range leftovers {
@@ -569,14 +574,14 @@ func scanIntoManifest(dir, relBase, subtree, manifestFile, machineName string, p
 
 // mergeIntoManifest writes the new manifest: every journal row, plus the old rows nobody saw
 // (except those in scope when dropUnseen), in folder order, then swaps it in atomically.
-func mergeIntoManifest(manifestFile, oldPath, journalPath string, inScope func(string) bool, dropUnseen bool) error {
+func mergeIntoManifest(manifestFile, oldPath, journalPath string, inScope func(string) bool, dropUnseen bool) (int, error) {
 	fmt.Fprintf(os.Stderr, "Updating manifest: %s\n", filepath.Base(manifestFile))
 	if err := backupManifest(manifestFile); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not back up manifest: %v\n", err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(manifestFile), ".manifest-tmp-*")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath) // a no-op once renamed
@@ -625,20 +630,17 @@ func mergeIntoManifest(manifestFile, oldPath, journalPath string, inScope func(s
 	w.Flush()
 	if err := w.Error(); err != nil {
 		tmp.Close()
-		return fmt.Errorf("write manifest %s: %w", manifestFile, err)
+		return 0, fmt.Errorf("write manifest %s: %w", manifestFile, err)
 	}
 	if old.err != nil || jr.err != nil {
 		tmp.Close()
-		return fmt.Errorf("read while merging %s: %w", manifestFile, errors.Join(old.err, jr.err))
+		return 0, fmt.Errorf("read while merging %s: %w", manifestFile, errors.Join(old.err, jr.err))
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close manifest %s: %w", manifestFile, err)
+		return 0, fmt.Errorf("close manifest %s: %w", manifestFile, err)
 	}
 	if err := os.Rename(tmpPath, manifestFile); err != nil {
-		return fmt.Errorf("finalize manifest %s: %w", manifestFile, err)
+		return 0, fmt.Errorf("finalize manifest %s: %w", manifestFile, err)
 	}
-	if total > 100000 {
-		fmt.Fprintf(os.Stderr, "Manifest has %s entries.\n", formatCount(total))
-	}
-	return nil
+	return total, nil
 }
