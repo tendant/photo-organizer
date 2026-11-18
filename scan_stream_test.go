@@ -179,3 +179,21 @@ func TestScanSummaryAndManifestsListShowManifestSize(t *testing.T) {
 		t.Errorf("manifests listing should have a Size column:\n%s", list)
 	}
 }
+
+func TestScanSummaryCountsOnlyTheRowsLeftAfterPruning(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "p")
+	for _, n := range []string{"a.jpg", "b.jpg", "c.jpg", "d.jpg"} {
+		writeFile(t, filepath.Join(src, n), n)
+	}
+	if _, code := runCLIWithHome(t, home, "scan", src, "--no-ignore-file"); code != 0 {
+		t.Fatal("first scan failed")
+	}
+	if err := os.Remove(filepath.Join(src, "d.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runCLIWithHome(t, home, "scan", src, "--no-ignore-file")
+	if code != 0 || !strings.Contains(out, "Pruned (deleted):  1") || !strings.Contains(out, "Manifest:          3 entries, ") {
+		t.Fatalf("after pruning one of four files the summary should show 3 entries (exit %d):\n%s", code, out)
+	}
+}

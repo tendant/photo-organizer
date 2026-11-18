@@ -593,19 +593,23 @@ func mergeIntoManifest(manifestFile, oldPath, journalPath string, inScope func(s
 	w := csv.NewWriter(tmp)
 	w.Write(manifestColumns)
 
+	total := 0 // rows written, so dropped (pruned) and superseded old rows are not counted
+	write := func(row []string) {
+		w.Write(row)
+		total++
+	}
 	keepOld := func(row []string) {
 		if !(dropUnseen && inScope(row[mcRel])) {
-			w.Write(row)
+			write(row)
 		}
 	}
-	total := 0
 	for old.row != nil || jr.row != nil {
 		switch {
 		case jr.row == nil:
 			keepOld(old.row)
 			old.next()
 		case old.row == nil:
-			w.Write(jr.row)
+			write(jr.row)
 			jr.next()
 		default:
 			c := pathCompare(old.rel, jr.rel)
@@ -614,10 +618,10 @@ func mergeIntoManifest(manifestFile, oldPath, journalPath string, inScope func(s
 				keepOld(old.row)
 				old.next()
 			case c > 0:
-				w.Write(jr.row)
+				write(jr.row)
 				jr.next()
 			default:
-				w.Write(jr.row)
+				write(jr.row)
 				key := jr.rel
 				jr.next()
 				for old.row != nil && pathCompare(old.rel, key) == 0 {
@@ -625,7 +629,6 @@ func mergeIntoManifest(manifestFile, oldPath, journalPath string, inScope func(s
 				}
 			}
 		}
-		total++
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
