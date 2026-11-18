@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -406,6 +407,25 @@ func runCheckBackupStatus(args []string) error {
 	}
 
 	folderPath := args[0]
+	topN, depth := 0, 0 // --top N lists the biggest folders nothing else holds; --depth D groups by D path levels
+	for i := 1; i < len(args); i++ {
+		if (args[i] == "--top" || args[i] == "--depth") && i+1 < len(args) {
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n < 0 {
+				fmt.Fprintf(os.Stderr, "Error: %s needs a number, got %q\n", args[i], args[i+1])
+				return errFailed
+			}
+			if args[i] == "--top" {
+				topN = n
+			} else {
+				depth = n
+			}
+			i++
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: unknown option %q (use --top N, --depth D)\n", args[i])
+			return errFailed
+		}
+	}
 
 	// Resolve to absolute path
 	absPath, err := filepath.Abs(folderPath)
@@ -514,6 +534,9 @@ func runCheckBackupStatus(args []string) error {
 		Path          string
 		BackedUpFiles int
 		AtRiskFiles   int
+		AtRiskBytes   int64
+		AloneFiles    int // no copy anywhere else
+		AloneBytes    int64
 		TotalFiles    int
 	}
 	folderStats := make(map[string]*FolderStats)
@@ -534,6 +557,11 @@ func runCheckBackupStatus(args []string) error {
 
 		// Get folder from path
 		folderPath := filepath.Dir(localRow.RelativePath)
+		if depth > 0 {
+			if parts := strings.Split(folderPath, string(filepath.Separator)); len(parts) > depth {
+				folderPath = strings.Join(parts[:depth], string(filepath.Separator))
+			}
+		}
 		if folderPath == "." {
 			folderPath = "/"
 		}
@@ -552,7 +580,7 @@ func runCheckBackupStatus(args []string) error {
 			for _, remoteRow := range hashIndex[key] {
 				copyPath := filepath.Join(remoteRow.ScanPath, remoteRow.RelativePath)
 				onThisMachine := remoteRow.MachineName == currentMachine
-				if onThisMachine && (copyPath == absPath || strings.HasPrefix(copyPath, absPath+string(filepath.Separator))) {
+				if remoteRow.MachineName == localRow.MachineName && (copyPath == absPath || strings.HasPrefix(copyPath, absPath+string(filepath.Separator))) {
 					continue // the file itself, not another copy
 				}
 				removable := isRemovableSource(remoteRow.MachineName, remoteRow.ScanPath, machinesCfg)
@@ -593,6 +621,11 @@ func runCheckBackupStatus(args []string) error {
 			atRiskFiles++
 			atRiskBytes += localRow.SizeBytes
 			folderStats[folderPath].AtRiskFiles++
+			folderStats[folderPath].AtRiskBytes += localRow.SizeBytes
+			if !hasAnyCopy {
+				folderStats[folderPath].AloneFiles++
+				folderStats[folderPath].AloneBytes += localRow.SizeBytes
+			}
 			switch {
 			case hasThisMachineCopy:
 				atRiskElsewhere++
@@ -700,6 +733,14 @@ func runCheckBackupStatus(args []string) error {
 		fmt.Printf("   Every file has copies on reliable machines\n")
 	}
 	fmt.Printf("\n")
+
+	if topN > 0 {
+		var rows []aloneFolder
+		for _, st := range folderStats {
+			rows = append(rows, aloneFolder{st.Path, st.AloneFiles, st.AtRiskFiles, st.AloneBytes, st.AtRiskBytes})
+		}
+		printAloneFolders(rows, topN, depth)
+	}
 
 	// Show top 3 folders by at-risk files or by size
 	type FolderRank struct {
@@ -872,6 +913,47 @@ func printCopyLocations(locs map[string]*copyLocation, total int) {
 			}
 			fmt.Printf("      %s files  %s\n", formatCount(d.n), d.dir)
 		}
+	}
+	fmt.Printf("\n")
+}
+
+type aloneFolder struct {
+	path                    string
+	aloneFiles, atRiskFiles int
+	aloneBytes, atRiskBytes int64
+}
+
+// printAloneFolders lists the folders holding the most data that no other place has, so the user
+// can judge what is worth backing up and what is junk.
+func printAloneFolders(rows []aloneFolder, topN, depth int) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].aloneBytes != rows[j].aloneBytes {
+			return rows[i].aloneBytes > rows[j].aloneBytes
+		}
+		return rows[i].path < rows[j].path
+	})
+	var files int
+	var bytes int64
+	for _, r := range rows {
+		files += r.aloneFiles
+		bytes += r.aloneBytes
+	}
+	level := "each folder"
+	if depth > 0 {
+		level = fmt.Sprintf("folders grouped to %d level(s)", depth)
+	}
+	fmt.Printf("FILES NO OTHER COPY HAS, BY FOLDER (%s; biggest first)\n", level)
+	fmt.Printf("  In total: %s files, %s with no copy anywhere else\n\n", formatCount(files), formatSize(bytes))
+	shown := 0
+	for _, r := range rows {
+		if r.aloneFiles == 0 {
+			break
+		}
+		if shown == topN {
+			break
+		}
+		fmt.Printf("  %10s  %9s files  %s\n", formatSize(r.aloneBytes), formatCount(r.aloneFiles), r.path)
+		shown++
 	}
 	fmt.Printf("\n")
 }

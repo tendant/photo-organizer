@@ -186,3 +186,40 @@ func TestLookupFindsRenamedCopiesByContent(t *testing.T) {
 		t.Errorf("--name output:\n%s", out)
 	}
 }
+
+func TestCheckBackupTopListsFoldersNothingElseHas(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(src, "game/cache/a.bin"), strings.Repeat("x", 5000))
+	writeFile(t, filepath.Join(src, "game/cache/b.bin"), strings.Repeat("y", 5000))
+	writeFile(t, filepath.Join(src, "trip/IMG_1.jpg"), "in-library")
+	writeFile(t, filepath.Join(lib, "2024/IMG_1.jpg"), "in-library")
+	for _, d := range []string{src, lib} {
+		if out, code := runCLIWithHome(t, home, "scan", d, "--no-report"); code != 0 {
+			t.Fatalf("scan: exit %d\n%s", code, out)
+		}
+	}
+	out, code := runCLIWithHome(t, home, "check-backup", src, "--top", "5", "--depth", "1")
+	if code != 0 || !strings.Contains(out, "FILES NO OTHER COPY HAS") || !strings.Contains(out, "2 files") || !strings.Contains(out, "game") ||
+		strings.Contains(out, "  trip") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if _, code := runCLIWithHome(t, home, "check-backup", src, "--bogus"); code == 0 {
+		t.Errorf("unknown option should fail")
+	}
+}
+
+func TestCheckBackupOfAnotherMachinesFolderDoesNotCountItselfAsACopy(t *testing.T) {
+	home := t.TempDir()
+	drive := filepath.Join(home, "drive")
+	writeFile(t, filepath.Join(drive, "machine-id"), "my-drive\n")
+	writeFile(t, filepath.Join(drive, "only/a.bin"), "unique-content")
+	if out, code := runCLIWithHome(t, home, "scan", drive, "--no-report"); code != 0 {
+		t.Fatalf("scan: exit %d\n%s", code, out)
+	}
+	out, code := runCLIWithHome(t, home, "check-backup", drive, "--top", "3")
+	if code != 0 || !strings.Contains(out, "2 files, ") || strings.Contains(out, "WHERE THE COPIES ARE") {
+		t.Errorf("a lone file must be 'no copy anywhere else' and not list itself:\n%s", out)
+	}
+}

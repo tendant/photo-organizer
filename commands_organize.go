@@ -1470,13 +1470,14 @@ func manifestHashes(roots []string, hits *int) func(path string, size, mtime int
 		if err != nil {
 			continue
 		}
-		src, err := loadManifestForRoot(abs)
-		if err != nil {
+		src, ok := manifestCovering(abs)
+		if !ok {
 			continue
 		}
+		prefix := abs + string(filepath.Separator)
 		for _, r := range src.Rows {
-			if r.PartialHash != "" {
-				rows[rowPath(src, r)] = r
+			if p := rowPath(src, r); r.PartialHash != "" && (p == abs || strings.HasPrefix(p, prefix)) {
+				rows[p] = r
 			}
 		}
 	}

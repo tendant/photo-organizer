@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // manifestText returns the contents of every manifest the scan wrote under home.
@@ -252,5 +254,29 @@ func TestRescanRefreshesScanDateOfUnchangedFiles(t *testing.T) {
 	after, _ := os.ReadFile(mf[0])
 	if strings.Contains(string(after), "2020-01-01") {
 		t.Errorf("an unchanged file kept its old scan_date:\n%s", after)
+	}
+}
+
+// A named pipe used to hang the scan forever: the hash phase opened it and the open blocks.
+func TestScanSkipsNamedPipes(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "photos")
+	writeFile(t, filepath.Join(src, "a.jpg"), "content-a")
+	if err := syscall.Mkfifo(filepath.Join(src, "pipe.jpg"), 0o600); err != nil {
+		t.Skip("cannot make a fifo here:", err)
+	}
+	done := make(chan string, 1)
+	go func() {
+		out, _ := runCLIWithHome(t, home, "scan", src, "--no-report")
+		done <- out
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("scan hung on a named pipe")
+	}
+	m := manifestText(t, home)
+	if !strings.Contains(m, "a.jpg") || strings.Contains(m, "pipe.jpg") {
+		t.Errorf("want a.jpg only:\n%s", m)
 	}
 }

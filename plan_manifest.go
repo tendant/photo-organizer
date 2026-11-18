@@ -22,21 +22,7 @@ func planManifestRows(dir string) (map[string]ManifestRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	load := func() (ManifestSource, bool) {
-		if src, err := loadManifestForRoot(abs); err == nil {
-			return src, true
-		}
-		machine := driveIDFor(abs) // a folder on a portable drive is recorded under the drive's ID
-		if machine == "" {
-			machine = resolveMachineID("")
-		}
-		if _, file := findParentManifest(defaultManifestRoot(), machine, abs); file != "" {
-			if src, err := readManifest(file); err == nil {
-				return src, true
-			}
-		}
-		return ManifestSource{}, false
-	}
+	load := func() (ManifestSource, bool) { return manifestCovering(abs) }
 	src, ok := load()
 	if !ok {
 		fmt.Fprintf(os.Stderr, "No manifest for %s yet; scanning it once\n", abs)
@@ -133,4 +119,22 @@ func validatePlanFromManifests(pf planFile, plan *organizePlan, apply bool) (tod
 		}
 	}
 	return
+}
+
+// manifestCovering returns the manifest of the scanned folder dir, or of the nearest scanned folder
+// that contains it (a folder on a portable drive uses the drive's ID).
+func manifestCovering(abs string) (ManifestSource, bool) {
+	if src, err := loadManifestForRoot(abs); err == nil {
+		return src, true
+	}
+	machine := driveIDFor(abs)
+	if machine == "" {
+		machine = resolveMachineID("")
+	}
+	if _, file := findParentManifest(defaultManifestRoot(), machine, abs); file != "" {
+		if src, err := readManifest(file); err == nil {
+			return src, true
+		}
+	}
+	return ManifestSource{}, false
 }

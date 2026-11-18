@@ -1342,3 +1342,18 @@ func TestOrganizeIndexesTheLibraryFromItsManifest(t *testing.T) {
 		t.Errorf("the library file was not read, its manifest hash must still find the duplicate (exit %d):\n%s", code, out)
 	}
 }
+
+func TestOrganizeUsesParentManifestForSubfolderHashes(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "disk")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(root, "cam/a/IMG_20240315_101010.jpg"), "one")
+	writeFile(t, filepath.Join(root, "cam/b/IMG_20230102_090000.jpg"), "two")
+	if out, code := runCLIWithHome(t, home, "scan", root, "--no-report"); code != 0 {
+		t.Fatalf("scan: exit %d\n%s", code, out)
+	}
+	out, code := runCLIWithHome(t, home, "organize", filepath.Join(root, "cam"), "--dest", lib, "--no-progress")
+	if code != 0 || !strings.Contains(out, "Hashes of 2 source files came from fresh manifests") {
+		t.Errorf("subfolder hashes should come from the parent manifest: exit %d\n%s", code, out)
+	}
+}

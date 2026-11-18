@@ -373,6 +373,11 @@ func scanDirectoryRel(dir, relBase string, cache map[string]CacheEntry, photoIgn
 			fmt.Fprintf(os.Stderr, "\r  %-78s", label)
 			return nil
 		}
+		// Only regular files hold photos. Opening a named pipe blocks forever (the scan
+		// hangs with no error), and sockets and device nodes are not media either.
+		if !info.Mode().IsRegular() {
+			return nil
+		}
 		// Skip OS junk (hardcoded)
 		if shouldSkipFile(path) {
 			return nil
