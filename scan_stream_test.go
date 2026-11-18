@@ -130,3 +130,37 @@ func TestScanResumesFromAnInterruptedScansJournal(t *testing.T) {
 		t.Errorf("journals should be removed after a finished scan: %v", left)
 	}
 }
+
+func TestScanReportListsOnlyTheLargestTypes(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "stuff")
+	for i := 0; i < 14; i++ {
+		writeFile(t, filepath.Join(src, "f"+string(rune('a'+i))+"."+"ext"+string(rune('a'+i))), strings.Repeat("x", 100+i))
+	}
+	out, code := runCLIWithHome(t, home, "scan", src, "--no-ignore-file", "--report")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "+6 more") {
+		t.Errorf("want the 8 largest types plus '+6 more':\n%s", out)
+	}
+	if strings.Contains(out, ".exta ") || !strings.Contains(out, ".extn ") {
+		t.Errorf("the smallest type must be rolled up and the largest listed:\n%s", out)
+	}
+	if !strings.Contains(out, "TOTAL") || !strings.Contains(out, "14") {
+		t.Errorf("the total must still show:\n%s", out)
+	}
+}
+
+func TestScanSkipsTheReportUnlessAsked(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "p")
+	writeFile(t, filepath.Join(src, "a.jpg"), "a")
+	out, code := runCLIWithHome(t, home, "scan", src, "--no-ignore-file")
+	if code != 0 || strings.Contains(out, "File Type Summary") {
+		t.Errorf("a plain scan must not print the report (exit %d):\n%s", code, out)
+	}
+	if _, code := runCLIWithHome(t, home, "scan", src, "--no-ignore-file", "--no-report"); code != 0 {
+		t.Error("--no-report must still be accepted")
+	}
+}

@@ -31,6 +31,9 @@ type FileTypeStat struct {
 }
 
 // analyzeDirectoryTypes walks directory and shows what file types exist.
+// reportTopTypes is how many file types the pre-scan report lists; the rest are one line.
+const reportTopTypes = 8
+
 func analyzeDirectoryTypes(dir string) {
 	stats := make(map[string]*FileTypeStat)
 	var totalCount int
@@ -58,6 +61,11 @@ func analyzeDirectoryTypes(dir string) {
 		// Skip symlinks (same as scan)
 		if info.Mode()&os.ModeSymlink != 0 {
 			skippedSymlinks++
+			return nil
+		}
+
+		// Only regular files are scanned (same as scan): pipes, sockets and devices are not.
+		if !info.Mode().IsRegular() {
 			return nil
 		}
 
@@ -113,11 +121,21 @@ func analyzeDirectoryTypes(dir string) {
 	fmt.Printf("File Type Summary: %s\n", dir)
 	fmt.Printf("═════════════════════════════════════════════════════════\n\n")
 
-	fmt.Printf("All files will be scanned (except .DS_Store and .stfolder):\n")
+	fmt.Printf("All files will be scanned (except .DS_Store and .stfolder). Largest types:\n")
 	fmt.Printf("  %-10s %10s %12s\n", "Type", "Count", "Size")
 	fmt.Printf("  %-10s %10s %12s\n", "────", "─────", "────")
+	shown, restCount, restBytes := 0, 0, int64(0)
 	for _, s := range fileTypes {
-		fmt.Printf("  %-10s %10d %12s\n", s.Ext, s.Count, formatBytes(s.TotalSize))
+		if shown < reportTopTypes {
+			fmt.Printf("  %-10s %10d %12s\n", s.Ext, s.Count, formatBytes(s.TotalSize))
+			shown++
+			continue
+		}
+		restCount += s.Count
+		restBytes += s.TotalSize
+	}
+	if others := len(fileTypes) - shown; others > 0 {
+		fmt.Printf("  %-10s %10d %12s\n", fmt.Sprintf("+%d more", others), restCount, formatBytes(restBytes))
 	}
 	fmt.Printf("  %-10s %10d %12s\n", "TOTAL", totalCount, formatBytes(totalBytes))
 

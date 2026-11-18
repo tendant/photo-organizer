@@ -48,7 +48,8 @@ func runScan(args []string) error {
 	scoreThresholdFlag := fs.Int("score-threshold", 30, "minimum folder score (0-100) for --auto-identify-folders (default: 30)")
 	detectOnlyFlag := fs.Bool("detect-only", false, "with --auto-identify-folders: show detection results and exit without scanning")
 	noIgnoreFileFlag := fs.Bool("no-ignore-file", false, "do not create a default .photoignore in a folder that has none")
-	noReportFlag := fs.Bool("no-report", false, "skip file type coverage report (usually shown before scanning)")
+	reportFlag := fs.Bool("report", false, "show a file type summary (an extra walk of the folder) before scanning")
+	fs.Bool("no-report", false, "accepted and ignored: the report is off unless --report is given")
 	fs.Usage = printUsage
 	defer func() { forcePrune = false }()
 	if err := fs.Parse(flagArgs); err != nil {
@@ -156,8 +157,8 @@ func runScan(args []string) error {
 		}
 	}
 
-	// Show file type coverage report by default (unless --no-report is set)
-	if !*noReportFlag {
+	// The file type report is an extra full walk of the folder, so it is opt-in.
+	if *reportFlag {
 		analyzeDirectoryTypes(absScanDir)
 		fmt.Fprintf(os.Stderr, "Proceeding with scan...\n\n")
 	}
