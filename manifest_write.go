@@ -118,22 +118,7 @@ func updateManifestScoped(scanDir, subtree string, files []FileInfo, manifestFil
 	}
 
 	// Always use the current header definition — never preserve old headers.
-	headers := []string{
-		"filename",
-		"relative_path",
-		"file_size_bytes",
-		"file_size_mb",
-		"file_modified",
-		"capture_date",
-		"camera_make",
-		"camera_model",
-		"partial_hash",
-		"full_hash",
-		"extension",
-		"scan_date",
-		"scan_path",
-		"machine_name",
-	}
+	headers := manifestColumns
 
 	// Build a column index for the new (current) headers.
 	headerIdx := make(map[string]int)
@@ -332,7 +317,7 @@ doneLoading:
 	for p := range existing {
 		paths = append(paths, p)
 	}
-	sort.Strings(paths)
+	sort.Slice(paths, func(i, j int) bool { return pathCompare(paths[i], paths[j]) < 0 })
 
 	// Show progress for all manifests
 	fmt.Fprintf(os.Stderr, "  Writing %d entries to manifest...\n", len(paths))

@@ -318,21 +318,12 @@ type ScanStats struct {
 	FirstBad   string // first such path, for the warning
 }
 
-func scanDirectory(dir string, cache map[string]CacheEntry, photoIgnore *PhotoIgnore) ([]FileInfo, ScanStats, error) {
-	return scanDirectoryRel(dir, dir, cache, photoIgnore)
-}
-
-// scanDirectoryRel scans dir but looks files up in cache by their path relative to relBase, so a
-// part of a bigger scanned folder (dir inside relBase) can reuse that folder's manifest as its cache.
-func scanDirectoryRel(dir, relBase string, cache map[string]CacheEntry, photoIgnore *PhotoIgnore) ([]FileInfo, ScanStats, error) {
-	var stats ScanStats
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return nil, stats, fmt.Errorf("directory not found: %s", dir)
-	}
-
-	// Phase 1: walk the directory tree and collect file paths (fast).
-	var raw []rawFile
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+// walkFiles walks dir in the order filepath.Walk does (names sorted within each folder) and
+// calls emit for every file a scan should record. Symlinks, dotfiles, system folders,
+// .photoignore matches and anything that is not a regular file are left out. onDir, when not
+// nil, is told about each folder entered. Read problems are counted in stats.
+func walkFiles(dir string, photoIgnore *PhotoIgnore, stats *ScanStats, onDir func(rel string), emit func(rawFile)) error {
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Not seen is not the same as deleted: remember it so a prune does not
 			// drop everything under a folder we merely could not read.
@@ -364,13 +355,10 @@ func scanDirectoryRel(dir, relBase string, cache map[string]CacheEntry, photoIgn
 			if name == "PRIVATE" || name == "THMBNL" || name == "AVF_INFO" || name == ".fseventsd" {
 				return filepath.SkipDir
 			}
-			rel, _ := filepath.Rel(dir, path)
-			// Truncate long paths so they don't overflow the line width.
-			label := "walking: " + rel
-			if len(label) > 78 {
-				label = "walking: ..." + rel[len(rel)-65:]
+			if onDir != nil {
+				rel, _ := filepath.Rel(dir, path)
+				onDir(rel)
 			}
-			fmt.Fprintf(os.Stderr, "\r  %-78s", label)
 			return nil
 		}
 		// Only regular files hold photos. Opening a named pipe blocks forever (the scan
@@ -391,9 +379,33 @@ func scanDirectoryRel(dir, relBase string, cache map[string]CacheEntry, photoIgn
 		if photoIgnore != nil && photoIgnore.ShouldSkip(path) {
 			return nil
 		}
-		raw = append(raw, rawFile{path, info.Size(), info.ModTime()})
+		emit(rawFile{path, info.Size(), info.ModTime()})
 		return nil
 	})
+}
+
+func scanDirectory(dir string, cache map[string]CacheEntry, photoIgnore *PhotoIgnore) ([]FileInfo, ScanStats, error) {
+	return scanDirectoryRel(dir, dir, cache, photoIgnore)
+}
+
+// scanDirectoryRel scans dir but looks files up in cache by their path relative to relBase, so a
+// part of a bigger scanned folder (dir inside relBase) can reuse that folder's manifest as its cache.
+func scanDirectoryRel(dir, relBase string, cache map[string]CacheEntry, photoIgnore *PhotoIgnore) ([]FileInfo, ScanStats, error) {
+	var stats ScanStats
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil, stats, fmt.Errorf("directory not found: %s", dir)
+	}
+
+	// Phase 1: walk the directory tree and collect file paths (fast).
+	var raw []rawFile
+	err := walkFiles(dir, photoIgnore, &stats, func(rel string) {
+		// Truncate long paths so they don't overflow the line width.
+		label := "walking: " + rel
+		if len(label) > 78 {
+			label = "walking: ..." + rel[len(rel)-65:]
+		}
+		fmt.Fprintf(os.Stderr, "\r  %-78s", label)
+	}, func(rf rawFile) { raw = append(raw, rf) })
 	if err != nil {
 		return nil, stats, err
 	}

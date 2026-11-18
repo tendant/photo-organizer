@@ -143,15 +143,14 @@ func runScan(args []string) error {
 	manifestDir := filepath.Join(manifestRoot, "_Manifest")
 	matches, _ := filepath.Glob(filepath.Join(manifestDir, "*.csv"))
 	for _, path := range matches {
-		src, err := readManifest(path)
-		if err != nil {
-			continue
-		}
-		if src.ScanPath == absScanDir {
+		// Read only the first row to learn what folder a manifest covers; the big ones have
+		// millions of rows and are never loaded just for this check.
+		if sp, _ := manifestHead(path); sp == absScanDir {
+			machine, rows, last := manifestSummary(path)
 			fmt.Fprintf(os.Stderr, "\n⚠️  This folder was already scanned:\n")
-			fmt.Fprintf(os.Stderr, "   Machine: %s\n", src.MachineName)
-			fmt.Fprintf(os.Stderr, "   Last scanned: %s\n", src.LastScanned)
-			fmt.Fprintf(os.Stderr, "   Files: %d\n", len(src.Rows))
+			fmt.Fprintf(os.Stderr, "   Machine: %s\n", machine)
+			fmt.Fprintf(os.Stderr, "   Last scanned: %s\n", last)
+			fmt.Fprintf(os.Stderr, "   Files: %d\n", rows)
 			fmt.Fprintf(os.Stderr, "   Tip: run scan again with --prune to refresh this manifest.\n\n")
 			break
 		}
@@ -220,23 +219,11 @@ func runScan(args []string) error {
 			fmt.Printf("[%d/%d] Scanning: %s\n", i+1, len(qualifying), scored.Path)
 			fmt.Printf("        Manifest: %s\n\n", manifestFile)
 
-			cache := loadCache(manifestFile)
-			if *noCacheFlag {
-				cache = make(map[string]CacheEntry)
-			}
 			photoIgnore := newPhotoIgnore(qualifyingAbsDir)
 			fmt.Fprintf(os.Stderr, "Scanning directory tree...\n")
-			files, scanStats, err := scanDirectory(qualifyingAbsDir, cache, photoIgnore)
+			scanStats, manifestStats, err := scanIntoManifest(qualifyingAbsDir, qualifyingAbsDir, "", manifestFile, machineName, photoIgnore, *noCacheFlag, *pruneFlag && !*noPruneFlag)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", scored.Path, err)
-				continue
-			}
-
-			fmt.Fprintf(os.Stderr, "✓ Scan complete: %d files found\n", len(files))
-			fmt.Fprintf(os.Stderr, "Writing manifest file...\n")
-			manifestStats, err := updateManifest(qualifyingAbsDir, files, manifestFile, machineName, pruneAllowed(*pruneFlag && !*noPruneFlag, scanStats))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error writing manifest: %v\n", err)
 				continue
 			}
 
@@ -274,27 +261,15 @@ func runScan(args []string) error {
 		fmt.Printf("Manifest:  %s\n", manifestFile)
 		fmt.Printf("Machine:   %s\n\n", machineName)
 
-		cache := loadCache(manifestFile)
-		if *noCacheFlag {
-			cache = make(map[string]CacheEntry) // discard cache — force full recompute
-		}
 		if !*noIgnoreFileFlag {
 			ensurePhotoIgnore(absScanDir)
 		}
 		photoIgnore := newPhotoIgnore(absScanDir)
 
 		fmt.Fprintf(os.Stderr, "\nScanning directory tree...\n")
-		files, scanStats, err := scanDirectory(absScanDir, cache, photoIgnore)
+		scanStats, manifestStats, err := scanIntoManifest(absScanDir, absScanDir, "", manifestFile, machineName, photoIgnore, *noCacheFlag, *pruneFlag && !*noPruneFlag)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
-			return errFailed
-		}
-
-		fmt.Fprintf(os.Stderr, "\n✓ Scan complete: %d files found\n", len(files))
-		fmt.Fprintf(os.Stderr, "Writing manifest file...\n")
-		manifestStats, err := updateManifest(absScanDir, files, manifestFile, machineName, pruneAllowed(*pruneFlag && !*noPruneFlag, scanStats))
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
 			return errFailed
 		}
 
@@ -401,22 +376,12 @@ func partialScan(dir, root, manifestFile, machine string, noCache, prune, force 
 	fmt.Printf("Scanning:  %s\n", dir)
 	fmt.Printf("Part of:   %s (manifest %s)\n", root, filepath.Base(manifestFile))
 	fmt.Printf("Machine:   %s\n\n", machine)
-	cache := loadCache(manifestFile)
-	if noCache {
-		cache = make(map[string]CacheEntry)
-	}
 	fmt.Fprintf(os.Stderr, "\nScanning directory tree...\n")
-	files, st, err := scanDirectoryRel(dir, root, cache, newPhotoIgnore(root))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		return errFailed
-	}
-	fmt.Fprintf(os.Stderr, "\n✓ Scan complete: %d files found\n", len(files))
 	forcePrune = force
 	defer func() { forcePrune = false }()
-	ms, err := updateManifestScoped(root, sub, files, manifestFile, machine, pruneAllowed(prune, st))
+	st, ms, err := scanIntoManifest(dir, root, sub, manifestFile, machine, newPhotoIgnore(root), noCache, prune)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error writing manifest:", err)
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		return errFailed
 	}
 	printScanSummary(st, ms)
@@ -436,4 +401,21 @@ func driveIDFor(dir string) string {
 			return ""
 		}
 	}
+}
+
+// manifestSummary streams a manifest and returns its machine, row count and latest scan_date
+// without holding the rows.
+func manifestSummary(path string) (machine string, rows int, lastScanned string) {
+	c := openRowCursor(path, true)
+	defer c.close()
+	for ; c.row != nil; c.next() {
+		if rows == 0 {
+			machine = c.row[mcMachine]
+		}
+		rows++
+		if d := c.row[mcScanDate]; d > lastScanned {
+			lastScanned = d
+		}
+	}
+	return
 }
