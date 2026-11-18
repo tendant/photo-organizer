@@ -32,7 +32,7 @@ type FileTypeStat struct {
 
 // analyzeDirectoryTypes walks directory and shows what file types exist.
 // reportTopTypes is how many file types the pre-scan report lists; the rest are one line.
-const reportTopTypes = 8
+const reportTopTypes = 15
 
 func analyzeDirectoryTypes(dir string) {
 	stats := make(map[string]*FileTypeStat)

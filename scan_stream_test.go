@@ -134,20 +134,20 @@ func TestScanResumesFromAnInterruptedScansJournal(t *testing.T) {
 func TestScanReportListsOnlyTheLargestTypes(t *testing.T) {
 	home := t.TempDir()
 	src := filepath.Join(home, "stuff")
-	for i := 0; i < 14; i++ {
+	for i := 0; i < 20; i++ {
 		writeFile(t, filepath.Join(src, "f"+string(rune('a'+i))+"."+"ext"+string(rune('a'+i))), strings.Repeat("x", 100+i))
 	}
 	out, code := runCLIWithHome(t, home, "scan", src, "--no-ignore-file", "--report")
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	if !strings.Contains(out, "+6 more") {
-		t.Errorf("want the 8 largest types plus '+6 more':\n%s", out)
+	if !strings.Contains(out, "+5 more") {
+		t.Errorf("want the 15 largest types plus '+5 more':\n%s", out)
 	}
-	if strings.Contains(out, ".exta ") || !strings.Contains(out, ".extn ") {
+	if strings.Contains(out, ".exta ") || !strings.Contains(out, ".extt ") {
 		t.Errorf("the smallest type must be rolled up and the largest listed:\n%s", out)
 	}
-	if !strings.Contains(out, "TOTAL") || !strings.Contains(out, "14") {
+	if !strings.Contains(out, "TOTAL") || !strings.Contains(out, "20") {
 		t.Errorf("the total must still show:\n%s", out)
 	}
 }
