@@ -26,7 +26,7 @@ func planManifestRows(dir string) (map[string]ManifestRow, error) {
 	src, ok := load()
 	if !ok {
 		fmt.Fprintf(os.Stderr, "No manifest for %s yet; scanning it once\n", abs)
-		if err := runScan([]string{abs, "--no-report"}); err != nil {
+		if err := runScan([]string{abs, "--no-report", "--no-ignore-file"}); err != nil {
 			return nil, fmt.Errorf("scan %s: %w", abs, err)
 		}
 		if src, ok = load(); !ok {

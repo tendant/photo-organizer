@@ -19,6 +19,7 @@ Common flags:
 - `--root <dir>`: write manifests under `<dir>/_Manifest/`.
 - `--media-id <id>`: stable ID for removable media.
 - `--no-cache`: recompute hashes instead of reusing manifest cache.
+- `.photoignore`: patterns the scan skips (`name/` skips a folder at any depth, `*.ext` skips files; subfolders can have their own). A scan of a folder with none writes a default one (program files, games, caches, system folders, `*.tmp`) that you can edit; an existing one is never touched, and `.photoignore` itself is not recorded in manifests. `--no-ignore-file` stops the scan creating it (use it for read-only or curated folders). `organize --plan` never creates one. To write it without scanning: `photo-organizer ignore --init <folder>...`.
 - Pruning is the default: manifest entries for files no longer on disk are removed, so
   `dups` and `check-backup` never count a deleted file as a copy. It is skipped (with a
   warning) if the scan could not read some folders, or if it would remove over half the

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,4 +94,58 @@ func (ig *PhotoIgnore) ShouldSkip(path string) bool {
 		dir = filepath.Dir(dir)
 	}
 	return false
+}
+
+// defaultPhotoIgnore is written to a scan root that has no .photoignore yet. It lists
+// only folders that never hold someone's photos or videos: program files, caches,
+// dependency trees, system folders. Edit the file to taste; scans never rewrite it.
+const defaultPhotoIgnore = `# .photoignore - folders and files the scan skips (one pattern per line).
+#   name/     skips any folder with that name, at any depth
+#   *.ext     skips files matching the name
+# Created automatically by the first scan of this folder; edit freely.
+
+# Programs and games
+Program Files/
+Program Files (x86)/
+ProgramData/
+steamapps/
+Windows/
+node_modules/
+__pycache__/
+.venv/
+site-packages/
+
+# System and recycle folders
+$RECYCLE.BIN/
+System Volume Information/
+Recovery/
+lost+found/
+
+# Caches and temporary files
+Cache/
+Caches/
+CachedData/
+*.tmp
+*.part
+*.crdownload
+`
+
+// ensurePhotoIgnore creates the default .photoignore in dir when there is none.
+// It reports whether it wrote one. A folder we cannot write to (a read-only drive)
+// is fine: the scan just runs without it.
+func ensurePhotoIgnore(dir string) bool {
+	path := filepath.Join(dir, ".photoignore")
+	if _, err := os.Stat(path); err == nil || !os.IsNotExist(err) {
+		return false
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if _, err := f.WriteString(defaultPhotoIgnore); err != nil {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "Created %s with default ignore patterns (edit it to change what scans skip)\n", path)
+	return true
 }

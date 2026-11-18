@@ -67,8 +67,8 @@ func analyzeDirectoryTypes(dir string) {
 			return nil
 		}
 
-		// Skip dotfiles except .photoignore (same as scan)
-		if strings.HasPrefix(info.Name(), ".") && info.Name() != ".photoignore" {
+		// Skip dotfiles (same as scan)
+		if strings.HasPrefix(info.Name(), ".") {
 			skippedDotfiles++
 			return nil
 		}

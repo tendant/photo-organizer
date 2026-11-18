@@ -47,6 +47,7 @@ func runScan(args []string) error {
 	autoIdentifyFlag := fs.Bool("auto-identify-folders", false, "sample subdirectories and only scan those matching score threshold")
 	scoreThresholdFlag := fs.Int("score-threshold", 30, "minimum folder score (0-100) for --auto-identify-folders (default: 30)")
 	detectOnlyFlag := fs.Bool("detect-only", false, "with --auto-identify-folders: show detection results and exit without scanning")
+	noIgnoreFileFlag := fs.Bool("no-ignore-file", false, "do not create a default .photoignore in a folder that has none")
 	noReportFlag := fs.Bool("no-report", false, "skip file type coverage report (usually shown before scanning)")
 	fs.Usage = printUsage
 	defer func() { forcePrune = false }()
@@ -277,14 +278,10 @@ func runScan(args []string) error {
 		if *noCacheFlag {
 			cache = make(map[string]CacheEntry) // discard cache — force full recompute
 		}
-		photoIgnore := newPhotoIgnore(absScanDir)
-
-		// Show .photoignore hint if it doesn't exist
-		photoignorePath := filepath.Join(absScanDir, ".photoignore")
-		if _, err := os.Stat(photoignorePath); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "💡 Tip: Create a .photoignore file to exclude folders/files from backup\n")
-			fmt.Fprintf(os.Stderr, "   Example: echo '.claude/\\n_Manifest/' > %s\n\n", photoignorePath)
+		if !*noIgnoreFileFlag {
+			ensurePhotoIgnore(absScanDir)
 		}
+		photoIgnore := newPhotoIgnore(absScanDir)
 
 		fmt.Fprintf(os.Stderr, "\nScanning directory tree...\n")
 		files, scanStats, err := scanDirectory(absScanDir, cache, photoIgnore)

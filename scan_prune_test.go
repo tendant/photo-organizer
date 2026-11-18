@@ -280,3 +280,73 @@ func TestScanSkipsNamedPipes(t *testing.T) {
 		t.Errorf("want a.jpg only:\n%s", m)
 	}
 }
+
+func TestScanCreatesDefaultPhotoIgnoreAndUsesIt(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "photos")
+	writeFile(t, filepath.Join(src, "keep.jpg"), "keep")
+	writeFile(t, filepath.Join(src, "app/node_modules/x.jpg"), "dep")
+	if out, code := runCLIWithHome(t, home, "scan", src, "--no-report"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	b, err := os.ReadFile(filepath.Join(src, ".photoignore"))
+	if err != nil || !strings.Contains(string(b), "node_modules/") {
+		t.Fatalf("default .photoignore not written: %v", err)
+	}
+	m := manifestText(t, home)
+	if !strings.Contains(m, "keep.jpg") || strings.Contains(m, "x.jpg") || strings.Contains(m, ".photoignore") {
+		t.Errorf("manifest should hold keep.jpg only:\n%s", m)
+	}
+}
+
+func TestScanKeepsAnExistingPhotoIgnore(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "photos")
+	writeFile(t, filepath.Join(src, "a.jpg"), "a")
+	writeFile(t, filepath.Join(src, ".photoignore"), "mine/\n")
+	if _, code := runCLIWithHome(t, home, "scan", src, "--no-report"); code != 0 {
+		t.Fatal("scan failed")
+	}
+	b, _ := os.ReadFile(filepath.Join(src, ".photoignore"))
+	if string(b) != "mine/\n" {
+		t.Errorf("existing .photoignore was changed: %q", b)
+	}
+}
+
+func TestScanNoIgnoreFileLeavesTheFolderAlone(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "photos")
+	writeFile(t, filepath.Join(src, "a.jpg"), "a")
+	if _, code := runCLIWithHome(t, home, "scan", src, "--no-report", "--no-ignore-file"); code != 0 {
+		t.Fatal("scan failed")
+	}
+	if _, err := os.Stat(filepath.Join(src, ".photoignore")); err == nil {
+		t.Error("--no-ignore-file still wrote a .photoignore")
+	}
+}
+
+func TestIgnoreInitWritesDefaultWithoutScanning(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "photos")
+	writeFile(t, filepath.Join(dir, "a.jpg"), "a")
+	if out, code := runCLIWithHome(t, home, "ignore", "--init", dir); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, ".photoignore")); err != nil || !strings.Contains(string(b), "steamapps/") {
+		t.Fatalf("default not written: %v", err)
+	}
+	if files, _ := filepath.Glob(filepath.Join(home, "manifests", "_Manifest", "*.csv")); len(files) != 0 {
+		t.Errorf("ignore --init must not scan: %v", files)
+	}
+	writeFile(t, filepath.Join(dir, ".photoignore"), "mine/\n")
+	runCLIWithHome(t, home, "ignore", "--init", dir)
+	if b, _ := os.ReadFile(filepath.Join(dir, ".photoignore")); string(b) != "mine/\n" {
+		t.Errorf("existing file changed: %q", b)
+	}
+	if _, code := runCLIWithHome(t, home, "ignore", "--init", filepath.Join(home, "nope")); code == 0 {
+		t.Error("a missing folder should fail")
+	}
+	if _, code := runCLIWithHome(t, home, "ignore"); code == 0 {
+		t.Error("no --init should print usage and fail")
+	}
+}

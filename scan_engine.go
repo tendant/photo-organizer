@@ -382,8 +382,9 @@ func scanDirectoryRel(dir, relBase string, cache map[string]CacheEntry, photoIgn
 		if shouldSkipFile(path) {
 			return nil
 		}
-		// Skip other dotfiles, but always include .photoignore
-		if strings.HasPrefix(info.Name(), ".") && info.Name() != ".photoignore" {
+		// Skip dotfiles, .photoignore included: it is scan configuration (and may be
+		// written by the scan itself), not something to record as a file.
+		if strings.HasPrefix(info.Name(), ".") {
 			return nil
 		}
 		// Apply .photoignore patterns (user-defined exclusions)

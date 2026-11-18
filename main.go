@@ -44,7 +44,7 @@ func userHomeDir() string {
 func suggestCommand(typo string) string {
 	commands := []string{
 		"archive", "backup", "backup-missing", "check-backup", "collect",
-		"dups", "dup-folders", "fix", "help", "list", "lookup",
+		"dups", "dup-folders", "fix", "help", "ignore", "list", "lookup",
 		"machines", "manifests", "organize", "prune-sources", "restore", "scan", "search", "sign",
 		"storage-plan", "storage-status", "verify-archive",
 	}
@@ -138,6 +138,8 @@ func main() {
 		err = runMachines(os.Args[2:])
 	case "lookup":
 		err = runLookup(os.Args[2:])
+	case "ignore":
+		err = runIgnore(os.Args[2:])
 	case "search":
 		err = runSearch(os.Args[2:])
 	case "collect":
@@ -193,7 +195,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "organize copies photos into a YYYY/YYYY-MM-DD library; sources are never changed.\n")
 	fmt.Fprintf(os.Stderr, "Both take a local path or a remote machine-id:/path or user@host:/path.\n\n")
 	fmt.Fprintf(os.Stderr, "Other commands:\n")
-	fmt.Fprintf(os.Stderr, "  collect, fix, list, lookup, machines, manifests,\n")
+	fmt.Fprintf(os.Stderr, "  collect, fix, ignore, list, lookup, machines, manifests,\n")
 	fmt.Fprintf(os.Stderr, "  restore, sign, storage-plan, storage-status\n\n")
 	fmt.Fprintf(os.Stderr, "Examples:\n")
 	fmt.Fprintf(os.Stderr, "  photo-organizer scan ~/Photos\n")
