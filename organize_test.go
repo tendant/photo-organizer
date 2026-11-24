@@ -1081,6 +1081,10 @@ func TestFolderLabel(t *testing.T) {
 		"/s/DCIM":                            "s",
 		"/":                                  "folder",
 		"/s/a:b/c*d":                         "a_b_c_d",
+		"/b/Originals/2025/2025-07-25":       "b_Originals",
+		"/b/Trips/2025/2025-07":              "b_Trips",
+		"/2025/2025-07-25":                   "2025-07-25",
+		"/b/osmo/DCIM/20250725_DJI_001":      "osmo_20250725_DJI_001",
 	} {
 		if got := folderLabel(in); got != want {
 			t.Errorf("folderLabel(%q) = %q, want %q", in, got, want)

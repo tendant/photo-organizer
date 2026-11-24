@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1375,14 +1376,28 @@ func (pl *planner) unitFolder(dir string) string {
 	return filepath.Join(d.Format("2006"), d.Format("2006-01-02")+"_"+label)
 }
 
+// dateOnlyPart matches a path part that is just a year (2025), a month (2025-07) or a day
+// (2025-07-25). The library folder already starts with the date, so repeating it in the
+// label only adds noise.
+var dateOnlyPart = regexp.MustCompile(`^(19|20)\d\d(-\d\d){0,2}$`)
+
 // folderLabel builds a short readable name from the last two parts of a folder path,
-// ignoring the generic card folder DCIM: ".../dji-action4/DCIM/DJI_001" -> "dji-action4_DJI_001".
+// ignoring the generic card folder DCIM and parts that are only a year or date:
+// ".../dji-action4/DCIM/DJI_001" -> "dji-action4_DJI_001";
+// ".../Photos/Originals/2025/2025-07-25" -> "Photos_Originals". A folder named only by a date keeps it.
 func folderLabel(dir string) string {
-	var parts []string
+	var parts, dated []string
 	for _, p := range strings.Split(filepath.ToSlash(dir), "/") {
-		if p != "" && !strings.EqualFold(p, "DCIM") {
+		switch {
+		case p == "" || strings.EqualFold(p, "DCIM"):
+		case dateOnlyPart.MatchString(p):
+			dated = append(dated, p)
+		default:
 			parts = append(parts, p)
 		}
+	}
+	if len(parts) == 0 && len(dated) > 0 {
+		parts = dated[len(dated)-1:]
 	}
 	if len(parts) > 2 {
 		parts = parts[len(parts)-2:]
