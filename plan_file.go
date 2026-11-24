@@ -29,6 +29,7 @@ type planFile struct {
 	Version int        `json:"version"`
 	Created string     `json:"created"`
 	Dest    string     `json:"dest"`
+	Move    bool       `json:"move,omitempty"` // the preview was made with --move
 	Sources []string   `json:"sources"`
 	Copies  []planCopy `json:"copies"`
 }
@@ -56,7 +57,7 @@ func savePlanFile(path string, sources []string, dest string, p *organizePlan) e
 		}
 	}
 
-	pf := planFile{Version: planFileVersion, Created: time.Now().Format(time.RFC3339), Dest: dest, Sources: sources}
+	pf := planFile{Version: planFileVersion, Created: time.Now().Format(time.RFC3339), Dest: dest, Move: p.move, Sources: sources}
 	for _, c := range p.copies {
 		pf.Copies = append(pf.Copies, planCopy{Src: c.src, Dst: c.dst, Size: c.size, Hash: c.hash, MTime: c.mtime})
 	}
@@ -151,7 +152,11 @@ func runSavedPlan(opts organizeOptions) error {
 	for _, c := range todo {
 		plan.copyBytes += c.size
 	}
-	plan.markMoves(dest, opts.move)
+	move := opts.move || pf.Move // a plan saved with --move keeps moving when it is applied
+	if pf.Move && !opts.move {
+		fmt.Fprintf(os.Stderr, "Using --move from the saved plan\n")
+	}
+	plan.markMoves(dest, move)
 	plan.freeBytes, plan.freeKnown = freeSpaceFor(dest)
 
 	fmt.Fprintf(os.Stderr, "\nPlan from %s (saved %s)\n", opts.planFile, pf.Created)
@@ -175,6 +180,7 @@ func runSavedPlan(opts organizeOptions) error {
 			fmt.Fprintf(os.Stderr, "  %-8s %s files\n", f, formatCount(plan.byFolder[f]))
 		}
 	}
+	plan.printMoveAdvice()
 	if plan.freeKnown {
 		if plan.lacksSpace() {
 			fmt.Fprintf(os.Stderr, "⚠  Not enough free space: need %s, only %s available\n",

@@ -112,8 +112,11 @@ type plannedCopy struct {
 
 // organizePlan is everything a dry run reports and an apply run executes.
 type organizePlan struct {
-	move             bool  // --move: same-filesystem files are renamed, not copied
-	moveBytes        int64 // part of copyBytes that --move would rename (needs no space)
+	move             bool           // --move: same-filesystem files are renamed, not copied
+	moveBytes        int64          // part of copyBytes that --move would rename (needs no space)
+	movableBytes     int64          // part of copyBytes on the library's filesystem (a --move would rename it)
+	unwritable       map[string]int // --move: source folders we cannot rename out of -> files in them
+	failCauses       map[string]int // apply: failed files by cause (see failureCause)
 	copies           []plannedCopy
 	copyBytes        int64
 	duplicates       int // content already in the library or earlier in this run
@@ -395,6 +398,11 @@ func runOrganize(args []string) error {
 
 // finishApply copies the plan, then refreshes the library manifest.
 func finishApply(plan *organizePlan, dest string, showProgress bool) error {
+	if n := plan.unwritableCount(); n > 0 {
+		plan.printMoveAdvice()
+		fmt.Fprintf(os.Stderr, "\nError: %s files cannot be moved; nothing was changed.\n", formatCount(n))
+		return errFailed
+	}
 	failed, err := applyOrganizePlan(plan, dest, showProgress)
 	if errors.Is(err, errInterrupted) {
 		fmt.Fprintf(os.Stderr, "Run 'photo-organizer scan %s' to record what was copied.\n", dest)
@@ -410,7 +418,7 @@ func finishApply(plan *organizePlan, dest string, showProgress bool) error {
 		fmt.Fprintf(os.Stderr, "Run 'photo-organizer scan %s' to record it.\n", dest)
 	}
 	if failed > 0 {
-		fmt.Fprintf(os.Stderr, "\n⚠  %d file(s) failed to copy; re-run the same command to retry them.\n", failed)
+		plan.printFailureSummary()
 		return errFailed
 	}
 	return nil
@@ -1077,6 +1085,7 @@ func printOrganizePlan(p *organizePlan, dest string, apply bool) {
 		fmt.Fprintf(os.Stderr, "   --move: %s of that is on the library's filesystem and is renamed (the source file is gone afterwards, no space used);\n"+
 			"   the rest is copied and its source is kept.\n", formatSize(p.moveBytes))
 	}
+	p.printMoveAdvice()
 	fmt.Fprintf(os.Stderr, "Skipping %s files (%s) already in the library or duplicated within the sources\n",
 		formatCount(p.duplicates), formatSize(p.duplicateBytes))
 	if p.hashOnlyDups > 0 {
@@ -1252,6 +1261,10 @@ func applyOrganizePlan(p *organizePlan, dest string, showProgress bool) (failed 
 			}
 			fmt.Fprintf(os.Stderr, "  failed: %s: %v\n", c.src, err)
 			lw.Write([]string{c.src, c.dst, fmt.Sprint(c.size), "failed: " + err.Error()})
+			if p.failCauses == nil {
+				p.failCauses = map[string]int{}
+			}
+			p.failCauses[failureCause(err)]++
 			failed++
 			continue
 		}
@@ -1439,12 +1452,95 @@ func sameFilesystem(a, b string) bool {
 func (p *organizePlan) markMoves(dest string, move bool) {
 	p.move = move
 	p.moveBytes = 0
-	if !move {
-		return
-	}
+	p.movableBytes = 0
+	p.unwritable = nil
+	writable := map[string]bool{}
 	for _, c := range p.copies {
-		if sameFilesystem(c.src, filepath.Dir(c.dst)) {
-			p.moveBytes += c.size
+		if !sameFilesystem(c.src, filepath.Dir(c.dst)) {
+			continue
+		}
+		p.movableBytes += c.size
+		if !move {
+			continue
+		}
+		p.moveBytes += c.size
+		// A rename removes the file from its source folder, which needs write permission there.
+		dir := filepath.Dir(c.src)
+		ok, seen := writable[dir]
+		if !seen {
+			ok = canModifyDir(dir)
+			writable[dir] = ok
+		}
+		if !ok {
+			if p.unwritable == nil {
+				p.unwritable = map[string]int{}
+			}
+			p.unwritable[dir]++
+		}
+	}
+}
+
+// unwritableCount is the number of files --move cannot rename out of their source folder.
+func (p *organizePlan) unwritableCount() int {
+	n := 0
+	for _, c := range p.unwritable {
+		n += c
+	}
+	return n
+}
+
+// printMoveAdvice explains what --move will do and flags the two ways it goes wrong:
+// source folders we may not rename out of, and (without --move) files that could have been
+// renamed instead of copied.
+func (p *organizePlan) printMoveAdvice() {
+	if n := p.unwritableCount(); n > 0 {
+		dirs := make([]string, 0, len(p.unwritable))
+		for d := range p.unwritable {
+			dirs = append(dirs, d)
+		}
+		sort.Strings(dirs)
+		fmt.Fprintf(os.Stderr, "⚠  --move cannot rename %s files: you have no write permission on their source folder (a rename removes the file from it):\n", formatCount(n))
+		for i, d := range dirs {
+			if i == 5 {
+				fmt.Fprintf(os.Stderr, "     ... and %d more folders\n", len(dirs)-5)
+				break
+			}
+			fmt.Fprintf(os.Stderr, "     %s (%s files)\n", d, formatCount(p.unwritable[d]))
+		}
+		fmt.Fprintf(os.Stderr, "   Fix the ownership (e.g. sudo chown -R $USER <source>) before --apply; apply will refuse until then.\n")
+	}
+	if !p.move && p.movableBytes > 0 {
+		fmt.Fprintf(os.Stderr, "ℹ  %s of this is on the library's filesystem and would be renamed instantly, with no extra space, using --move\n"+
+			"   (the source files are then gone). Without it, everything is copied and the sources are kept.\n", formatSize(p.movableBytes))
+	}
+}
+
+// failureCause sorts a failed copy/move into a short cause, so the summary can say what to do.
+func failureCause(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrPermission) || strings.Contains(err.Error(), "permission denied"):
+		return "permission"
+	case strings.Contains(err.Error(), "appeared during the run"):
+		return "exists"
+	case strings.Contains(err.Error(), "changed since the plan") || strings.Contains(err.Error(), "size changed"):
+		return "changed"
+	}
+	return "other"
+}
+
+// printFailureSummary groups the failures by cause, each with the right next step. Retrying only
+// helps for "other"; the rest need a fix or a fresh plan first.
+func (p *organizePlan) printFailureSummary() {
+	advice := []struct{ key, text string }{
+		{"permission", "permission denied: you cannot write to the source folder (--move) or the library. Fix the ownership, then re-run; retrying alone will not help"},
+		{"exists", "target name already taken: the file is already in the library or was put there by an earlier run. Make a fresh plan (--save-plan) so it is skipped; retrying will not help"},
+		{"changed", "file changed since the plan was made: make a fresh plan (--save-plan)"},
+		{"other", "other errors: re-run the same command to retry them"},
+	}
+	fmt.Fprintf(os.Stderr, "\n")
+	for _, a := range advice {
+		if n := p.failCauses[a.key]; n > 0 {
+			fmt.Fprintf(os.Stderr, "⚠  %s file(s) failed — %s\n", formatCount(n), a.text)
 		}
 	}
 }
