@@ -477,7 +477,9 @@ func isJunkDir(name string) bool {
 		"lost+found", ".stversions", ".stfolder", organizeLogDir:
 		return true
 	}
-	return strings.HasPrefix(l, ".trash-") || strings.HasSuffix(l, ".lrdata")
+	// Hidden folders (.rawstudio thumbnails, .cache...) hold tool litter, and a scan never
+	// records them, so a plan that included them could not be checked against a manifest.
+	return strings.HasPrefix(l, ".") || strings.HasSuffix(l, ".lrdata")
 }
 
 // noiseFile reports OS litter that is not worth mentioning as "left behind".

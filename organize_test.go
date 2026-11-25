@@ -1385,3 +1385,25 @@ func TestOrganizeClipXMLTravelsWithVideo(t *testing.T) {
 		t.Errorf("orphan XML was copied: %s", got)
 	}
 }
+
+// Hidden folders such as .rawstudio hold thumbnails; a scan never records them, so organize
+// must not plan them either (apply checks every planned source against its manifest).
+func TestOrganizeSkipsHiddenFolders(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(src, "IMG_20240315_101010.jpg"), "photo")
+	writeFile(t, filepath.Join(src, ".rawstudio", "IMG_20240315_101010.jpg.thumb.png"), "thumb")
+
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	got := strings.Join(listFiles(t, lib), ",")
+	if !strings.Contains(got, "IMG_20240315_101010.jpg") {
+		t.Errorf("photo missing: %s", got)
+	}
+	if strings.Contains(got, "thumb.png") {
+		t.Errorf("hidden-folder thumbnail was copied: %s", got)
+	}
+}
