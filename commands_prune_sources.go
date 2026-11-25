@@ -29,7 +29,7 @@ type pruneOptions struct {
 	sources  []string
 	library  string
 	backups  []string
-	holding  string
+	holdings []string // --holding (repeatable): one per filesystem the sources live on
 	report   string
 	fromRep  string
 	apply    bool
@@ -66,7 +66,7 @@ func parsePruneArgs(args []string) (pruneOptions, error) {
 			if err := need(i, "a folder"); err != nil {
 				return opts, err
 			}
-			opts.holding = args[i+1]
+			opts.holdings = append(opts.holdings, args[i+1])
 			i++
 		case "--report":
 			if err := need(i, "a file name"); err != nil {
@@ -142,7 +142,7 @@ func parsePruneArgs(args []string) (pruneOptions, error) {
 	if opts.fromRep != "" && opts.typeSet {
 		return opts, errors.New("--type has no effect with --from-report: the report already decides which files qualify")
 	}
-	if opts.apply && opts.holding == "" {
+	if opts.apply && len(opts.holdings) == 0 {
 		return opts, errors.New("--apply needs --holding <folder>: files are moved there, never deleted")
 	}
 	return opts, nil
@@ -151,7 +151,7 @@ func parsePruneArgs(args []string) (pruneOptions, error) {
 func printPruneUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: photo-organizer prune-sources <source>... --library DIR --backup DIR [--backup DIR]\n")
 	fmt.Fprintf(os.Stderr, "                                     [--type photo|video|all] [--report FILE] [--jobs N]\n")
-	fmt.Fprintf(os.Stderr, "                                     [--holding DIR --apply] [--from-report FILE]\n")
+	fmt.Fprintf(os.Stderr, "                                     [--holding DIR [--holding DIR]... --apply] [--from-report FILE]\n")
 	fmt.Fprintf(os.Stderr, "                                     [--verify manifest|bytes]\n\n")
 	fmt.Fprintf(os.Stderr, "Finds source files that have a byte-identical copy in the library AND in a backup.\n")
 	fmt.Fprintf(os.Stderr, "Preview by default. With --apply the files are MOVED into --holding (same relative\n")
@@ -166,7 +166,10 @@ func printPruneUsage() {
 	fmt.Fprintf(os.Stderr, "  - --from-report FILE reuses the byte comparison of an earlier preview (its --report file):\n")
 	fmt.Fprintf(os.Stderr, "    it only re-checks that the source, library and backup files still exist with the same\n")
 	fmt.Fprintf(os.Stderr, "    size and were not modified after the report was written. Fast; nothing is re-read.\n")
-	fmt.Fprintf(os.Stderr, "  - Keep --holding on the same filesystem as the source so the move is instant.\n")
+	fmt.Fprintf(os.Stderr, "  - A move cannot cross filesystems, so give one --holding per filesystem your sources live on\n")
+	fmt.Fprintf(os.Stderr, "    (repeat the flag); each file goes to the holding folder on its own filesystem. The folder\n")
+	fmt.Fprintf(os.Stderr, "    may not exist yet. Before moving anything, apply checks that every file has such a folder\n")
+	fmt.Fprintf(os.Stderr, "    and that you may write to its source folder, and refuses with a list if not.\n")
 }
 
 type pruneVerdict int
@@ -287,11 +290,11 @@ func checkPruneLayout(opts pruneOptions) error {
 			return fmt.Errorf("backup %s is on the same device as the library: that is not an independent copy", b)
 		}
 	}
-	if opts.holding != "" {
-		h := resolveThroughSymlinks(opts.holding)
+	for _, holding := range opts.holdings {
+		h := resolveThroughSymlinks(holding)
 		for _, d := range append(dirs, opts.sources...) {
 			if samePathOrInside(h, resolveThroughSymlinks(d)) {
-				return fmt.Errorf("--holding %s overlaps %s: use a separate folder", opts.holding, d)
+				return fmt.Errorf("--holding %s overlaps %s: use a separate folder", holding, d)
 			}
 		}
 	}
@@ -355,16 +358,24 @@ func finishPrune(items []*pruneItem, opts pruneOptions) error {
 		}
 		fmt.Fprintf(os.Stderr, "Report written to %s\n", opts.report)
 	}
+	blocked := checkPruneMoves(items, opts.holdings)
+	if len(blocked) > 0 {
+		printPruneBlocked(blocked, len(opts.holdings) > 0)
+	}
 	if !opts.apply {
 		fmt.Fprintf(os.Stderr, "\nPreview only. Nothing was moved. Re-run with --holding <folder> --apply to move the safe files.\n")
 		return nil
 	}
-	moved, failed := movePruneItems(items, opts.holding)
-	fmt.Fprintf(os.Stderr, "\nMoved %s files into %s", formatCount(moved), opts.holding)
+	if len(blocked) > 0 {
+		fmt.Fprintf(os.Stderr, "\nError: some safe files cannot be moved; nothing was changed. Fix the above and run again.\n")
+		return errFailed
+	}
+	moved, failed := movePruneItems(items, opts.holdings)
+	fmt.Fprintf(os.Stderr, "\nMoved %s files into %s", formatCount(moved), strings.Join(opts.holdings, ", "))
 	if failed > 0 {
 		fmt.Fprintf(os.Stderr, "; %s could not be moved and stay in place", formatCount(failed))
 	}
-	fmt.Fprintf(os.Stderr, ".\nNothing was deleted. Delete the holding folder yourself when you are sure.\n")
+	fmt.Fprintf(os.Stderr, ".\nNothing was deleted. Delete the holding folder(s) yourself when you are sure.\n")
 	if failed > 0 {
 		return errFailed
 	}
@@ -505,10 +516,108 @@ func holdingPath(holding, root, path string) string {
 	return filepath.Join(holding, tag, rel)
 }
 
-func movePruneItems(items []*pruneItem, holding string) (moved, failed int) {
+// holdingFor picks the holding folder on the same filesystem as path (a rename cannot cross
+// filesystems). The folder may not exist yet; its nearest existing parent decides.
+func holdingFor(holdings []string, path string) (string, bool) {
+	for _, h := range holdings {
+		if sameFilesystem(path, h) {
+			return h, true
+		}
+	}
+	return "", false
+}
+
+// pruneBlock is a reason some safe files cannot be moved, with how many and where.
+type pruneBlock struct {
+	kind  string // "nohold": no --holding on the file's filesystem; "perm": source folder not writable
+	where string
+	files int
+	bytes int64
+}
+
+// checkPruneMoves finds safe files that a move would fail on, before anything is moved: no
+// holding folder on their filesystem, or a source folder we may not remove files from.
+// Without any --holding only the permission problem can be reported.
+func checkPruneMoves(items []*pruneItem, holdings []string) []pruneBlock {
+	byKey := map[string]*pruneBlock{}
+	var order []string
+	add := func(kind, where string, size int64) {
+		k := kind + "\x00" + where
+		b := byKey[k]
+		if b == nil {
+			b = &pruneBlock{kind: kind, where: where}
+			byKey[k] = b
+			order = append(order, k)
+		}
+		b.files++
+		b.bytes += size
+	}
+	writable := map[string]bool{}
 	for _, it := range items {
 		if it.verdict != pruneSafe {
 			continue
+		}
+		dir := filepath.Dir(it.path)
+		ok, seen := writable[dir]
+		if !seen {
+			ok = canModifyDir(dir)
+			writable[dir] = ok
+		}
+		if !ok {
+			add("perm", dir, it.size)
+		}
+		if len(holdings) > 0 {
+			if _, found := holdingFor(holdings, it.path); !found {
+				add("nohold", it.root, it.size)
+			}
+		}
+	}
+	sort.Strings(order)
+	out := make([]pruneBlock, 0, len(order))
+	for _, k := range order {
+		out = append(out, *byKey[k])
+	}
+	return out
+}
+
+func printPruneBlocked(blocked []pruneBlock, haveHolding bool) {
+	var perm, nohold []pruneBlock
+	for _, b := range blocked {
+		if b.kind == "perm" {
+			perm = append(perm, b)
+		} else {
+			nohold = append(nohold, b)
+		}
+	}
+	list := func(bs []pruneBlock) {
+		for i, b := range bs {
+			if i == 8 {
+				fmt.Fprintf(os.Stderr, "     ... and %d more\n", len(bs)-8)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "     %s (%s files, %s)\n", b.where, formatCount(b.files), formatSize(b.bytes))
+		}
+	}
+	if len(nohold) > 0 {
+		fmt.Fprintf(os.Stderr, "\n⚠  No --holding on the same filesystem as these sources (a move cannot cross filesystems);\n"+
+			"   add a --holding folder on each, e.g. <mount>/_holding/pruned:\n")
+		list(nohold)
+	}
+	if len(perm) > 0 {
+		fmt.Fprintf(os.Stderr, "\n⚠  You have no write permission on these source folders, so files cannot be moved out of them\n"+
+			"   (fix with e.g. sudo chown -R $USER <folder>):\n")
+		list(perm)
+	}
+}
+
+func movePruneItems(items []*pruneItem, holdings []string) (moved, failed int) {
+	for _, it := range items {
+		if it.verdict != pruneSafe {
+			continue
+		}
+		holding, ok := holdingFor(holdings, it.path)
+		if !ok && len(holdings) > 0 {
+			holding = holdings[0] // single --holding: keep the old behaviour and let the move report any error
 		}
 		dst := holdingPath(holding, it.root, it.path)
 		if _, err := os.Lstat(dst); err == nil {
