@@ -561,7 +561,46 @@ func scanSources(sources []string, showProgress bool) sourceScan {
 		})
 	}
 	prog.Done(fmt.Sprintf("Found %s files", formatCount(int(n))))
+	attachClipSidecars(res.groups)
 	return res
+}
+
+// clipSidecarName matches a camera's clip-metadata name: Sony writes C0416M01.XML beside
+// C0416.MP4, so the name differs from its clip by an "M01"-style suffix.
+var clipSidecarName = regexp.MustCompile(`^(.+)m\d{2}$`)
+
+// attachClipSidecars merges a group made only of such .xml files into the group of the clip
+// they describe (same folder), so the metadata travels with the video instead of being
+// reported as an orphan and left behind. Groups with no matching clip are left alone.
+func attachClipSidecars(groups map[string][]sourceFile) {
+	for key, files := range groups {
+		m := clipSidecarName.FindStringSubmatch(filepath.Base(key))
+		if m == nil {
+			continue
+		}
+		onlyXML := true
+		for _, f := range files {
+			if strings.ToLower(filepath.Ext(f.path)) != ".xml" {
+				onlyXML = false
+				break
+			}
+		}
+		if !onlyXML {
+			continue
+		}
+		target := filepath.Join(filepath.Dir(key), m[1])
+		hasClip := false
+		for _, f := range groups[target] {
+			if !isSidecarExt(filepath.Ext(f.path)) {
+				hasClip = true
+				break
+			}
+		}
+		if hasClip {
+			groups[target] = append(groups[target], files...)
+			delete(groups, key)
+		}
+	}
 }
 
 func isSidecarExt(ext string) bool { return sidecarExts[strings.ToLower(ext)] }
@@ -891,7 +930,13 @@ func (pl *planner) planGroup(g *groupInfo) {
 		if dotted {
 			target = base + ext
 		} else {
-			target = strings.TrimSuffix(base, filepath.Ext(base)) + ext
+			// A clip's own metadata keeps its suffix: C0416M01.XML stays beside C0416.MP4.
+			extra := ""
+			mediaStem := strings.TrimSuffix(filepath.Base(media[lead].path), filepath.Ext(media[lead].path))
+			if len(stem) > len(mediaStem) && strings.EqualFold(stem[:len(mediaStem)], mediaStem) {
+				extra = stem[len(mediaStem):]
+			}
+			target = strings.TrimSuffix(base, filepath.Ext(base)) + extra + ext
 		}
 
 		if pl.taken[strings.ToLower(target)] {

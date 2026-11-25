@@ -1361,3 +1361,27 @@ func TestOrganizeUsesParentManifestForSubfolderHashes(t *testing.T) {
 		t.Errorf("subfolder hashes should come from the parent manifest: exit %d\n%s", code, out)
 	}
 }
+
+// Sony cards keep clip metadata as C0001M01.XML beside C0001.MP4; it must travel with the clip.
+func TestOrganizeClipXMLTravelsWithVideo(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "card", "PRIVATE", "M4ROOT", "CLIP")
+	lib := filepath.Join(home, "Library")
+	writeFile(t, filepath.Join(src, "20250616_C0416.MP4"), "video-one")
+	writeFile(t, filepath.Join(src, "20250616_C0416M01.XML"), "<one/>")
+	writeFile(t, filepath.Join(src, "20250616_C0417M01.XML"), "<no clip/>") // no clip: stays an orphan
+
+	out, code := runCLIWithHome(t, home, "organize", src, "--dest", lib, "--apply", "--no-progress", "--type", "video")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	got := strings.Join(listFiles(t, lib), ",")
+	for _, want := range []string{"20250616_C0416.MP4", "20250616_C0416M01.XML"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in %s", want, got)
+		}
+	}
+	if strings.Contains(got, "C0417") {
+		t.Errorf("orphan XML was copied: %s", got)
+	}
+}
