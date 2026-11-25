@@ -355,7 +355,7 @@ func TestScanDirectorySymlinkSkipped(t *testing.T) {
 func TestScanDirectorySkipFolders(t *testing.T) {
 	dir := t.TempDir()
 	// Create subdirectories that should be skipped.
-	skipDirs := []string{"PRIVATE", "THMBNL", "AVF_INFO", ".fseventsd"}
+	skipDirs := []string{"THMBNL", "AVF_INFO", ".fseventsd"}
 	for _, d := range skipDirs {
 		subdir := filepath.Join(dir, d)
 		if err := os.Mkdir(subdir, 0o755); err != nil {
@@ -383,6 +383,25 @@ func TestScanDirectorySkipFolders(t *testing.T) {
 	}
 	if entries[0].Path != filepath.Join(dir, "keep.jpg") {
 		t.Errorf("got entry for %q, want keep.jpg", entries[0].Path)
+	}
+}
+
+// Sony cards keep their videos under PRIVATE/M4ROOT/CLIP; the scan must see them.
+func TestScanDirectoryKeepsPrivateVideoFolder(t *testing.T) {
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "PRIVATE", "M4ROOT", "CLIP")
+	if err := os.MkdirAll(clip, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clip, "C0001.MP4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err := scanDirectory(dir, make(map[string]CacheEntry), newPhotoIgnore(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Path != filepath.Join(clip, "C0001.MP4") {
+		t.Errorf("got %v, want the clip under PRIVATE", entries)
 	}
 }
 

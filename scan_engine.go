@@ -351,8 +351,10 @@ func walkFiles(dir string, photoIgnore *PhotoIgnore, stats *ScanStats, onDir fun
 			if strings.HasPrefix(name, ".") {
 				return filepath.SkipDir
 			}
-			// Skip camera-specific system folders
-			if name == "PRIVATE" || name == "THMBNL" || name == "AVF_INFO" || name == ".fseventsd" {
+			// Skip camera thumbnail/index folders. PRIVATE is NOT skipped: Sony cards keep
+			// their videos in PRIVATE/M4ROOT/CLIP (and AVCHD in PRIVATE/AVCHD), and without
+			// manifest rows prune-sources can never verify those files.
+			if name == "THMBNL" || name == "AVF_INFO" || name == ".fseventsd" {
 				return filepath.SkipDir
 			}
 			if onDir != nil {
