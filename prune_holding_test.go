@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,5 +98,35 @@ func TestPruneRefusesUnwritableSourceFolder(t *testing.T) {
 	}
 	if blocked := checkPruneMoves([]*pruneItem{{path: filepath.Join(locked, "a.jpg"), root: f.src, verdict: pruneSafe, size: 7}}, nil); len(blocked) != 1 || blocked[0].kind != "perm" {
 		t.Errorf("preview without --holding should still report the permission problem, got %+v", blocked)
+	}
+}
+
+// On a drive that is both the source and the only place a move can go, the holding folder
+// sits inside the source. Its files are skipped, and a holding that contains a source is refused.
+func TestPruneHoldingInsideSource(t *testing.T) {
+	f := newSrcPruneFixture(t)
+	writeFile(t, filepath.Join(f.lib, "2024", "a.jpg"), "photo-a")
+	writeFile(t, filepath.Join(f.bak, "x", "a.jpg"), "photo-a")
+	writeFile(t, filepath.Join(f.src, "a.jpg"), "photo-a")
+	hold := filepath.Join(f.src, "_holding", "pruned")
+
+	args := []string{f.src, "--library", f.lib, "--backup", f.bak, "--no-progress", "--verify", "bytes", "--holding", hold}
+	if err := runPruneSources(append(args, "--apply")); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(holdingPath(hold, f.src, filepath.Join(f.src, "a.jpg"))) || exists(filepath.Join(f.src, "a.jpg")) {
+		t.Fatal("a.jpg should have moved into the holding folder inside the source")
+	}
+	// A second run must not offer the moved file (now inside the source) again.
+	if err := runPruneSources(append(args, "--apply")); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(holdingPath(hold, f.src, filepath.Join(f.src, "a.jpg"))) {
+		t.Error("the holding folder's file must stay where it is")
+	}
+	// A holding folder that contains the source is still refused.
+	err := runPruneSources([]string{f.src, "--library", f.lib, "--backup", f.bak, "--no-progress", "--holding", f.src, "--apply"})
+	if err == nil || !strings.Contains(err.Error(), "contains the source") {
+		t.Fatalf("want contains-the-source refusal, got %v", err)
 	}
 }

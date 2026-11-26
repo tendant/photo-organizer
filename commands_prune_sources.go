@@ -292,13 +292,32 @@ func checkPruneLayout(opts pruneOptions) error {
 	}
 	for _, holding := range opts.holdings {
 		h := resolveThroughSymlinks(holding)
-		for _, d := range append(dirs, opts.sources...) {
+		for _, d := range dirs {
 			if samePathOrInside(h, resolveThroughSymlinks(d)) {
 				return fmt.Errorf("--holding %s overlaps %s: use a separate folder", holding, d)
 			}
 		}
+		// A holding folder may sit inside a source (a drive that is both the source and
+		// the only place a move can go); it is skipped when the source is listed. It may
+		// not be, or contain, a whole source.
+		for _, src := range opts.sources {
+			if pathWithin(resolveThroughSymlinks(src), h) {
+				return fmt.Errorf("--holding %s contains the source %s: use a separate folder", holding, src)
+			}
+		}
 	}
 	return nil
+}
+
+// inHolding reports whether path lies inside one of the holding folders, whose files were
+// already moved out of the sources and must not be offered again.
+func inHolding(path string, holdings []string) bool {
+	for _, h := range holdings {
+		if pathWithin(path, filepath.Clean(h)) {
+			return true
+		}
+	}
+	return false
 }
 
 func runPruneSources(args []string) error {
@@ -390,6 +409,9 @@ func collectPruneItems(opts pruneOptions, showProgress bool) []*pruneItem {
 		for _, files := range scan.groups {
 			other := opts.kind != kindAll && groupKind(files) != opts.kind
 			for _, f := range files {
+				if inHolding(f.path, opts.holdings) {
+					continue
+				}
 				it := &pruneItem{path: f.path, root: root, size: f.size}
 				switch {
 				case isSidecarExt(filepath.Ext(f.path)):
