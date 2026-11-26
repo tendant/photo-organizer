@@ -23,6 +23,7 @@ Common flags:
 - `--report`: show a file type summary (largest 8 types and a total) before scanning. It walks the folder an extra time, so it is off by default; `--no-report` is still accepted and does nothing.
 - Big folders: a scan hashes and writes the manifest as it walks, holding only a few thousand files in memory (about 18 MB for 250,000 files on a rescan), so the size of the folder no longer limits it. Progress shows `N found, M processed`; `found` runs a little ahead of `processed` because the total is not known until the walk ends. If a scan is killed or the machine hangs, the hashes it already finished are kept in `<manifest>.partial.<n>` next to the manifest, and the next scan of that folder says `Resuming` and reuses them (`--no-cache` discards them). Manifests are kept in folder order; one written by an older version is sorted once on its next scan.
 - `.photoignore`: patterns the scan skips (`name/` skips a folder at any depth, `*.ext` skips files; subfolders can have their own). A scan of a folder with none writes a default one (program files, games, caches, system folders, `*.tmp`) that you can edit; an existing one is never touched, and `.photoignore` itself is not recorded in manifests. `--no-ignore-file` stops the scan creating it (use it for read-only or curated folders). `organize --plan` never creates one. To write it without scanning: `photo-organizer ignore --init <folder>...`.
+- **Skipped folders.** A scan skips dot-folders (`.rawstudio`, `.cache`, ...), `THMBNL`, `AVF_INFO` and `.fseventsd`. It does **not** skip `PRIVATE`: Sony cards keep their videos in `PRIVATE/M4ROOT/CLIP` (and AVCHD in `PRIVATE/AVCHD`), and without manifest rows `prune-sources` cannot verify or retire them.
 - Pruning is the default: manifest entries for files no longer on disk are removed, so
   `dups` and `check-backup` never count a deleted file as a copy. It is skipped (with a
   warning) if the scan could not read some folders, or if it would remove over half the
@@ -124,10 +125,18 @@ Implausible dates (before 1990, in the future) go to `undated/`.
   photo — even when two photos have identical sidecars, or the photo was already in
   the library (the sidecar is placed beside that copy). A sidecar that differs from
   the one already there is reported, never overwritten. Sidecars with no photo to
-  attach to are ignored, as are empty files and macOS `._*` files.
+  attach to are ignored, as are empty files and macOS `._*` files. A camera's clip
+  metadata travels with its clip too: Sony `C0416M01.XML` goes beside `C0416.MP4`
+  and keeps its name. Only a clip in the same folder counts, so metadata whose clip
+  was moved in an earlier run stays in the source.
 - **Skips system folders.** `@eaDir`, `#recycle`, `.thumbnails`, `.Trash-*`,
-  `$RECYCLE.BIN`, `*.lrdata` and similar are not photos and are not copied; the
-  summary says which were skipped.
+  `$RECYCLE.BIN`, `*.lrdata`, every hidden folder (name starting with `.`, such as
+  `.rawstudio`) and similar are not photos and are not copied; the summary says which
+  were skipped. Hidden folders are left out because a scan never records them, and a
+  saved plan is checked against the manifests when you apply it.
+- **Use the right `--dest`.** Keep photos and videos in separate libraries
+  (`Library/photos`, `Library/videos`). A run into the parent folder creates its own
+  year folders there, outside both.
 - **Tells you what it leaves behind.** Files that are not photos, videos or
   sidecars (`.pdf`, `.txt`, ...) are not copied. They are counted by extension in
   the summary — keep them before you retire or delete the source.
@@ -289,6 +298,7 @@ photo-organizer prune-sources /data/Photos-All --library /lib/photos --backup /m
 - The backup must be on a different device from the library, and neither may overlap a source or the holding folder. `--backup` can be repeated.
 - **Holding folders.** Scan a folder you are about to delete with `scan <folder> --holding`: its manifest goes to `_Manifest/_holding/`, so `dups`, `dup-folders` and `check-backup` never count it as a copy, while `check-backup <folder>` and `prune-sources` still find it. A later plain `scan` of that folder updates the same manifest.
 - Sidecars, files of the other `--type`, and files missing from the library or backup are always kept. Files the scan skips (thumbnail folders) are not in a manifest, so they are kept too.
+- **After `--apply`, rescan the sources and the holding folders.** Moved files leave the sources, so over half of a source manifest's rows can go at once; the scan's prune brake then stops with `Skipping prune: would remove N of M entries`. Check that N matches what you moved, then rerun that scan with `--force-prune`.
 
 ### archive
 Retire a folder into a dated snapshot and repoint the manifests at it.
