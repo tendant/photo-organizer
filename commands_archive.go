@@ -102,6 +102,11 @@ func runArchive(args []string) error {
 
 	relPaths, relSizes, totalSize := listFilesUnder(absSourceFolder)
 	showProgress := progressEnabled(progMode)
+	if !keepSource && holdsApplePhotos(absSourceFolder, relPaths) {
+		// The Photos app owns a library package; moving it away would leave no copy in place.
+		keepSource = true
+		fmt.Fprintf(os.Stderr, "\nNote: %s holds an Apple Photos library, so it is copied and the source is kept.\n", absSourceFolder)
+	}
 	destDisplay := filepath.Join(localArchiveDir, archiveFolderName)
 	if remote {
 		destDisplay = remoteUserHost + ":" + remoteArchivePath(remotePath, archiveFolderName)

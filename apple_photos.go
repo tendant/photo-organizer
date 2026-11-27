@@ -49,3 +49,16 @@ func applePhotosInternal(path string) bool {
 	}
 	return true
 }
+
+// holdsApplePhotos reports whether folder is, or contains, an Apple Photos library package.
+func holdsApplePhotos(folder string, relPaths []string) bool {
+	if inApplePhotos(folder) {
+		return true
+	}
+	for _, rel := range relPaths {
+		if inApplePhotos(rel) {
+			return true
+		}
+	}
+	return false
+}

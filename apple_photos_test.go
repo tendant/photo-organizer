@@ -52,3 +52,15 @@ func TestOrganizeApplePhotosOnlyCopiesOriginalsAndNeverMoves(t *testing.T) {
 		t.Error("--move must copy, not rename, a file out of a Photos library package")
 	}
 }
+
+func TestHoldsApplePhotos(t *testing.T) {
+	if !holdsApplePhotos("/x/Pictures", []string{"a.jpg", "Photos Library.photoslibrary/originals/A/b.jpg"}) {
+		t.Error("a folder containing a package must count")
+	}
+	if !holdsApplePhotos("/x/Photos Library.photoslibrary/originals", []string{"a.jpg"}) {
+		t.Error("a folder inside a package must count")
+	}
+	if holdsApplePhotos("/x/Pictures", []string{"a.jpg", "2020/b.jpg"}) {
+		t.Error("an ordinary folder must not count")
+	}
+}
