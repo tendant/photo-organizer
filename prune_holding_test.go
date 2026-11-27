@@ -130,3 +130,24 @@ func TestPruneHoldingInsideSource(t *testing.T) {
 		t.Fatalf("want contains-the-source refusal, got %v", err)
 	}
 }
+
+// Files inside an Apple Photos package are never moved, even when identical copies exist elsewhere.
+func TestPruneNeverMovesApplePhotosFiles(t *testing.T) {
+	f := newSrcPruneFixture(t)
+	writeFile(t, filepath.Join(f.lib, "2024", "a.jpg"), "photo-a")
+	writeFile(t, filepath.Join(f.bak, "x", "a.jpg"), "photo-a")
+	inside := filepath.Join(f.src, "Photos Library.photoslibrary", "originals", "A", "a.jpg")
+	writeFile(t, inside, "photo-a")
+	loose := filepath.Join(f.src, "loose.jpg")
+	writeFile(t, loose, "photo-a")
+
+	if err := runPruneSources(f.args("--holding", f.hold, "--apply")); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(inside) {
+		t.Error("a file inside the Photos library package must never be moved")
+	}
+	if exists(loose) {
+		t.Error("the ordinary duplicate should still have been moved")
+	}
+}

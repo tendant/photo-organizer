@@ -184,10 +184,11 @@ const (
 	pruneChanged
 	pruneNotFresh
 	pruneNotInManifest
+	pruneApplePhotos
 )
 
 func (v pruneVerdict) String() string {
-	return [...]string{"safe", "not in library", "not in backup", "sidecar kept", "other type", "unreadable", "changed since report", "manifest out of date", "not in a manifest"}[v]
+	return [...]string{"safe", "not in library", "not in backup", "sidecar kept", "other type", "unreadable", "changed since report", "manifest out of date", "not in a manifest", "inside Apple Photos library"}[v]
 }
 
 type pruneItem struct {
@@ -414,6 +415,8 @@ func collectPruneItems(opts pruneOptions, showProgress bool) []*pruneItem {
 				}
 				it := &pruneItem{path: f.path, root: root, size: f.size}
 				switch {
+				case inApplePhotos(f.path):
+					it.verdict = pruneApplePhotos // the app owns these files; never moved
 				case isSidecarExt(filepath.Ext(f.path)):
 					it.verdict = pruneSidecar
 				case other:
@@ -488,7 +491,7 @@ func printPruneSummary(items []*pruneItem, opts pruneOptions) {
 	}
 	fmt.Fprintf(os.Stderr, "  Safe to remove (identical copy in library and backup): %s files, %s\n",
 		formatCount(count[pruneSafe]), formatSize(size[pruneSafe]))
-	for _, v := range []pruneVerdict{pruneNoLibrary, pruneNoBackup, pruneSidecar, pruneUnreadable, pruneChanged, pruneNotFresh, pruneNotInManifest} {
+	for _, v := range []pruneVerdict{pruneNoLibrary, pruneNoBackup, pruneSidecar, pruneUnreadable, pruneChanged, pruneNotFresh, pruneNotInManifest, pruneApplePhotos} {
 		if count[v] > 0 {
 			fmt.Fprintf(os.Stderr, "  Kept — %-15s %s files, %s\n", v.String()+":", formatCount(count[v]), formatSize(size[v]))
 		}
@@ -634,7 +637,7 @@ func printPruneBlocked(blocked []pruneBlock, haveHolding bool) {
 
 func movePruneItems(items []*pruneItem, holdings []string) (moved, failed int) {
 	for _, it := range items {
-		if it.verdict != pruneSafe {
+		if it.verdict != pruneSafe || inApplePhotos(it.path) {
 			continue
 		}
 		holding, ok := holdingFor(holdings, it.path)
@@ -719,6 +722,11 @@ func loadPruneReport(opts pruneOptions) ([]*pruneItem, error) {
 			continue // not under a source you named this time
 		}
 		it := &pruneItem{path: r[0], root: root, size: size, libCopy: r[3], bakCopy: r[4]}
+		if inApplePhotos(it.path) {
+			it.verdict = pruneApplePhotos // an older report may call it safe; it never moves
+			items = append(items, it)
+			continue
+		}
 		switch r[2] {
 		case pruneSafe.String():
 			ok := within(it.libCopy, opts.library) && within(it.bakCopy, opts.backups...) &&
@@ -740,6 +748,8 @@ func loadPruneReport(opts pruneOptions) ([]*pruneItem, error) {
 			it.verdict = pruneNotFresh
 		case pruneNotInManifest.String():
 			it.verdict = pruneNotInManifest
+		case pruneApplePhotos.String():
+			it.verdict = pruneApplePhotos
 		case pruneChanged.String():
 			it.verdict = pruneChanged
 		default:

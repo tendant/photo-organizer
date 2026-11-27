@@ -526,6 +526,10 @@ func scanSources(sources []string, showProgress bool) sourceScan {
 				return nil
 			}
 			if d.IsDir() {
+				if path != root && applePhotosInternal(path) {
+					res.junkDirs["Apple Photos internals"]++ // thumbnails, derivatives, database
+					return filepath.SkipDir
+				}
 				if path != root && isJunkDir(d.Name()) {
 					res.junkDirs[d.Name()]++
 					return filepath.SkipDir
@@ -1295,7 +1299,7 @@ func applyOrganizePlan(p *organizePlan, dest string, showProgress bool) (failed 
 		prog.Note(filepath.Base(c.src))
 		var err error
 		verbDone := "copied"
-		if p.move && sameFilesystem(c.src, filepath.Dir(c.dst)) {
+		if p.move && !inApplePhotos(c.src) && sameFilesystem(c.src, filepath.Dir(c.dst)) {
 			err = moveIntoLibrary(c)
 			verbDone = "moved"
 		} else {
@@ -1503,8 +1507,8 @@ func (p *organizePlan) markMoves(dest string, move bool) {
 	p.unwritable = nil
 	writable := map[string]bool{}
 	for _, c := range p.copies {
-		if !sameFilesystem(c.src, filepath.Dir(c.dst)) {
-			continue
+		if inApplePhotos(c.src) || !sameFilesystem(c.src, filepath.Dir(c.dst)) {
+			continue // files inside an Apple Photos library are copied, never renamed out
 		}
 		p.movableBytes += c.size
 		if !move {
